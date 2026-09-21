@@ -67,4 +67,5 @@ pass the token scanner; maintainers also run the private denylist before merging
 
 Run `bash tests/ci_parity.sh` to reproduce the GitHub runner locally before pushing. It runs the pinned Ruff
 check, lints workflow YAML with actionlint (skipped if Docker is unavailable), runs the golden tests under a
-foreign `$HOME`, and runs the full suite with no `claude` binary on `PATH`.
+foreign `$HOME`, and runs the full suite with no `claude` binary on `PATH`. Files the installer copies
+verbatim are tracked by hash only; merged and rendered files are stored in full so a review shows their effect.
