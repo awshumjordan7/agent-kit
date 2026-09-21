@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from aisetup.manifest import ModuleManifest
+from aisetup.manifest import ModuleManifest, OverlayManifest
 from aisetup.merge import deep_merge
 
 
@@ -278,6 +278,7 @@ def build_interactive_profile(
     manifests: dict[str, ModuleManifest],
     *,
     yes: bool,
+    overlay: OverlayManifest | None = None,
     input_fn: Callable[[str], str] = input,
     secret_input_fn: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
@@ -290,9 +291,15 @@ def build_interactive_profile(
         if raw:
             profile["modules"][name] = raw in {"y", "yes"}
 
-    for name, manifest in manifests.items():
-        if not profile["modules"].get(name, False):
-            continue
+    question_manifests: list[tuple[str, ModuleManifest | OverlayManifest]] = [
+        (name, manifest)
+        for name, manifest in manifests.items()
+        if profile["modules"].get(name, False)
+    ]
+    if overlay is not None:
+        question_manifests.append(("overlay", overlay))
+
+    for name, manifest in question_manifests:
         for question in manifest.questions:
             if yes:
                 value = question.default

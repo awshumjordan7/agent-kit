@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -193,6 +194,26 @@ def _backup_path(home: Path) -> Path:
     return candidate
 
 
+def unmanaged_paths(home: Path, staged: Path) -> tuple[Path, ...]:
+    home = home.expanduser()
+    if not home.is_dir():
+        return ()
+
+    paths: list[Path] = []
+
+    def collect(source: Path) -> None:
+        for entry in sorted(source.iterdir()):
+            relative = entry.relative_to(home)
+            target = staged / relative
+            if not target.exists() and not target.is_symlink():
+                paths.append(relative)
+            elif entry.is_dir() and target.is_dir():
+                collect(entry)
+
+    collect(home)
+    return tuple(paths)
+
+
 def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
     home = home.expanduser().resolve()
     home.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +223,7 @@ def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
     backup: Path | None = None
     try:
         result = compose_tree(profile, staging, auxiliary_root=auxiliary)
+        preserved = unmanaged_paths(home, staging)
         if home.exists():
             backup = _backup_path(home)
             os.replace(home, backup)
@@ -211,6 +233,16 @@ def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
             if backup is not None and not home.exists():
                 os.replace(backup, home)
             raise
+        if backup is not None:
+            for relative in preserved:
+                source = backup / relative
+                target = home / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if source.is_dir():
+                    shutil.copytree(source, target, copy_function=shutil.copy2)
+                else:
+                    shutil.copy2(source, target)
+            sys.stdout.write(f"preserved {len(preserved)} unmanaged path(s) from {backup}\n")
         _install_auxiliary(auxiliary, home.parent)
         return ComposeResult(result.files, result.settings, backup)
     finally:

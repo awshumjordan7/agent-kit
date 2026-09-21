@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from aisetup.layers import ResolvedLayers
@@ -19,41 +21,72 @@ class McpError(RuntimeError):
 class McpPlan:
     server: McpServer
     env: dict[str, str]
+    display_server: McpServer | None = None
 
 
-def _answer_context(layers: ResolvedLayers, profile: dict[str, Any]) -> dict[str, Any]:
+def _answer_context(
+    layers: ResolvedLayers, profile: dict[str, Any], *, redact: bool = False
+) -> dict[str, Any]:
     answers: dict[str, dict[str, Any]] = {}
+    question_sets = list(layers.module_manifests.items())
     for name, manifest in layers.module_manifests.items():
         answers[name] = {question.id: question.default for question in manifest.questions}
+    for layer in layers.layers:
+        if layer.overlay is not None:
+            question_sets.append(("overlay", layer.overlay))
+            answers["overlay"] = {
+                question.id: question.default for question in layer.overlay.questions
+            }
     for key, value in profile.get("answers", {}).items():
         module, _, question = key.partition(".")
         answers.setdefault(module, {})[question] = value
+    if redact:
+        for name, manifest in question_sets:
+            for question in manifest.questions:
+                if question.secret and answers.get(name, {}).get(question.id):
+                    answers[name][question.id] = "<redacted>"
     return {"answers": answers}
+
+
+def _render_server(server: McpServer, context: dict[str, Any]) -> McpServer:
+    source = f"mcp:{server.name}"
+
+    def render(value: str | None) -> str | None:
+        return render_text(value, context, source=source) if value is not None else None
+
+    env = {key: render_text(value, context, source=source) for key, value in server.env.items()}
+    return replace(
+        server,
+        command=render(server.command),
+        args=tuple(render_text(value, context, source=source) for value in server.args),
+        env={key: value for key, value in env.items() if value},
+        url=render(server.url),
+    )
 
 
 def plans_for_layers(layers: ResolvedLayers, profile: dict[str, Any]) -> tuple[McpPlan, ...]:
     context = _answer_context(layers, profile)
+    display_context = _answer_context(layers, profile, redact=True)
     plans: list[McpPlan] = []
     for layer in layers.layers:
-        if layer.module is None:
+        manifest = layer.module or layer.overlay
+        if manifest is None:
             continue
-        for server in layer.module.mcp:
+        for server in manifest.mcp:
             try:
-                env = {
-                    key: render_text(value, context, source=f"mcp:{server.name}")
-                    for key, value in server.env.items()
-                }
-                env = {key: value for key, value in env.items() if value}
+                rendered = _render_server(server, context)
+                display = _render_server(server, display_context)
             except RenderError as error:
                 raise McpError(str(error)) from error
-            plans.append(McpPlan(server, env))
+            plans.append(McpPlan(rendered, rendered.env, display))
     return tuple(plans)
 
 
 def add_command(plan: McpPlan, *, redact: bool = False) -> list[str]:
-    server = plan.server
+    server = plan.display_server if redact and plan.display_server is not None else plan.server
+    env = server.env if redact and plan.display_server is not None else plan.env
     command = ["claude", "mcp", "add", "--scope", server.scope, "--transport", server.transport]
-    for key, value in sorted(plan.env.items()):
+    for key, value in sorted(env.items()):
         command.extend(["--env", f"{key}={'<redacted>' if redact else value}"])
     command.append(server.name)
     if server.transport == "http":
@@ -129,13 +162,24 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         raise McpError(f"MCP command failed: {shlex.join(command)}: {error}") from error
 
 
-def register_servers(plans: tuple[McpPlan, ...], *, dry_run: bool = False) -> tuple[str, ...]:
+def register_servers(
+    plans: tuple[McpPlan, ...], *, home: Path, dry_run: bool = False
+) -> tuple[str, ...]:
+    commands = tuple(shlex.join(add_command(plan, redact=True)) for plan in plans)
+    if home.expanduser() != Path("~/.claude").expanduser():
+        names = ", ".join(plan.server.name for plan in plans)
+        sys.stdout.write(
+            f"mcp: skipped {len(plans)} server(s) because --home is not the default ({names})\n"
+        )
+        if dry_run:
+            return tuple(f"{command} [skipped: --home]" for command in commands)
+        return commands
+
     actions: list[str] = []
-    for plan in plans:
+    for plan, command in zip(plans, commands, strict=True):
         server = plan.server
         if dry_run:
-            action = shlex.join(add_command(plan, redact=True))
-            actions.append(action)
+            actions.append(command)
             continue
         current = _run(["claude", "mcp", "get", server.name])
         if current.returncode == 0 and _matches(plan, current.stdout):
