@@ -122,7 +122,8 @@ tokens bill at 2x input.
 ## quick-impl on Luna (from 2026-09-20)
 
 `roles.quick-impl` uses gpt-5.6-luna at high effort. Quick-lane changes are fully specified
-two- or three-file edits under the prompt contract, so the exploration that made Luna expensive
+edits whose plan names at most `quickReviewThreshold` source files (default 8). Otherwise Forge uses `impl`.
+Tests, Markdown, and JSON files do not count toward that threshold, so the exploration that made Luna expensive
 before 2026-09-15 no longer applies.
 
 Prices per 1M tokens (input / cached / output): Luna 0.20 / 0.02 / 1.20; Terra 2.00 / 0.20 /

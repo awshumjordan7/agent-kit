@@ -56,11 +56,15 @@ def _render_server(server: McpServer, context: dict[str, Any]) -> McpServer:
         return render_text(value, context, source=source) if value is not None else None
 
     env = {key: render_text(value, context, source=source) for key, value in server.env.items()}
+    headers = {
+        key: render_text(value, context, source=source) for key, value in server.headers.items()
+    }
     return replace(
         server,
         command=render(server.command),
         args=tuple(render_text(value, context, source=source) for value in server.args),
         env={key: value for key, value in env.items() if value},
+        headers={key: value for key, value in headers.items() if value},
         url=render(server.url),
     )
 
@@ -89,6 +93,8 @@ def add_command(plan: McpPlan, *, redact: bool = False) -> list[str]:
     command = ["claude", "mcp", "add", "--scope", server.scope, "--transport", server.transport]
     for key, value in sorted(env.items()):
         command.extend(["--env", f"{key}={'<redacted>' if redact else value}"])
+    for key, value in sorted(server.headers.items()):
+        command.extend(["--header", f"{key}: {value}"])
     command.append(server.name)
     if server.transport == "http":
         if not server.url:
@@ -110,6 +116,8 @@ def _matches(plan: McpPlan, output: str) -> bool:
     if not scope_match or _normalize_scope(scope_match.group(1)) != server.scope:
         return False
     if _environment(output) != plan.env:
+        return False
+    if _headers(output) != server.headers:
         return False
     if server.transport == "http":
         url_match = re.search(r"^\s*URL:\s*(.+?)\s*$", output, re.MULTILINE)
@@ -145,6 +153,24 @@ def _environment(output: str) -> dict[str, str]:
     return environment
 
 
+def _headers(output: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    reading_headers = False
+    for line in output.splitlines():
+        if re.match(r"^\s*Headers:\s*$", line):
+            reading_headers = True
+            continue
+        if not reading_headers:
+            continue
+        match = re.match(r"^\s+([^:]+):\s*(.*)$", line)
+        if not match:
+            if line.strip():
+                break
+            continue
+        headers[match.group(1)] = match.group(2)
+    return headers
+
+
 def _scope(output: str) -> str | None:
     match = re.search(r"^\s*Scope:\s*(.+?)\s*$", output, re.MULTILINE)
     return _normalize_scope(match.group(1)) if match else None
@@ -167,7 +193,7 @@ def _run(
 
 
 def register_servers(
-    plans: tuple[McpPlan, ...], *, home: Path, dry_run: bool = False
+    plans: tuple[McpPlan, ...], *, home: Path, dry_run: bool = False, retire: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
     commands = tuple(shlex.join(add_command(plan, redact=True)) for plan in plans)
     if not is_default_claude_home(home):
@@ -180,6 +206,18 @@ def register_servers(
         return commands
 
     actions: list[str] = []
+    for name in retire:
+        if dry_run:
+            actions.append(f"mcp: would remove {name} (module off)")
+            continue
+        current = _run(["claude", "mcp", "get", name])
+        if current.returncode != 0:
+            continue
+        current_scope = _scope(current.stdout) or "user"
+        removed = _run(["claude", "mcp", "remove", name, "--scope", current_scope])
+        if removed.returncode != 0:
+            raise McpError(removed.stderr.strip() or f"could not remove MCP server {name}")
+        actions.append(f"remove {name}")
     for plan, command in zip(plans, commands, strict=True):
         server = plan.server
         if dry_run:

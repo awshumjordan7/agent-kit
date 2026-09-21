@@ -27,6 +27,13 @@ agent-kit are copied into the new home. The backup retains both managed and unma
 the default `~/.claude`, install and update skip MCP registration because the Claude CLI always writes user-scoped
 servers to the default home. `update` fetches configured layer repositories, replays the profile, and runs doctor.
 
+## Update
+
+`python3 install.py update --check` reports repositories that are behind and compares every managed file with
+the composed tree. Content drift is identified as a profile agent override or an unknown source, and either
+repository lag or managed-content drift makes the check exit 1. `python3 install.py update` fetches, composes,
+installs, reconciles declared MCP servers, and runs doctor.
+
 ## Windows 10 and 11 (WSL2)
 
 agent-kit runs inside WSL2, not in PowerShell. Use Ubuntu 24.04; Ubuntu 22.04 ships Python 3.10, below the 3.11

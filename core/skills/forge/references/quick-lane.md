@@ -1,8 +1,6 @@
 # forge quick — the bug lane
 
-For bugs and small fixes: **≤3 files, no migration, no infra, no downstream-product
-contract change.** Replaces the old `lite` mode. Everything runs at real quality; what's
-cut is ceremony that doesn't pay for itself on a small change.
+The default lane for clear changes with no architecture, data-model, or downstream API-contract change.
 
 ## Candidacy — decided by the triage, before any code
 
@@ -10,7 +8,7 @@ The triage's `lane_verdict` is the gate. `ESCALATE_TO_DEV` is a success, not a f
 say so in one line, hand the user the triage, and stop. Never widen a quick run to fit a
 big change. Reasons that force escalation:
 
-- more than 3 files, or a file the triage couldn't fully read
+- an overhaul, or a file the triage couldn't fully read
 - a migration, a settings/infra change, a new dependency
 - a contract change visible to another product or service
 - root cause not established with evidence (then the answer is "investigate more", not "guess")
@@ -23,10 +21,11 @@ big change. Reasons that force escalation:
 | Ticket | configured ticket workflow | Use it only when the installation supplies one |
 | Plan → plan artifact | main session | short: the triage restated as a plan; **no Codex plan review** |
 | Confirm | user | skipped in `auto` |
-| Workflow | `forge-core.js`, `args.lane='quick'` | configured implementer → local gate → ship → optional sandbox + smoke → configured reviewer → up to two fix rounds with verification → handoff |
-| Bot triage | main session | When `stages.ff_review` is on, follow the overlay stage reference |
+| Workflow | `forge-core.js`, `args.lane='quick'` | `quick-impl` only when `fullySpecified` and planned source files are within `quickReviewThreshold`; otherwise `impl` → local gate → ship → optional sandbox + smoke → review/triage → up to three counted fix rounds → handoff |
+| Bot triage | Fable triage agent | When `stages.ff_review` is on, verify filtered bot comments before fixes |
 
-One configured general reviewer runs, so there is no judge. Lenses still run when paths match.
+The Fable general reviewer also runs when changed source files exceed `quickReviewThreshold` (default 8).
+Lenses still run when paths match.
 Codex roles use the prompt contract and budgets in `forge.config.json`. Claude roles use the
 model and effort from the top-level `roles` block.
 

@@ -6,8 +6,15 @@ requires = ["gh"]
 claude_md_fragment = "CLAUDE.fragment.md"
 settings_fragment = "settings.fragment.json"
 
+[[questions]]
+id = "token_env"
+prompt = "GitHub MCP token environment variable"
+type = "string"
+default = "GITHUB_MCP_TOKEN"
+
 [[mcp]]
 name = "github"
 transport = "http"
 url = "https://api.githubcopilot.com/mcp/"
 scope = "user"
+headers = { Authorization = "Bearer ${{{answers.github.token_env}}}" }

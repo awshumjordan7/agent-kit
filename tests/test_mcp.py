@@ -36,6 +36,9 @@ if args[:2] == ["mcp", "get"]:
     print("Environment:")
     for key, value in server.get("env", {}).items():
         print(f"  {key}={value}")
+    print("Headers:")
+    for key, value in server.get("headers", {}).items():
+        print(f"  {key}: {value}")
     raise SystemExit(0)
 if args[:2] == ["mcp", "remove"]:
     state.pop(name, None)
@@ -45,10 +48,14 @@ if args[:2] == ["mcp", "add"]:
     transport = args[args.index("--transport") + 1]
     scope = args[args.index("--scope") + 1]
     env = {}
+    headers = {}
     for index, value in enumerate(args):
         if value == "--env":
             key, env_value = args[index + 1].split("=", 1)
             env[key] = env_value
+        if value == "--header":
+            key, header_value = args[index + 1].split(": ", 1)
+            headers[key] = header_value
     if transport == "stdio":
         separator = args.index("--")
         name = args[separator - 1]
@@ -58,6 +65,7 @@ if args[:2] == ["mcp", "add"]:
             "command": args[separator + 1],
             "args": args[separator + 2:],
             "env": env,
+            "headers": headers,
         }
     else:
         name = args[-2]
@@ -66,6 +74,7 @@ if args[:2] == ["mcp", "add"]:
             "scope": scope,
             "url": args[-1],
             "env": env,
+            "headers": headers,
         }
     if name in state:
         print("already exists", file=sys.stderr)
@@ -162,6 +171,51 @@ def test_changed_scope_is_removed_from_old_scope(fake_cli, tmp_path, monkeypatch
 
     assert register_servers((_plan("tool", scope="project"),), home=DEFAULT_HOME) == ("add demo",)
     assert "mcp remove demo --scope user" in log.read_text(encoding="utf-8")
+
+
+def test_retired_declared_server_is_removed_and_undeclared_server_is_untouched(
+    fake_cli, tmp_path, monkeypatch
+):
+    state = tmp_path / "state.json"
+    log = tmp_path / "log.txt"
+    state.write_text(
+        json.dumps(
+            {
+                "retired": {"transport": "stdio", "command": "old", "args": []},
+                "unmanaged": {"transport": "stdio", "command": "keep", "args": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FAKE_MCP_STATE", str(state))
+    monkeypatch.setenv("FAKE_MCP_LOG", str(log))
+    fake_cli("claude", FAKE_CLAUDE)
+
+    actions = register_servers((), home=DEFAULT_HOME, retire=("retired",))
+
+    assert actions == ("remove retired",)
+    remaining = json.loads(state.read_text(encoding="utf-8"))
+    assert "retired" not in remaining
+    assert "unmanaged" in remaining
+
+
+def test_http_headers_are_recorded_by_claude(fake_cli, tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    log = tmp_path / "log.txt"
+    monkeypatch.setenv("FAKE_MCP_STATE", str(state))
+    monkeypatch.setenv("FAKE_MCP_LOG", str(log))
+    fake_cli("claude", FAKE_CLAUDE)
+    server = McpServer(
+        "github",
+        "http",
+        "user",
+        headers={"Authorization": "Bearer ${GITHUB_MCP_TOKEN}"},
+        url="https://example.invalid/mcp",
+    )
+
+    register_servers((McpPlan(server, {}),), home=DEFAULT_HOME)
+
+    assert "--header Authorization: Bearer ${GITHUB_MCP_TOKEN}" in log.read_text(encoding="utf-8")
 
 
 def test_real_cli_capture_parses_like_the_fake():

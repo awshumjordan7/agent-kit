@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aisetup.compose import compose_tree
 from aisetup.manifest import load_overlay_manifest
 
 
@@ -31,6 +34,41 @@ class RepoStatus:
             },
             separators=(",", ":"),
         )
+
+
+@dataclass(frozen=True)
+class ContentDrift:
+    path: str
+    source: str
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def check_content(profile: dict[str, Any], home: Path) -> list[ContentDrift]:
+    with tempfile.TemporaryDirectory(prefix="agent-kit-check-") as temporary:
+        composed = Path(temporary) / "claude"
+        result = compose_tree(profile, composed)
+        drifts: list[ContentDrift] = []
+        agent_overrides = profile.get("agents", {})
+        for relative in result.files:
+            expected = composed / relative
+            installed = home / relative
+            if installed.is_file() and _sha256(installed) == _sha256(expected):
+                continue
+            agent_name = Path(relative).stem if relative.startswith("agents/") else ""
+            source = (
+                "profile.agents override"
+                if agent_name and agent_name in agent_overrides
+                else "unknown"
+            )
+            drifts.append(ContentDrift(relative, source))
+        return drifts
 
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:

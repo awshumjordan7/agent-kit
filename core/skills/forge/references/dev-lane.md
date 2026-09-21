@@ -1,7 +1,7 @@
 # forge dev — the feature lane
 
-For multi-file, multi-phase work. Input is a spec — usually `spec.md` from the
-`brainstorming` skill — or an existing `plan.md`.
+For overhauls, architecture/data-model/API-contract changes, or work with a spec or plan. A clear ask may skip
+the spec phase, but the Codex plan review still runs.
 
 ## What runs
 
@@ -11,8 +11,8 @@ For multi-file, multi-phase work. Input is a spec — usually `spec.md` from the
 | Plan → `plan.md` + plan artifact | main session | phases, files per phase, test strategy, acceptance criteria, `sandbox_tier`, expected lenses, checkpoints at dependency boundaries (`## Checkpoints`). For every access rule, state who, the permission atom, the target tenant, and the status in one sentence; get an explicit yes and store it in `accessRules[]`. Plain English in the artifact |
 | Plan review | configured reviewer | **one round** with the `plan-review` role from `forge.config.json`. Build one prompt file containing the plan, recon, excerpt pack, and the main session's `file:line` checks. Use `codex-exec.sh --role plan-review` when the provider is Codex; otherwise spawn a `reviewer` agent with the configured model and the same prompt. One round; CRITICAL findings are folded in and restated to the user. Fold findings into the plan; note what was rejected and why. Multi-repo: one repo at a time |
 | Confirm | user | skipped in `auto` |
-| Workflow | `forge-core.js`, `args.lane='dev'` | plan with no `## Checkpoints`: implement → gate (`scripts/gate.sh` run by a Haiku `gate` agent: lint, typecheck, migrations, targeted tests, Semgrep; JSON also written to `<runDir>/gate-<label>.json`; checkpoint diffs to `gate-<label>.diff`; an optional per-repo `parity` list in the gate config runs extra commands that mirror CI (pinned linter version, foreign HOME, missing optional binaries, workflow lint); agent-kit uses `tests/ci_parity.sh`) → ship → sandbox + smoke → **review panel** → judge if needed → up to two Codex fix rounds with verification → handoff. Each checkpoint segment starts a fresh Codex implementation thread; gate and spot fixes resume that segment's thread. Final review fixes use their own `codex-fix.thread`. Pass `planText` in args, else one `read-plan` Sonnet agent reads it; `planPath` selects the plan file per repo (default plan.md) |
-| Bot triage | main session | When `stages.ff_review` is on, follow `references/stages/ff_review.md` |
+| Workflow | `forge-core.js`, `args.lane='dev'` | implement → full gate → ship → optional sandbox + smoke → **review panel** → Fable triage → judge if needed → up to three counted fix rounds (tests-only gates) → one final full gate → handoff. `read-plan`, changed-file context, and status merges are Haiku wrappers around deterministic scripts. Labelled headings such as `### Phase A1` are supported. |
+| Bot triage | Fable triage agent | When `stages.ff_review` is on, follow `references/stages/ff_review.md` and verify filtered comments before fixes |
 
 ## The review panel
 
@@ -33,8 +33,8 @@ severity. The fixer works from those, not from prose.
 `[cp<n>] <severity> <file:line> <summary>`) is inlined into this panel's context under
 "Known from checkpoint reviews (verify fixed or still open; do not re-report as new)".
 
-After the Workflow, manual fixes have the same cap: two consecutive rounds per segment. On the
-third gate failure, hand Jordan every failure and stop. Use one Fable review per bundle of rounds,
+After the Workflow, manual fixes have the same cap of three counted rounds. Zero-file rounds do not count, but
+two consecutive zero-file rounds stop. Use one Fable review per bundle of rounds,
 not one per round. Review again only past ~150 unreviewed changed lines or after a CRITICAL/HIGH
 fix lands. Codex still verifies every fix.
 
