@@ -115,13 +115,13 @@ def test_sandbox_checks_use_configured_repo_roots(repo_root):
     result = _harness(
         repo_root,
         "sandbox-checks",
-        {"repos": {"frontend": "platform-ui", "backend": "platform-api"}},
+        {"repos": {"frontend": "web-app", "backend": "api-server"}},
     )
 
     assert result["backend"].startswith(
-        "cd /app/platform-api && { [ -f /app/env.sh ]"
+        "cd /app/api-server && { [ -f /app/env.sh ]"
     )
-    assert result["frontend"].startswith("cd /app/platform-ui &&")
+    assert result["frontend"].startswith("cd /app/web-app &&")
 
 
 def test_dry_run_records_triage_tests_only_gates_and_full_final_gate(repo_root):
