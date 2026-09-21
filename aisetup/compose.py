@@ -238,10 +238,15 @@ def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
                 source = backup / relative
                 target = home / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if source.is_dir():
-                    shutil.copytree(source, target, copy_function=shutil.copy2)
+                if source.is_dir() and not source.is_symlink():
+                    shutil.copytree(
+                        source,
+                        target,
+                        copy_function=shutil.copy2,
+                        symlinks=True,
+                    )
                 else:
-                    shutil.copy2(source, target)
+                    shutil.copy2(source, target, follow_symlinks=False)
             sys.stdout.write(f"preserved {len(preserved)} unmanaged path(s) from {backup}\n")
         _install_auxiliary(auxiliary, home.parent)
         return ComposeResult(result.files, result.settings, backup)

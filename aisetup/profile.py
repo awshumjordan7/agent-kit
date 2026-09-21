@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from aisetup.layers import ResolvedLayers
 from aisetup.manifest import ModuleManifest, OverlayManifest
 from aisetup.merge import deep_merge
 
@@ -253,6 +254,19 @@ def load_recommended_profile(repo_root: Path) -> tuple[dict[str, Any], dict[str,
     validate_profile(profile)
     _expand_profile_paths(profile)
     return profile, document.get("recommendations", {})
+
+
+def apply_overlay_question_defaults(profile: dict[str, Any], resolved: ResolvedLayers) -> None:
+    for layer in resolved.layers:
+        if layer.overlay is None:
+            continue
+        for question in layer.overlay.questions:
+            answer = f"overlay.{question.id}"
+            if answer in profile["answers"]:
+                continue
+            if question.default is None:
+                raise ProfileError(f"profile.answers is missing required {answer}")
+            profile["answers"][answer] = question.default
 
 
 def _parse_answer(raw: str, default: str | bool | int, answer_type: str) -> str | bool | int:

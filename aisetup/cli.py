@@ -23,6 +23,7 @@ from aisetup.manifest import ManifestError, load_layer_manifest, load_module_man
 from aisetup.mcp import McpError, plans_for_layers, register_servers
 from aisetup.profile import (
     ProfileError,
+    apply_overlay_question_defaults,
     build_interactive_profile,
     load_profile,
     write_profile,
@@ -104,9 +105,12 @@ def _install(args: argparse.Namespace) -> int:
                 REPO_ROOT,
                 _module_manifests(REPO_ROOT),
                 yes=args.yes,
+                input_fn=input,
             )
             profile["layers"]["local"] = str(args.layers_root / "local")
         resolved = resolve_layers(profile)
+        if args.profile:
+            apply_overlay_question_defaults(profile, resolved)
         check_dependencies(resolved.requirements)
     except MissingDependencyError as error:
         print(format_missing_dependencies(error), file=sys.stderr)

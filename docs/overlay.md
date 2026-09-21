@@ -30,6 +30,8 @@ extend the render context. Stage instructions belong in `references/stages/<stag
 
 Overlay `[[questions]]` and `[[mcp]]` entries use the same fields and validation as module entries. Question
 answers use the `overlay.<question id>` key in profiles and `answers.overlay.<question id>` in templates.
+Missing `answers.overlay.<question id>` values use the question default. If no default exists, profile validation
+fails and install exits with status 4.
 
 Keep the private denylist in the overlay repository and configure the same list as the public repository's
 `DENYLIST` secret. Before merging a fork pull request, run the scan locally because fork events cannot read secrets.

@@ -16,7 +16,7 @@ class Question:
     id: str
     prompt: str
     type: str
-    default: str | bool | int
+    default: str | bool | int | None
     secret: bool = False
     choices: tuple[str, ...] = ()
 
@@ -166,7 +166,9 @@ def _templates(data: Any, path: Path) -> tuple[Template, ...]:
     return tuple(Template(item.src, item.dest) for item in _copies(data, "templates", path))
 
 
-def _questions(data: Any, path: Path) -> tuple[Question, ...]:
+def _questions(
+    data: Any, path: Path, *, allow_missing_default: bool = False
+) -> tuple[Question, ...]:
     if not isinstance(data, list):
         raise ManifestError(f"{path}: questions must be an array of tables")
     questions: list[Question] = []
@@ -180,11 +182,16 @@ def _questions(data: Any, path: Path) -> tuple[Question, ...]:
             not isinstance(item.get("id"), str)
             or not isinstance(item.get("prompt"), str)
             or question_type not in {"string", "bool", "int", "choice"}
-            or not isinstance(default_value, (str, bool, int))
+            or not (
+                isinstance(default_value, (str, bool, int))
+                or (allow_missing_default and default_value is None)
+            )
         ):
             raise ManifestError(f"{path}: invalid question")
         choices = _strings(item.get("choices", []), "choices", path)
-        if question_type == "choice" and (not choices or default_value not in choices):
+        if question_type == "choice" and (
+            not choices or (default_value is not None and default_value not in choices)
+        ):
             raise ManifestError(f"{path}: choice questions need choices containing the default")
         questions.append(
             Question(
@@ -287,7 +294,7 @@ def load_overlay_manifest(path: Path) -> OverlayManifest:
         data.get("requires_agent_kit"),
         data.get("claude_md_fragment"),
         data.get("settings_fragment"),
-        _questions(data.get("questions", []), path),
+        _questions(data.get("questions", []), path, allow_missing_default=True),
         _mcp_servers(data.get("mcp", []), path),
         _copies(data.get("files", []), "files", path),
         _templates(data.get("templates", []), path),

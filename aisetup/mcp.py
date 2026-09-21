@@ -10,6 +10,7 @@ from typing import Any
 
 from aisetup.layers import ResolvedLayers
 from aisetup.manifest import McpServer
+from aisetup.paths import is_default_claude_home
 from aisetup.render import RenderError, render_text
 
 
@@ -149,7 +150,9 @@ def _scope(output: str) -> str | None:
     return _normalize_scope(match.group(1)) if match else None
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str], *, display_command: str | None = None
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
@@ -159,14 +162,15 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise McpError(f"MCP command failed: {shlex.join(command)}: {error}") from error
+        command_text = display_command or shlex.join(command)
+        raise McpError(f"MCP command failed: {command_text}: {type(error).__name__}") from None
 
 
 def register_servers(
     plans: tuple[McpPlan, ...], *, home: Path, dry_run: bool = False
 ) -> tuple[str, ...]:
     commands = tuple(shlex.join(add_command(plan, redact=True)) for plan in plans)
-    if home.expanduser() != Path("~/.claude").expanduser():
+    if not is_default_claude_home(home):
         names = ", ".join(plan.server.name for plan in plans)
         sys.stdout.write(
             f"mcp: skipped {len(plans)} server(s) because --home is not the default ({names})\n"
@@ -192,7 +196,7 @@ def register_servers(
                 raise McpError(
                     removed.stderr.strip() or f"could not remove MCP server {server.name}"
                 )
-        added = _run(add_command(plan))
+        added = _run(add_command(plan), display_command=command)
         if added.returncode != 0:
             raise McpError(added.stderr.strip() or f"could not add MCP server {server.name}")
         actions.append(f"add {server.name}")
