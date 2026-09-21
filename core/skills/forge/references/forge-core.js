@@ -501,7 +501,7 @@ const STUBS = {
 
 const decisions = []
 const dryRunJournal = []
-export const __test = {
+const __test = {
   parseCheckpoints,
   plannedSourceFiles,
   partitionTriage,
