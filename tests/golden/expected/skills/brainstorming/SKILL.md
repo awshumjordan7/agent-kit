@@ -2,7 +2,7 @@
 name: brainstorming
 description: >
   Structured discussion skill that produces a spec document before planning begins.
-  Guides one-question-at-a-time exploration, grounds the design in the actual codebase,
+  Guides question-by-question exploration (batching independent questions), grounds the design in the actual codebase,
   presents 2-3 approaches with trade-offs, includes test strategy, and outputs a structured
   spec. Use whenever: "brainstorm", "discuss this feature", "let's design", "new feature",
   "I want to build", "explore approaches", "what do you think about building", "let's think
@@ -20,7 +20,7 @@ exploration and design — it produces a spec, not code.
 
 ## Phase 1: Understand
 
-Explore the problem one question at a time — each question builds on the previous answer.
+Explore the problem in small batches: ask two or three questions per turn when they are independent, one at a time when the next question depends on the answer.
 
 **Ground in the codebase first.** When the feature touches existing code, before (or
 alongside) questioning, map the current state instead of assuming it: spawn one or more
@@ -37,7 +37,7 @@ Areas to explore (follow the conversation, not all at once):
 - **Constraints** — performance, backwards compatibility, timeline, technical debt, infra.
 - **Success criteria** — how do we know this is done and working?
 
-Rules: ask ONE question at a time and wait for the answer; summarize understanding every 2-3
+Rules: ask at most three independent questions per turn and wait for the answers; summarize understanding every 2-3
 answers to confirm alignment; on a vague answer, ask a specific follow-up rather than moving on
 with ambiguity; stop exploring once you have enough to propose approaches (usually 3-6 questions).
 

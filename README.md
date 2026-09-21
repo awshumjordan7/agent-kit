@@ -62,3 +62,9 @@ Use Git's `includeIf` to select identity by directory. Use an SSH host alias suc
 
 Open a pull request with a focused change. Run Ruff and the targeted tests named by the change. Public changes must
 pass the token scanner; maintainers also run the private denylist before merging external pull requests.
+
+### CI parity
+
+Run `bash tests/ci_parity.sh` to reproduce the GitHub runner locally before pushing. It runs the pinned Ruff
+check, lints workflow YAML with actionlint (skipped if Docker is unavailable), runs the golden tests under a
+foreign `$HOME`, and runs the full suite with no `claude` binary on `PATH`.

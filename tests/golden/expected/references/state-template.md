@@ -12,6 +12,7 @@ Read this file first. Do not read plan.md, the Codex logs, or other run-dir file
 - plan: <path>   decisions: <path>   STATUS.json: <path>   captures: <path>
 - PR(s): <url>   branch: <name>   base: <name>   worktree: <path or "main checkout">
 - sandbox: <id> preview <url> (details in sandbox.json)
+- Workflow: run id <wf_...>, session dir <~/.claude/projects/<project>/<sessionId>> (a successor copies the run record and journal from here before resuming)
 - optional review stage: <status or NOT configured>
 ## Do not redo
 - <verified facts a new session must not re-derive>

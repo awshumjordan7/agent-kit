@@ -461,6 +461,11 @@ kill_codex() {
     wait "$1" 2>/dev/null || true
 }
 run_codex() {
+    # semgrep's OCaml TLS client cannot read the macOS keychain inside the Codex sandbox and aborts with
+    # "ca-certs: empty trust anchors" unless a PEM bundle path is exported.
+    if [[ -z "${SSL_CERT_FILE:-}" && -r /etc/ssl/cert.pem ]]; then
+        export SSL_CERT_FILE=/etc/ssl/cert.pem
+    fi
     if [ "$1" = "start" ]; then
         codex exec --sandbox "$SANDBOX" "${ARGS[@]}" "$(cat "$SENT_PROMPT")" \
             </dev/null >"$LOG" 2>"$LOG.stderr" &

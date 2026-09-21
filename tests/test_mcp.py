@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 from aisetup.manifest import McpServer
-from aisetup.mcp import McpPlan, register_servers
+from aisetup.mcp import McpPlan, _scope, register_servers
 
 FAKE_CLAUDE = r"""
 import json
@@ -130,3 +132,13 @@ def test_changed_scope_is_removed_from_old_scope(fake_cli, tmp_path, monkeypatch
 
     assert register_servers((_plan("tool", scope="project"),)) == ("add demo",)
     assert "mcp remove demo --scope user" in log.read_text(encoding="utf-8")
+
+
+def test_real_cli_capture_parses_like_the_fake():
+    capture = (Path(__file__).parent / "fixtures/captures/claude-mcp-get-user.txt").read_text(
+        encoding="utf-8"
+    )
+    assert _scope(capture) == "user"
+    labels = set(re.findall(r"^\s+([A-Za-z ]+):", capture, re.MULTILINE))
+    fake_labels = set(re.findall(r'print\(f?"([A-Za-z ]+):', FAKE_CLAUDE))
+    assert labels <= fake_labels | {"Status"}

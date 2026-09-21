@@ -44,6 +44,7 @@ session picks up from its weakest entry rather than from scratch; the handoff re
 - Per-agent timeouts bound wall-clock; the Workflow runtime has no clock of its own.
 - Isolated failures: a lens or smoke agent that dies becomes a `FAIL` row in the handoff, not an aborted run.
 - Workflow resume: re-running after a crash skips completed stages.
+- Resume is same-session only. A successor session must first copy `<oldSession>/workflows/<runId>.json` and `<oldSession>/subagents/workflows/<runId>/` from `~/.claude/projects/<project>/` into its own session directory. A cached agent result whose `error` is non-empty replays as a failure; delete its `started` and `result` lines from `journal.jsonl` (back the file up first) so only that agent re-runs.
 
 ## How it ends
 

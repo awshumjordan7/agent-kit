@@ -84,6 +84,7 @@ const PARAMS = {
   dryRun: args.dryRun === true,
   dryRunFailGate: typeof args.dryRunFailGate === 'string' ? args.dryRunFailGate : null,
   dryRunFindings: Number.isInteger(args.dryRunFindings) && args.dryRunFindings > 0 ? args.dryRunFindings : 0,
+  ghEnvUnset: Array.isArray(args.ghEnvUnset) ? args.ghEnvUnset : [],
   forgeConfig: args.forgeConfig && typeof args.forgeConfig === 'object' ? args.forgeConfig : null,
 }
 
@@ -444,15 +445,30 @@ const codexWrapper = `You are a thin Sonnet wrapper around the OpenAI Codex CLI.
 Run the codex-exec.sh start/resume command; it returns immediately. Then run \`bash ${CODEX_SH} watch --log <log> --out <out> --max-wait 2400\` and treat exit 75 (stalled) as a failure to report with the last 20 log lines.
 Use only ${CODEX_SH}. Determine start versus resume with test -f on the specified thread file. Call watch in the foreground until it exits 0 or terminally fails. watch exits 10 with WATCH_WAITING while Codex is still working, and a single call can also hit the tool timeout: in either case call watch again immediately and keep doing so until it prints WATCH_DONE (exit 0) or a terminal failure (any other non-zero exit; WATCH_FAILED carries the helper's own exit code and message). Never return while Codex is still running, and never return an in-progress note as a result: the stage result must describe finished work. Verify CODEX_OK and run test -f on the thread file after a start. The helper prepends the Codex prompt contract and enforces the role's tool-call and output-byte budget, so put every input inline in the prompt file and never add "read file X in full" instructions. CODEX_BUDGET_EXCEEDED (exit 76), CODEX_NO_CREDITS (77), and CODEX_LOCK_TIMEOUT (78) are terminal: do not retry, return codexInvoked=true with the helper's message in error. A stalled zero-progress resume may be recovered by the helper, so every prompt you write must be self-contained. ${dryRunInstruction} Use only Bash, Read, Write, and StructuredOutput: never call ToolSearch, never load Monitor or any other deferred tool, and never end a turn with an acknowledgment such as "Tool loaded" or a status note; watch mode is the only wait you need, and your turn ends only with a complete StructuredOutput that describes a finished Codex run.`
 
-// A wrapper that returns codexInvoked=false without a thread file never started Codex, so one
-// more attempt has nothing to undo. A start that did create a thread may still be running under
-// the helper's lock, and a null result means the spawn cap was hit; neither is retried.
+// Normalize wrapper errors and retry a real error once before assertCodex throws. A Codex process
+// still holding the helper lock surfaces as CODEX_LOCK_TIMEOUT and throws after that retry.
+// A null result means the spawn cap was hit and is not retried.
 async function codexAgent(prompt, opts) {
-  const result = await agentT('codexWrap', prompt, opts)
+  let result = await agentT('codexWrap', prompt, opts)
+  if (result) result.error = normalizedCodexError(result.error)
+  if (result && result.codexInvoked === true && result.error) {
+    await decide(`${opts.label} wrapper returned an error (${result.error.slice(0, 200)}); retrying once.`)
+    result = await agentT('codexWrap', prompt, { ...opts, label: `${opts.label}-error-retry` })
+    if (result) result.error = normalizedCodexError(result.error)
+    return result
+  }
   if (result === null || result.codexInvoked === true) return result
   if (result.threadMode === 'start' && result.threadExists === true) return result
   await decide(`${opts.label} wrapper returned without invoking Codex (${String(result.error || 'no error text').slice(0, 200)}); retrying once.`)
-  return agentT('codexWrap', prompt, { ...opts, label: `${opts.label}-retry` })
+  result = await agentT('codexWrap', prompt, { ...opts, label: `${opts.label}-retry` })
+  if (result) result.error = normalizedCodexError(result.error)
+  return result
+}
+
+function normalizedCodexError(error) {
+  if (error === null || error === undefined) return ''
+  const normalized = String(error).trim()
+  return normalized === '""' || normalized === "''" ? '' : normalized
 }
 
 function assertCodex(result, where) {
@@ -465,8 +481,9 @@ function assertCodex(result, where) {
   }
   // A wrapper that gave up waiting reports codexInvoked=true with an explanatory error while
   // Codex is still running; downstream stages would then run against an unfinished tree.
-  if (typeof result.error === 'string' && result.error.trim()) {
-    throw new Error(`Codex assertion failed at ${where}: wrapper returned an error: ${result.error.slice(0, 300)}`)
+  const error = normalizedCodexError(result.error)
+  if (error) {
+    throw new Error(`Codex assertion failed at ${where}: wrapper returned an error: ${error.slice(0, 300)}`)
   }
   return true
 }
@@ -570,11 +587,15 @@ function segmentThread(index) {
   return index === 0 ? CODEX_IMPL_THREAD : `${PARAMS.runDir}/codex-impl-cp${index + 1}.thread`
 }
 
+function fullTestPromptInstruction() {
+  return `With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for ${PARAMS.projectDir}, and name its exact tests command in the Codex prompt under FULL TEST COMMAND. Tell Codex to run that full test command before returning; the gate re-runs it, and Codex's run is the first line of defense. Codex must include the test summary line in summary and never report tests as intentionally skipped.`
+}
+
 function implement(segment, index, total, pendingCheckpointLines = [], previousResult = null) {
   const implementationRole = PARAMS.lane === 'quick' ? 'quick-impl' : 'impl'
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
     const findings = pendingCheckpointLines.length ? JSON.stringify(pendingCheckpointLines) : '[]'
-    return agentT('implementer', `Implement this confirmed Forge plan segment in ${PARAMS.projectDir}. Never commit or ship. Run only the quick checks required by the plan. Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN SEGMENT\n${planPhases(PARAMS.planText, segment)}\n\nCHECKPOINT FINDINGS\n${findings}`,
+    return agentT('implementer', `Implement this confirmed Forge plan segment in ${PARAMS.projectDir}. Never commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped. Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN SEGMENT\n${planPhases(PARAMS.planText, segment)}\n\nCHECKPOINT FINDINGS\n${findings}`,
       { label: index === 0 ? 'implement' : `implement-cp${index + 1}`, phase: 'Implement', schema: IMPL_RESULT, agentType: 'implementer' })
   }
   const indexedPaths = total > 1 || Boolean(segment.reason)
@@ -593,7 +614,7 @@ function implement(segment, index, total, pendingCheckpointLines = [], previousR
     : ''
   const mode = index === 0 ? `test -f ${threadFile} && MODE=resume || MODE=start` : 'MODE=start'
   return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
-Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading.${scope} ${previous}Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. Before returning, run ruff check, ruff format --check, makemigrations --check, and semgrep on the files touched, skipping Semgrep when missing; fix what they report. Do not run pytest or anything that needs Postgres or Redis, because the Codex sandbox has no network access, localhost included, so those runs are the gate's job. The gate remains the authority. Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
+Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading.${scope} ${previous}Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. Before returning, run ruff check, ruff format --check, makemigrations --check, and semgrep on the files touched, skipping Semgrep when missing; fix what they report. Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
 ${persistFindings}Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${promptPath} --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${CODEX_IMPL_FLAGS} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
   { label: index === 0 ? 'implement' : `implement-cp${index + 1}`, phase: 'Implement', schema: CODEX_RESULT })
 }
@@ -606,9 +627,19 @@ function localGate(label = 'gate', gatePhase = 'Gate', files = []) {
 }
 
 function gateFindings(gate) {
-  return (gate.failures || []).map(failure => ({
-    file: '', line: 0, severity: 'HIGH', claim: `${failure.tool}: ${failure.summary}`, fix_hint: 'Resolve this gate failure only.',
-  }))
+  return (gate.failures || []).map(failure => {
+    const locations = [...String(failure.summary || '').matchAll(/(\S+?):(\d+)\b/g)]
+      .filter(match => !match[1].includes('://'))
+    const location = locations[locations.length - 1]
+    return {
+      file: location ? location[1] : '',
+      line: location ? Number(location[2]) : 0,
+      severity: 'HIGH',
+      claim: `${failure.tool}: ${failure.summary}`,
+      fix_hint: 'Resolve this gate failure only.',
+      source: 'gate',
+    }
+  })
 }
 
 async function gateWithFixes(label, files, threadFile, context, phaseLabel) {
@@ -907,7 +938,8 @@ function unresolvedAfterVerification(items, verify) {
     const key = JSON.stringify([finding.file, finding.line, finding.claim])
     if (!seen.has(key)) {
       seen.add(key)
-      unresolved.push(finding)
+      const original = items.find(item => JSON.stringify([item.file, item.line, item.claim]) === key)
+      unresolved.push(original && original.source ? { ...finding, source: original.source } : finding)
     }
   }
   return unresolved
@@ -918,7 +950,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
   const implementationRole = PARAMS.lane === 'quick' ? 'quick-impl' : 'impl'
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(items)}. Verify each against current code first. Do not commit or ship. Run only quick checks that need no services.`,
+    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(items)}. Verify each against current code first. Do not commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped.`,
       { label, phase: fixPhase, schema: IMPL_RESULT, agentType: 'implementer' })
     if (!result || result.error) return null
     return { fixed: items.map(item => item.claim), couldNotFix: [], touchedFiles: result.filesChanged, diff: '', notes: result.summary }
@@ -927,7 +959,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
     ? 'MODE=start'
     : `test -f ${threadFile} && MODE=resume || MODE=start`
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. Before returning, run ruff check, ruff format --check, makemigrations --check, and semgrep on the files touched, skipping Semgrep when missing; fix what they report. Do not run pytest or anything that needs Postgres or Redis, because the Codex sandbox has no network access, localhost included, so those runs are the gate's job. The gate remains the authority. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
+Read ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. Before returning, run ruff check, ruff format --check, makemigrations --check, and semgrep on the files touched, skipping Semgrep when missing; fix what they report. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
 Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${CODEX_IMPL_FLAGS} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
   if (!assertCodex(result, label)) return null
@@ -973,7 +1005,11 @@ async function converge(panel, context) {
   const verify = await verifyFixes(unresolved, fix, 1)
   if (!assertVerification(verify, 'verify-1')) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: false, gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate) }
   unresolved = unresolvedAfterVerification(unresolved, verify)
-  if (!gate || !gate.passed) unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+  if (gate && gate.passed) {
+    unresolved = unresolved.filter(finding => finding.source !== 'gate')
+  } else {
+    unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+  }
   rounds.push({ round: 1, fix, gate, verify })
   await writeStatus({
     rounds: { fix: 1 },
@@ -989,7 +1025,11 @@ async function converge(panel, context) {
   const verify2 = await verifyFixes(unresolved, fix2, 2)
   if (!assertVerification(verify2, 'verify-2')) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: false, gatePassed: Boolean(gate2 && gate2.passed), gate: gate2, gateRan: Boolean(gate2) }
   unresolved = unresolvedAfterVerification(unresolved, verify2)
-  if (!gate2 || !gate2.passed) unresolved = [...unresolved, ...gateFindings(gate2 || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+  if (gate2 && gate2.passed) {
+    unresolved = unresolved.filter(finding => finding.source !== 'gate')
+  } else {
+    unresolved = [...unresolved, ...gateFindings(gate2 || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+  }
   rounds.push({ round: 2, fix: fix2, gate: gate2, verify: verify2 })
   await writeStatus({
     rounds: { fix: 2 },
@@ -1006,13 +1046,20 @@ function stagingRules(files) {
   return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '*.env*' file, or any file outside that list even if 'git status' shows it modified or untracked.`
 }
 
+function ghEnvironmentInstruction() {
+  const names = PARAMS.ghEnvUnset.map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+  if (!names.length) return ''
+  const prefix = names.map(name => `-u ${name}`).join(' ')
+  return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
+}
+
 function ship(existing = null, files = []) {
   const dependency = PARAMS.dependsOnGate
     ? `Before creating a branch or pushing, poll ${PARAMS.dependsOnGate} every 60 seconds for up to 30 minutes. Continue only after it exists and its JSON field passed is true. Otherwise return {branch:"",prUrl:"",prNumber:0,repo:${JSON.stringify(PARAMS.repo)},skipped:true,reason:"waited on ${PARAMS.dependsOnGate}; API gate never passed"} without creating a branch, committing, pushing, or editing a PR. `
     : ''
   const prompt = existing
-    ? `${dependency}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. Include supplied ticket keys without inventing links: ${JSON.stringify(PARAMS.tickets)}. ${stagingRules(files)}`
-    : `${dependency}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. Include supplied ticket keys without inventing links: ${JSON.stringify(PARAMS.tickets)}. ${stagingRules(files)}`
+    ? `${dependency}${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. Include supplied ticket keys without inventing links: ${JSON.stringify(PARAMS.tickets)}. ${stagingRules(files)}`
+    : `${dependency}${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. Include supplied ticket keys without inventing links: ${JSON.stringify(PARAMS.tickets)}. ${stagingRules(files)}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1074,7 +1121,7 @@ Return sandboxId, loginUrl, previewUrl, mode, testsPassed, skipped, reason, summ
 }
 
 function postSandboxMarker(shipResult, sandbox) {
-  return agentT('shipper', `Append the pull-request marker to the PR body exactly once on ${shipResult.prUrl}. Read the current body with \`gh pr view ${shipResult.prNumber} --repo ${shipResult.repo} --json body -q .body\`. ` +
+  return agentT('shipper', `${ghEnvironmentInstruction()}Append the pull-request marker to the PR body exactly once on ${shipResult.prUrl}. Read the current body with \`gh pr view ${shipResult.prNumber} --repo ${shipResult.repo} --json body -q .body\`. ` +
   `If the body contains exactly \`<!-- forge-sandbox: ${sandbox.sandboxId} -->\`, do nothing. If it has a forge-sandbox marker with a different id, replace that entire marker line with exactly \`<!-- forge-sandbox: ${sandbox.sandboxId} -->\` and ensure exactly one marker remains. If it has no marker, append a blank line and that exact marker at the end. Save any changed whole body with gh pr edit --body-file. Never post a comment. Return {written: true} as before.`,
   { label: 'sandbox-marker', phase: 'Sandbox', agentType: 'shipper', schema: ACK_SCHEMA })
 }

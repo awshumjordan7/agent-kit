@@ -200,6 +200,10 @@ required = {"tests", "lint", "typecheck", "migrations", "testPathRules", "semgre
 if not isinstance(entry, dict) or not required.issubset(entry):
     print(f"gate.sh: incomplete gate config for repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
+parity = entry.get("parity", [])
+if not isinstance(parity, list) or not all(isinstance(command, str) for command in parity):
+    print(f"gate.sh: invalid parity config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
 
 worktree_mode = detected_raw == "true" or prefix_fallback or "/.claude/worktrees/" in repo_real
 selected = dict(entry)
@@ -304,6 +308,36 @@ run_tool() {
   printf '%s\t%s\t%s\t%s\n' "$tool" "$result" "$timeout_seconds" "$log" >>"$results_file"
 }
 
+run_parity() {
+  local index=$1
+  local command=$2
+  local timeout_seconds
+  local log="$run_dir/gate-$label-parity-$index.log"
+  local result
+  local summary_log="$state_prefix-parity-$index-summary.log"
+  timeout_seconds=$(timeout_for parity) || die 'gate.sh: cannot read parity timeout'
+  record_command "$command"
+  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$command") >"$log" 2>&1
+  result=$?
+  if ((result == 0)); then
+    printf '%s\t%s\t%s\t%s\n' parity 0 "$timeout_seconds" "$log" >>"$results_file"
+    return
+  fi
+  python3 - "$command" "$result" "$log" "$summary_log" <<'PY'
+import sys
+
+command, status, log_path, summary_path = sys.argv[1:]
+last = ""
+with open(log_path, encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if line.strip():
+            last = line.strip()
+with open(summary_path, "w", encoding="utf-8") as handle:
+    handle.write(f"{command} (exit {status}): {last[:160]}\n")
+PY
+  printf '%s\t%s\t%s\t%s\n' parity "$result" "$timeout_seconds" "$summary_log" >>"$results_file"
+}
+
 attempt_tool() {
   local tool=$1
   local command=$2
@@ -379,6 +413,22 @@ lint_command=$(config_value lint) || die 'gate.sh: cannot read lint config'
 typecheck_command=$(config_value typecheck) || die 'gate.sh: cannot read typecheck config'
 migrations_command=$(config_value migrations) || die 'gate.sh: cannot read migrations config'
 tests_command=$(config_value tests) || die 'gate.sh: cannot read tests config'
+parity_commands_file="$state_prefix-parity-commands.nul"
+python3 - "$entry_file" "$parity_commands_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    commands = json.load(handle).get("parity", [])
+with open(sys.argv[2], "wb") as handle:
+    for command in commands:
+        handle.write(command.encode("utf-8") + b"\0")
+PY
+(( $? == 0 )) || die 'gate.sh: cannot read parity config'
+parity_commands=()
+while IFS= read -r -d '' command; do
+  parity_commands+=("$command")
+done <"$parity_commands_file"
 semgrep_enabled=$(config_value semgrep) || die 'gate.sh: cannot read semgrep config'
 semgrep_config=$(config_value semgrepConfig auto) || die 'gate.sh: cannot read Semgrep config'
 diff_exclude=$(config_value diffExclude '[]') || die 'gate.sh: cannot read diff exclude config'
@@ -649,6 +699,14 @@ PY
       fi
     fi
   fi
+fi
+
+parity_index=0
+if ((${#parity_commands[@]})); then
+  for parity_command in "${parity_commands[@]}"; do
+    ((parity_index += 1))
+    run_parity "$parity_index" "$parity_command"
+  done
 fi
 
 result_path="$run_dir/gate-$label.json"
