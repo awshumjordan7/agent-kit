@@ -9,6 +9,12 @@ from pathlib import Path
 
 def merge_status(status: dict, patch: dict) -> dict:
     merged = dict(status)
+    if not isinstance(merged.get("criteria"), list):
+        merged["criteria"] = []
+    if not isinstance(merged.get("rounds"), dict):
+        merged["rounds"] = {}
+    if not isinstance(merged.get("open_findings"), list):
+        merged["open_findings"] = []
     for key, value in patch.items():
         if key == "criteria":
             criteria = [dict(item) for item in merged.get("criteria", [])]

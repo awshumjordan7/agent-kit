@@ -20,7 +20,7 @@ from aisetup.deps import (
 )
 from aisetup.layers import resolve_layers
 from aisetup.manifest import ManifestError, load_layer_manifest, load_module_manifest
-from aisetup.mcp import McpError, plans_for_layers, register_servers
+from aisetup.mcp import McpError, register_servers, registration_for_layers
 from aisetup.profile import (
     ProfileError,
     apply_overlay_question_defaults,
@@ -40,18 +40,6 @@ from aisetup.update import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _mcp_registration(resolved, profile):
-    plans = plans_for_layers(resolved, profile)
-    planned = {plan.server.name for plan in plans}
-    declared = {
-        server.name for manifest in resolved.module_manifests.values() for server in manifest.mcp
-    }
-    for layer in resolved.layers:
-        if layer.overlay is not None:
-            declared.update(server.name for server in layer.overlay.mcp)
-    return plans, tuple(sorted(declared - planned))
 
 
 def _path(value: str) -> Path:
@@ -147,7 +135,7 @@ def _install(args: argparse.Namespace) -> int:
             print("Merged settings:")
             print(json.dumps(result.settings, indent=2))
             print("MCP commands:")
-            plans, retire = _mcp_registration(resolved, profile)
+            plans, retire = registration_for_layers(resolved, profile)
             for command in register_servers(plans, home=args.home, dry_run=True, retire=retire):
                 print(command)
             for name in resolved.skipped_platforms:
@@ -157,7 +145,7 @@ def _install(args: argparse.Namespace) -> int:
         if not local_root.exists():
             shutil.copytree(REPO_ROOT / "core/templates/local", local_root)
         result = install_tree(profile, args.home)
-        plans, retire = _mcp_registration(resolved, profile)
+        plans, retire = registration_for_layers(resolved, profile)
         register_servers(plans, home=args.home, retire=retire)
         write_profile(args.layers_root / "profile.json", profile)
     except ComposeError as error:
@@ -235,7 +223,7 @@ def _update(args: argparse.Namespace) -> int:
         update_profile_commits(profile)
         result = install_tree(profile, args.home)
         resolved = resolve_layers(profile)
-        plans, retire = _mcp_registration(resolved, profile)
+        plans, retire = registration_for_layers(resolved, profile)
         register_servers(plans, home=args.home, retire=retire)
         write_profile(args.layers_root / "profile.json", profile)
     except (ProfileError, ManifestError) as error:

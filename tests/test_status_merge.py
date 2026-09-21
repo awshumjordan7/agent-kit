@@ -42,3 +42,30 @@ def test_status_merge_preserves_keys_and_merges_criteria_by_text(repo_root, tmp_
     assert result["criteria"] == [{"text": "works", "status": "pass", "note": "keep"}]
     assert result["rounds"] == {"review": 1, "fix": 2}
     assert result["open_findings"] == []
+
+
+def test_status_merge_normalizes_legacy_collection_shapes(repo_root, tmp_path):
+    status = tmp_path / "STATUS.json"
+    status.write_text(
+        json.dumps({"criteria": {}, "rounds": [], "open_findings": {}}),
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [
+            "python3",
+            str(repo_root / "core/skills/forge/scripts/status_merge.py"),
+            "--status",
+            str(status),
+            "--patch-json",
+            json.dumps({"rounds": {"fix": 1}}),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(status.read_text(encoding="utf-8"))
+
+    assert result["criteria"] == []
+    assert result["rounds"] == {"fix": 1}
+    assert result["open_findings"] == []

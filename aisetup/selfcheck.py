@@ -53,7 +53,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
     from aisetup.compose import ComposeError
     from aisetup.layers import resolve_layers
     from aisetup.manifest import ManifestError
-    from aisetup.mcp import McpError, _matches, plans_for_layers
+    from aisetup.mcp import McpError, _matches, registration_for_layers
     from aisetup.profile import ProfileError, load_profile
     from aisetup.update import check_content
 
@@ -157,13 +157,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
         else:
             try:
                 resolved = resolve_layers(profile)
-                plans = plans_for_layers(resolved, profile)
-                planned_names = {plan.server.name for plan in plans}
-                declared_names = {
-                    server.name
-                    for manifest in resolved.module_manifests.values()
-                    for server in manifest.mcp
-                }
+                plans, retire = registration_for_layers(resolved, profile)
                 problems: list[str] = []
                 for plan in plans:
                     completed = subprocess.run(
@@ -175,7 +169,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
                     )
                     if completed.returncode != 0 or not _matches(plan, completed.stdout):
                         problems.append(plan.server.name)
-                for name in sorted(declared_names - planned_names):
+                for name in retire:
                     completed = subprocess.run(
                         [claude, "mcp", "get", name],
                         capture_output=True,

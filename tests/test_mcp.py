@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aisetup.layers import resolve_layers
 from aisetup.manifest import McpServer
-from aisetup.mcp import McpPlan, _scope, plans_for_layers, register_servers
+from aisetup.mcp import McpPlan, _matches, _scope, plans_for_layers, register_servers
 from aisetup.profile import load_profile
 
 DEFAULT_HOME = Path("~/.claude").expanduser()
@@ -223,6 +223,18 @@ def test_real_cli_capture_parses_like_the_fake():
         encoding="utf-8"
     )
     assert _scope(capture) == "user"
+    plan = McpPlan(
+        McpServer(
+            "memory",
+            "stdio",
+            "user",
+            command="npx",
+            args=("-y", "@modelcontextprotocol/server-memory"),
+            headers={"Authorization": "Bearer ${TOKEN}"},
+        ),
+        {},
+    )
+    assert _matches(plan, capture)
     labels = set(re.findall(r"^\s+([A-Za-z ]+):", capture, re.MULTILINE))
     fake_labels = set(re.findall(r'print\(f?"([A-Za-z ]+):', FAKE_CLAUDE))
     assert labels <= fake_labels | {"Status"}

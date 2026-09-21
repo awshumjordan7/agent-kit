@@ -124,14 +124,22 @@ def test_update_checks_out_overlay_agent_kit_pin(tmp_path):
 def test_content_check_reports_unknown_and_agent_override_sources(repo_root, tmp_path, monkeypatch):
     monkeypatch.chdir(repo_root)
     profile = load_profile(repo_root / "tests/fixtures/profiles/public-default.json")
-    profile["agents"]["scout"] = {"model": "sonnet", "maxTurns": 75, "effort": None}
+    profile["agents"]["scout"] = {"model": "sonnet", "maxTurns": 76, "effort": None}
+    profile_without_override = {**profile, "agents": {**profile["agents"]}}
+    profile_without_override["agents"].pop("scout")
     home = tmp_path / ".claude"
-    install_tree(profile, home)
+    install_tree(profile_without_override, home)
     (home / "settings.json").write_text("{}\n", encoding="utf-8")
+
+    drift = {item.path: item.source for item in update.check_content(profile, home)}
+
+    assert "settings.json" not in drift
+    assert drift["agents/scout.md"] == "profile.agents override"
+
+    install_tree(profile, home)
     scout = home / "agents/scout.md"
     scout.write_text(f"{scout.read_text(encoding='utf-8')}\nchanged\n", encoding="utf-8")
 
     drift = {item.path: item.source for item in update.check_content(profile, home)}
 
-    assert drift["settings.json"] == "unknown"
-    assert drift["agents/scout.md"] == "profile.agents override"
+    assert drift["agents/scout.md"] == "unknown"

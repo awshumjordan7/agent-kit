@@ -100,10 +100,15 @@ def context(
     plan_file: Path,
     label: str,
     checkpoint_lines: list[str] | None = None,
+    all_dirty: bool = False,
 ) -> dict:
     baseline_path = run_dir / "baseline.json"
     document = json.loads(baseline_path.read_text(encoding="utf-8"))
-    files, preexisting = _changed_since_baseline(repo, document)
+    if all_dirty:
+        _porcelain, dirty = _status(repo)
+        files, preexisting = list(dict.fromkeys(dirty)), []
+    else:
+        files, preexisting = _changed_since_baseline(repo, document)
     gate_diff = run_dir / f"gate-{label}.diff"
     if gate_diff.is_file():
         diff = gate_diff.read_text(encoding="utf-8", errors="replace")
@@ -193,6 +198,7 @@ def main() -> None:
     context_parser.add_argument("--plan-file", type=Path, required=True)
     context_parser.add_argument("--label", required=True)
     context_parser.add_argument("--checkpoint-json", default="[]")
+    context_parser.add_argument("--all-dirty", action="store_true")
     read_parser = subparsers.add_parser("read-plan")
     read_parser.add_argument("--plan-file", type=Path, required=True)
     args = parser.parse_args()
@@ -205,6 +211,7 @@ def main() -> None:
             args.plan_file,
             args.label,
             json.loads(args.checkpoint_json),
+            args.all_dirty,
         )
     else:
         result = read_plan(args.plan_file)

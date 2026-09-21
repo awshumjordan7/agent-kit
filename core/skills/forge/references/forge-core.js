@@ -367,12 +367,15 @@ function quickReviewThreshold() {
 }
 
 function plannedSourceFiles(planText) {
-  const phases = /^#{2,}\s*Phases\s*$/im.exec(String(planText || ''))
+  const phases = /^(#{2,})\s*Phases\s*$/im.exec(String(planText || ''))
   if (!phases) return 0
   const after = String(planText).slice(phases.index + phases[0].length)
-  const next = after.search(/^#{2,}\s+(?!Phase\b)/m)
+  const next = after.search(new RegExp(`^#{2,${phases[1].length}}\\s+(?!Phase\\b)`, 'mi'))
   const body = next >= 0 ? after.slice(0, next) : after
-  const paths = [...body.matchAll(/`([^`\n]+\.[A-Za-z0-9]+)`/g)].map(match => match[1])
+  const knownSourceExtension = /\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)$/i
+  const paths = [...body.matchAll(/`([^`\n]+\.[A-Za-z0-9]+)`/g)]
+    .map(match => match[1])
+    .filter(path => /[\\/]/.test(path) || knownSourceExtension.test(path))
   return new Set(paths.filter(isSourcePath)).size
 }
 
@@ -396,11 +399,36 @@ function sandboxAllowed(stageOn, repo, repos) {
   return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(basename)
 }
 
+function sandboxRoots() {
+  const repos = (FORGE_CONFIG && FORGE_CONFIG.repos) || {}
+  return {
+    frontend: `/app/${repos.frontend || 'frontend'}`,
+    backend: `/app/${repos.backend || 'backend'}`,
+  }
+}
+
+function backendPrefix(root) {
+  return `cd ${root} && { [ -f /app/env.sh ] && . /app/env.sh || true; }`
+}
+
+function sandboxCheck(isUi, testPaths = ['tests/unit']) {
+  const roots = sandboxRoots()
+  return isUi
+    ? `cd ${roots.frontend} && yarn tsc --noEmit`
+    : `${backendPrefix(roots.backend)} && uv run pytest ${testPaths.join(' ')} -x -q`
+}
+
 function configuredLenses() {
   const configured = (FORGE_CONFIG && FORGE_CONFIG.lenses) || DEFAULT_LENSES
   return LENSES.map(lens => lens.paths
     ? lens
-    : { ...lens, paths: new RegExp(configured[lens.configKey] || DEFAULT_LENSES[lens.configKey], 'i') })
+    : { ...lens, paths: configuredLensPattern(configured[lens.configKey], DEFAULT_LENSES[lens.configKey]) })
+}
+
+function configuredLensPattern(value, fallback) {
+  const pattern = typeof value === 'string' && value.length <= 500 ? value : fallback
+  // Lens expressions come from local Forge configuration and are length-bounded before compilation.
+  return new RegExp(pattern, 'i') // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 }
 
 function ticketLinks() {
@@ -479,6 +507,7 @@ export const __test = {
   partitionTriage,
   pickImplRole,
   sandboxAllowed,
+  sandboxCheck,
   dryRunJournal,
 }
 const runtimeAgent = agent
@@ -623,12 +652,14 @@ function parseCheckpoints(planText, argsCheckpoints) {
     const nextHeading = afterHeading.search(/^#{2,}\s+/m)
     const body = (nextHeading >= 0 ? afterHeading.slice(0, nextHeading) : afterHeading).trim()
     const lines = body.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      .filter(line => !/^\|\s*After\s*\|\s*Reason\s*\|$/i.test(line))
+      .filter(line => !/^\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|$/.test(line))
     entries = lines.map(line => {
       const bullet = /^-\s*Phases?\s+([A-Za-z]*\d+(?:\s*-\s*[A-Za-z]*\d+)?)\s*:\s*(.+)$/i.exec(line)
       if (bullet) return { phases: bullet[1].replace(/\s/g, ''), reason: bullet[2].trim() }
       const row = /^\|\s*(?:Phase\s+)?([A-Za-z]*\d+)(?:\s*-\s*(?:Phase\s+)?([A-Za-z]*\d+))?\s*\|\s*(.+?)\s*\|$/i.exec(line)
       return row && { phases: row[2] ? `${row[1]}-${row[2]}` : row[1], reason: row[3].trim() }
-    }).filter(entry => entry)
+    })
   }
   const invalid = () => {
     decide('Checkpoint plan format invalid; falling back to a single implementation segment.')
@@ -772,6 +803,7 @@ function gateFindings(gate) {
       claim: `${failure.tool}: ${failure.summary}`,
       fix_hint: 'Resolve this gate failure only.',
       source: 'gate',
+      tool: failure.tool,
     }
   })
 }
@@ -820,8 +852,9 @@ function stopped(state) {
   return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN'
 }
 
-function changedFiles(checkpointLines = []) {
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate --checkpoint-json ${shellQuote(JSON.stringify(checkpointLines))}`,
+function changedFiles(checkpointLines = [], allDirty = false) {
+  const mode = allDirty ? ' --all-dirty' : ''
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate --checkpoint-json ${shellQuote(JSON.stringify(checkpointLines))}${mode}`,
   { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
 }
 
@@ -1093,7 +1126,13 @@ async function reviewPanel(context) {
   const disputes = detectContradictions(rows)
   const ruled = await applyRulings(findings, disputes)
   const triage = await triageFindings(ruled.confirmed, context)
-  const partitioned = partitionTriage(ruled.confirmed, triage && triage.verdicts, PARAMS.auto)
+  let partitioned
+  if (triage) {
+    partitioned = partitionTriage(ruled.confirmed, triage.verdicts, PARAMS.auto)
+  } else {
+    await decide('Triage agent returned no result; retaining the pre-triage confirmed findings.')
+    partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
+  }
   for (const item of partitioned.dropped) {
     await decide(`Triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
   }
@@ -1184,11 +1223,14 @@ async function converge(panel, context) {
     return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, capReached: false, gatePassed: true, gate: null, gateRan: false }
   }
   let countedRounds = 0
+  let attempt = 0
   let zeroFileRounds = 0
   let gate = null
   let verificationFailed = false
   while (unresolved.length && countedRounds < PARAMS.fixCap && zeroFileRounds < 2) {
-    const round = countedRounds + 1
+    attempt += 1
+    const round = attempt
+    const findingsToVerify = unresolved
     const fix = await fixAgent(unresolved, context, `fix-${round}`, CODEX_FIX_THREAD)
     if (!fix) {
       verificationFailed = true
@@ -1204,13 +1246,18 @@ async function converge(panel, context) {
       zeroFileRounds += 1
     }
     gate = await localGate(`gate-fix-${round}`, 'Fix', [...new Set(touched)], ['tests'])
-    const verify = await verifyFixes(unresolved, fix, round, context)
-    if (!assertVerification(verify, `verify-${round}`)) {
-      verificationFailed = true
-      break
+    let verify = null
+    if (roundTouched.length) {
+      verify = await verifyFixes(findingsToVerify, fix, round, context)
+      if (!assertVerification(verify, `verify-${round}`)) {
+        verificationFailed = true
+        break
+      }
+      unresolved = unresolvedAfterVerification(findingsToVerify, verify)
     }
-    unresolved = unresolvedAfterVerification(unresolved, verify)
-    if (!gate || !gate.passed) {
+    if (gate && gate.passed) {
+      unresolved = unresolved.filter(finding => finding.source !== 'gate' || finding.tool !== 'tests')
+    } else {
       unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
     }
     const deduped = new Map(unresolved.map(finding => [findingKey(finding), finding]))
@@ -1231,7 +1278,7 @@ async function converge(panel, context) {
     }
   }
   const capReached = unresolved.length > 0 && countedRounds >= PARAMS.fixCap
-  const blocked = verificationFailed || unresolved.length > 0 || zeroFileRounds >= 2 || !gate || !gate.passed
+  const blocked = verificationFailed || unresolved.length > 0 || !gate || !gate.passed
   return {
     unresolved, fixesApplied, rounds, touchedFiles: [...new Set(touched)], blocked, capReached,
     gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate),
@@ -1245,9 +1292,9 @@ function stagingRules(files, context = {}) {
   const preexisting = new Set(context.preexisting || [])
   const staged = [...new Set([...(files || []), ...(context.files || []), ...PARAMS.stageAlso])]
     .filter(path => vouched.has(path) || !preexisting.has(path))
-    .filter(path => !String(path).split('/').includes('.envs') && !/(^|\/)[^/]*\.env[^/]*$/i.test(String(path)))
+    .filter(path => !String(path).split('/').includes('.envs') && !/(^|\/)\.env(?:\.|$)|\.env$/i.test(String(path)))
   const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. A listed path that does not exist is skipped and reported.` : 'No run-owned files are eligible for staging.'
-  return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '*.env*' file, or any file outside that list even if 'git status' shows it modified or untracked.`
+  return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file, or any file outside that list even if 'git status' shows it modified or untracked.`
 }
 
 function ghEnvironmentInstruction() {
@@ -1292,9 +1339,7 @@ function sandboxQA(shipResult, context) {
   const repoBase = String(PARAMS.repo).split('/').filter(Boolean).pop() || ''
   const isUi = repoBase === FORGE_CONFIG.repos.frontend
   const branchField = isUi ? 'ui_branch' : 'api_branch'
-  const check = isUi
-    ? 'cd /app/frontend && yarn tsc --noEmit'
-    : `cd /app/backend && uv run pytest ${(context.testPaths || ['tests/unit']).join(' ')} -x -q`
+  const check = sandboxCheck(isUi, context.testPaths || ['tests/unit'])
   if (PARAMS.existingSandbox) {
     return agentT('sandboxQA', `You run SANDBOX QA for Forge against an existing sandbox. ${syncInstructions(PARAMS.existingSandbox, shipResult, context.files || [], isUi, false, check, sandboxToolFallback)}`,
     { label: 'sandbox-qa', phase: 'Sandbox', schema: SANDBOX_SCHEMA })
@@ -1305,20 +1350,21 @@ Create one sandbox with ${branchField}=${shipResult.branch}, tier=${PARAMS.tierS
 }
 
 function syncInstructions(sandbox, shipResult, files, isUi, allowSkip, check, toolFallback) {
-  const repo = isUi ? 'frontend' : 'backend'
-  const root = `/app/${repo}`
+  const roots = sandboxRoots()
+  const root = isUi ? roots.frontend : roots.backend
+  const commandPrefix = isUi ? `cd ${root}` : backendPrefix(root)
   const branchField = isUi ? 'ui_branch' : 'api_branch'
   const branch = shipResult.branch
   const fileHint = files.length ? `${files.length} files changed: ${JSON.stringify(files)}` : '0 files supplied; the changed set is unknown'
-  const migrate = 'cd /app/backend && uv run python manage.py migrate --no-input'
+  const migrate = `${backendPrefix(roots.backend)} && uv run python manage.py migrate --no-input`
   const skipAction = allowSkip
     ? 'Set mode="skip", skipped=false, testsPassed=false, and summary="fork already at <sha>; sync skipped" with the sync seconds. Return the same sandbox metadata immediately and DO NOT run the check command. The workflow may carry forward a prior passing result for this same fork.'
     : 'Set mode="skip" and summary="fork already at <sha>; sync skipped", but continue to the check command. This QA stage has no prior result to carry forward, so only the upload is skipped.'
   return `Existing sandbox metadata: ${JSON.stringify(sandbox)}. The branch is ${branch}; the file-count hint is ${fileHint}. Use the sandbox tools named by the overlay stage reference. ${toolFallback}
 Perform these steps IN ORDER and measure elapsed seconds for the whole sync step:
-1. Skip check. Locally in ${PARAMS.projectDir}, run git fetch origin ${branch} --quiet && git rev-parse origin/${branch} to get TIP. In sandbox ${sandbox.sandboxId}, use exec_command for cd ${root} && git rev-parse HEAD to get FORK_HEAD, then cd ${root} && git status --porcelain | wc -l to get DIRTY. If TIP equals FORK_HEAD and DIRTY is 0: ${skipAction} Otherwise continue.
+1. Skip check. Locally in ${PARAMS.projectDir}, run git fetch origin ${branch} --quiet && git rev-parse origin/${branch} to get TIP. In sandbox ${sandbox.sandboxId}, use exec_command for ${commandPrefix} && git rev-parse HEAD to get FORK_HEAD, then ${commandPrefix} && git status --porcelain | wc -l to get DIRTY. If TIP equals FORK_HEAD and DIRTY is 0: ${skipAction} Otherwise continue.
 2. Determine the changed set locally in ${PARAMS.projectDir} with git diff --name-only <FORK_HEAD> origin/${branch}, substituting the FORK_HEAD sha from step 1. Treat ${JSON.stringify(files)} only as a cross-check hint. If the derived set and hint disagree, report that in summary and use the derived set. If FORK_HEAD is not present locally or git diff errors, fall back to the hint when it is non-empty; otherwise use re-fork. Measure total bytes with wc -c against the corresponding files under ${PARAMS.projectDir}; deleted files count as zero bytes. The measured set and byte count control the choice.
-3. Git-fetch first. In sandbox ${sandbox.sandboxId}, run: cd ${root} && GIT_TERMINAL_PROMPT=0 git fetch origin ${branch} && git checkout -B ${branch} FETCH_HEAD. On success set mode="git-fetch". If the changed set contains a migrations/ path, run with timeout 600: ${migrate}; a non-zero migration is a blocker with the last 20 output lines in summary. Then ${isUi ? 'let vite reload itself' : 'restart the API process with the fork start script'}. Skip steps 4 and 5 and continue to step 6. If fetch or checkout fails, say so in summary and continue to the hot-patch fallback.
+3. Git-fetch first. In sandbox ${sandbox.sandboxId}, run: ${commandPrefix} && GIT_TERMINAL_PROMPT=0 git fetch origin ${branch} && git checkout -B ${branch} FETCH_HEAD. On success set mode="git-fetch". If the changed set contains a migrations/ path, run with timeout 600: ${migrate}; a non-zero migration is a blocker with the last 20 output lines in summary. Then ${isUi ? 'let vite reload itself' : 'restart the API process with the fork start script'}. Skip steps 4 and 5 and continue to step 6. If fetch or checkout fails, say so in summary and continue to the hot-patch fallback.
 4. Hot-patch after a failed git-fetch only when the known changed set has at most 3 entries and totals at most 40000 bytes. Set mode="hot-patch". For each repo-relative path, use upload_file to upload inline text from ${PARAMS.projectDir}/<path> to ${root}/<path> in sandbox ${sandbox.sandboxId}; remove a deleted file with exec_command rm at ${root}/<path>. ${isUi ? 'The vite dev server hot-reloads.' : `If any path is under a migrations/ directory, first use exec_command with timeout 600 for: ${migrate}. A non-zero exit is a blocker: return skipped=true, put the last 20 output lines in summary, preserve the current sandbox metadata, and set testsPassed=false. Then restart the API process with the fork start script.`} Skip step 5 and continue to step 6.
 5. Re-fork after a failed git-fetch when hot-patch is not allowed. Set mode="re-fork". Read ${PARAMS.runDir}/sandbox.json when present and retain its cohort and team values. Call create_sandbox with ${branchField}=${branch}, tier=${PARAMS.tierSandbox}, login_email="" for token injection, and ide=True; leave other arguments at their defaults. Treat ide_url and ide_password as credentials: write them only to ${PARAMS.runDir}/sandbox.json and never return them in a message, summary, or structured output. Wait until the tool reports the new sandbox healthy. If the changed set touches a migrations/ path, run in the NEW sandbox with timeout 600: ${migrate}. If migration exits non-zero, call teardown_sandbox on the NEW sandbox id without force and never retry with force; keep and return the OLD sandbox metadata, set skipped=true and testsPassed=false, and name the torn-down new id plus the migration's last 20 output lines in summary. Only after the new sandbox is healthy${isUi ? '' : ' and any migration succeeds'}, copy ${PARAMS.runDir}/sandbox.json when present to ${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json, then call teardown_sandbox on OLD sandbox ${sandbox.sandboxId}, without force. If teardown of the OLD sandbox fails, including a 403 because another developer owns it, report the failure in summary and continue on the NEW fork; never retry with force. Write ${PARAMS.runDir}/sandbox.json with the NEW sandbox metadata, the retained cohort and team when present, seedRecipe="${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json", and seedsReplayed=false. From this point, use and return the NEW sandboxId, loginUrl, previewUrl, and seedRecipe. The summary must say "seeds not replayed; recipe at ${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json".
 6. Unless the allowed clean-fork skip returned early, run in the current sandbox with timeout 900: ${check}. Set testsPassed from its exit result and skipped=false.
@@ -1358,7 +1404,7 @@ async function smoke(sandbox, context) {
 function sandboxRefresh(sandbox, shipResult, context) {
   const repoBase = String(PARAMS.repo).split('/').filter(Boolean).pop() || ''
   const isUi = repoBase === FORGE_CONFIG.repos.frontend
-  const check = isUi ? 'cd /app/frontend && yarn tsc --noEmit' : `cd /app/backend && uv run pytest ${(context.testPaths || ['tests/unit']).join(' ')} -x -q`
+  const check = sandboxCheck(isUi, context.testPaths || ['tests/unit'])
   return agentT('sandboxQA', `You run SANDBOX POST-FIX RE-RUN. ${syncInstructions(sandbox, shipResult, context.files || [], isUi, true, check, sandboxToolFallback)}`,
   { label: 'sandbox-refresh', phase: 'Fix', schema: SANDBOX_SCHEMA })
 }
@@ -1448,7 +1494,13 @@ async function runCheckpointSegments(state, firstResult, segments) {
         diffBytes: gate.diffBytes || 0, diffTruncated: Boolean(gate.diffTruncated),
       }
       const triage = await triageFindings(ruled.confirmed, triageContext, `triage-cp${checkpoint}`)
-      const partitioned = partitionTriage(ruled.confirmed, triage && triage.verdicts, PARAMS.auto)
+      let partitioned
+      if (triage) {
+        partitioned = partitionTriage(ruled.confirmed, triage.verdicts, PARAMS.auto)
+      } else {
+        await decide(`Checkpoint ${checkpoint} triage agent returned no result; retaining the pre-triage confirmed findings.`)
+        partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
+      }
       for (const item of partitioned.dropped) {
         await decide(`Checkpoint ${checkpoint} triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
       }
@@ -1606,7 +1658,7 @@ async function fullLane() {
       phase('Review')
       if (stopped(state)) return state
       state.context = state.context || await changedFiles(state.checkpointFindings)
-      if (PARAMS.lane === 'quick' && (state.context.files || []).filter(isSourcePath).length <= quickReviewThreshold()) await decide('Quick lane omitted the Claude general reviewer because the changed source-file count stayed within the review threshold.')
+      if (PARAMS.lane === 'quick' && (configuredRole('review') || {}).provider !== 'claude' && (state.context.files || []).filter(isSourcePath).length <= quickReviewThreshold()) await decide('Quick lane omitted the Claude general reviewer because the changed source-file count stayed within the review threshold.')
       state.review = await reviewPanel(state.context)
       if ((configuredRole('review') || {}).provider !== 'claude' && state.review.failures.some(failure => failure.key === 'codex')) {
         // Cross-model review is the contract; never continue Claude-only.
@@ -1690,7 +1742,7 @@ async function fullLane() {
 async function reviewLane() {
   await decide('Review lane skipped Implement, standalone Gate, Ship, Sandbox, and Smoke stages.')
   phase('Review')
-  const context = await changedFiles()
+  const context = await changedFiles([], true)
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
     return { status: 'BLOCKED', context: context || { criteria: PARAMS.criteria }, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }

@@ -56,7 +56,12 @@ def check_content(profile: dict[str, Any], home: Path) -> list[ContentDrift]:
         result = compose_tree(profile, composed)
         drifts: list[ContentDrift] = []
         agent_overrides = profile.get("agents", {})
+        without_agent_overrides = Path(temporary) / "without-agent-overrides"
+        if agent_overrides:
+            compose_tree({**profile, "agents": {}}, without_agent_overrides)
         for relative in result.files:
+            if relative == "settings.json" and (home / relative).is_file():
+                continue
             expected = composed / relative
             installed = home / relative
             if installed.is_file() and _sha256(installed) == _sha256(expected):
@@ -64,7 +69,11 @@ def check_content(profile: dict[str, Any], home: Path) -> list[ContentDrift]:
             agent_name = Path(relative).stem if relative.startswith("agents/") else ""
             source = (
                 "profile.agents override"
-                if agent_name and agent_name in agent_overrides
+                if agent_name
+                and agent_name in agent_overrides
+                and installed.is_file()
+                and (without_agent_overrides / relative).is_file()
+                and _sha256(installed) == _sha256(without_agent_overrides / relative)
                 else "unknown"
             )
             drifts.append(ContentDrift(relative, source))

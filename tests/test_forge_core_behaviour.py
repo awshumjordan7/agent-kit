@@ -37,16 +37,26 @@ def test_labelled_and_numeric_phases_parse_in_document_order(repo_root):
         {"from": "A1", "to": "A1", "reason": "inspect first", "final": False},
         {"from": "2", "to": "B3", "reason": "", "final": True},
     ]
+    assert _harness(
+        repo_root,
+        "parse",
+        {"plan": plan.replace("| Phase A1 | inspect first |", "| Phase A1 typo | inspect first |")},
+    ) == [{"from": "A1", "to": "B3", "reason": "", "final": True}]
 
 
 def test_quick_impl_requires_every_quick_condition(repo_root):
-    plan = "## Phases\n### Phase 1\nFiles: `src/app.py`\n"
+    plan = """## Phases
+`PARAMS.fixCap` and `args.dryRun`
+### Phase 1
+#### Files
+`src/app.py`
+"""
 
     assert (
         _harness(
             repo_root,
             "role",
-            {"lane": "quick", "fullySpecified": True, "plan": plan, "threshold": 8},
+            {"lane": "quick", "fullySpecified": True, "plan": plan, "threshold": 1},
         )
         == "quick-impl"
     )
@@ -101,6 +111,19 @@ def test_sandbox_requires_enabled_stage_and_configured_repo(repo_root):
     )
 
 
+def test_sandbox_checks_use_configured_repo_roots(repo_root):
+    result = _harness(
+        repo_root,
+        "sandbox-checks",
+        {"repos": {"frontend": "platform-ui", "backend": "platform-api"}},
+    )
+
+    assert result["backend"].startswith(
+        "cd /app/platform-api && { [ -f /app/env.sh ]"
+    )
+    assert result["frontend"].startswith("cd /app/platform-ui &&")
+
+
 def test_dry_run_records_triage_tests_only_gates_and_full_final_gate(repo_root):
     journal = _harness(repo_root, "dry", {})
     labels = [entry["label"] for entry in journal]
@@ -111,4 +134,7 @@ def test_dry_run_records_triage_tests_only_gates_and_full_final_gate(repo_root):
     assert "--only tests" in next(
         entry["prompt"] for entry in journal if entry["label"] == "gate-fix-1"
     )
-    assert labels.count("fix-2") == 2
+    assert labels.count("fix-2") == 1
+    assert labels.count("fix-3") == 1
+    assert "verify-2" not in labels
+    assert "verify-3" not in labels

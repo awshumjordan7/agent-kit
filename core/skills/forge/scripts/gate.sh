@@ -484,12 +484,14 @@ typecheck_command=$(config_value typecheck) || die 'gate.sh: cannot read typeche
 migrations_command=$(config_value migrations) || die 'gate.sh: cannot read migrations config'
 tests_command=$(config_value tests) || die 'gate.sh: cannot read tests config'
 create_db_arg=''
-for changed_file in "${files[@]}"; do
-  if [[ $changed_file == */migrations/*.py ]]; then
-    create_db_arg=' --create-db'
-    break
-  fi
-done
+if ((${#files[@]})); then
+  for changed_file in "${files[@]}"; do
+    if [[ $changed_file == */migrations/*.py ]]; then
+      create_db_arg=' --create-db'
+      break
+    fi
+  done
+fi
 tests_command=${tests_command//<create-db>/$create_db_arg}
 parity_commands_file="$state_prefix-parity-commands.nul"
 python3 - "$entry_file" "$parity_commands_file" <<'PY'

@@ -87,6 +87,20 @@ def plans_for_layers(layers: ResolvedLayers, profile: dict[str, Any]) -> tuple[M
     return tuple(plans)
 
 
+def registration_for_layers(
+    layers: ResolvedLayers, profile: dict[str, Any]
+) -> tuple[tuple[McpPlan, ...], tuple[str, ...]]:
+    plans = plans_for_layers(layers, profile)
+    planned = {plan.server.name for plan in plans}
+    declared = {
+        server.name for manifest in layers.module_manifests.values() for server in manifest.mcp
+    }
+    for layer in layers.layers:
+        if layer.overlay is not None:
+            declared.update(server.name for server in layer.overlay.mcp)
+    return plans, tuple(sorted(declared - planned))
+
+
 def add_command(plan: McpPlan, *, redact: bool = False) -> list[str]:
     server = plan.display_server if redact and plan.display_server is not None else plan.server
     env = server.env if redact and plan.display_server is not None else plan.env
@@ -117,7 +131,8 @@ def _matches(plan: McpPlan, output: str) -> bool:
         return False
     if _environment(output) != plan.env:
         return False
-    if _headers(output) != server.headers:
+    headers = _headers(output)
+    if headers is not None and headers != server.headers:
         return False
     if server.transport == "http":
         url_match = re.search(r"^\s*URL:\s*(.+?)\s*$", output, re.MULTILINE)
@@ -153,7 +168,7 @@ def _environment(output: str) -> dict[str, str]:
     return environment
 
 
-def _headers(output: str) -> dict[str, str]:
+def _headers(output: str) -> dict[str, str] | None:
     headers: dict[str, str] = {}
     reading_headers = False
     for line in output.splitlines():
@@ -168,7 +183,7 @@ def _headers(output: str) -> dict[str, str]:
                 break
             continue
         headers[match.group(1)] = match.group(2)
-    return headers
+    return headers if reading_headers else None
 
 
 def _scope(output: str) -> str | None:

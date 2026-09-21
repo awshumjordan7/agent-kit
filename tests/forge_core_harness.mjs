@@ -24,7 +24,7 @@ globalThis.args = {
     thresholds: { quickReviewThreshold: 8, fixCap: 3 },
     lenses: { security: '(auth)', design: '\\.tsx?$' },
     ticketUrl: '',
-    repos: { frontend: 'example-ui', backend: 'example-api' },
+    repos: input.repos || { frontend: 'example-ui', backend: 'example-api' },
   },
 }
 const runtimeAgent = async () => null
@@ -50,5 +50,11 @@ if (action === 'parse') result = api.parseCheckpoints(input.plan, input.checkpoi
 if (action === 'role') result = api.pickImplRole(input.lane, input.fullySpecified, input.plan, input.threshold)
 if (action === 'triage') result = api.partitionTriage(input.findings, input.verdicts, input.auto)
 if (action === 'sandbox') result = api.sandboxAllowed(input.stageOn, input.repo, input.repos)
+if (action === 'sandbox-checks') {
+  result = {
+    frontend: api.sandboxCheck(true),
+    backend: api.sandboxCheck(false),
+  }
+}
 if (action === 'dry') result = api.dryRunJournal
 process.stdout.write(`${JSON.stringify(result)}\n`)
