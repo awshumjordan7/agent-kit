@@ -12,6 +12,6 @@ agent_max_lines = 60
 roots = []
 
 [codex]
-agents_md = "/Users/jfierro/.codex/AGENTS.md"
+agents_md = "~/.codex/AGENTS.md"
 exclude_sections = ["Model Routing (Sub-Agents)"]
 exclude_bullets = ["Use `planner` for feature planning", "memory & auto-memory"]

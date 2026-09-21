@@ -171,7 +171,6 @@ def _expand_profile_paths(profile: dict[str, Any]) -> None:
     layers["local"] = str(Path(layers["local"]).expanduser())
     doctor = profile["doctor"]
     doctor["repo_roots"] = [str(Path(path).expanduser()) for path in doctor["repo_roots"]]
-    doctor["codex"]["agents_md"] = str(Path(doctor["codex"]["agents_md"]).expanduser())
 
 
 def _data_fragments(root: Path) -> list[dict[str, Any]]:
