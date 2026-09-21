@@ -21,4 +21,4 @@ jobs:
           python3 install.py doctor --denylist "$denylist_file" --root .
       - name: Explain unavailable denylist
         if: ${{ env.DENYLIST == '' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
-        run: echo "denylist skipped: secret unavailable on this event"
+        run: echo "denylist skipped - secret unavailable on this event"
