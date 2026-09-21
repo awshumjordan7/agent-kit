@@ -74,8 +74,9 @@ def test_local_claude_fragment_uses_local_heading(repo_root, tmp_path, monkeypat
     assert "## Local\n\nLocal rules" in text
 
 
-def test_install_maps_missing_template_key_to_exit_five(repo_root, tmp_path, monkeypatch):
+def test_install_maps_missing_template_key_to_exit_five(repo_root, tmp_path, monkeypatch, fake_cli):
     monkeypatch.chdir(repo_root)
+    fake_cli("claude")
     profile = json.loads(
         (repo_root / "tests/fixtures/profiles/public-default.json").read_text(encoding="utf-8")
     )
