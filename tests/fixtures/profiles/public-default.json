@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "layers": {
+    "core": {"path": ".", "track": "main"},
+    "overlay": null,
+    "local": "../missing-local"
+  }
+}

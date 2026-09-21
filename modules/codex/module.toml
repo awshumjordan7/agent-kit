@@ -1,0 +1,7 @@
+name = "codex"
+description = "Codex CLI configuration and collaboration contract"
+default = false
+depends = []
+requires = ["codex"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"

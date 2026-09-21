@@ -1,0 +1,10 @@
+name = "terminal"
+description = "Ghostty terminal defaults for macOS"
+default = false
+depends = []
+requires = []
+platforms = ["darwin"]
+
+[[files]]
+src = "ghostty/config"
+dest = "~/.config/ghostty/config"

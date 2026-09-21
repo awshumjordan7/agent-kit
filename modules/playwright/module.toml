@@ -1,0 +1,14 @@
+name = "playwright"
+description = "Browser automation through Playwright MCP"
+default = false
+depends = []
+requires = ["node"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"
+
+[[mcp]]
+name = "playwright"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@playwright/mcp", "--viewport-size", "1920,1080", "--headless", "--isolated"]
+scope = "user"

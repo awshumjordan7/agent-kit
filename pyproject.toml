@@ -1,0 +1,37 @@
+[project]
+name = "agent-kit"
+version = "0.1.0"
+description = "Composable personal AI agent setup"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["tests/golden/expected"]
+
+[tool.ruff.lint]
+extend-select = ["I", "BLE", "G", "ASYNC", "B", "A", "RUF", "T20", "PGH004"]
+ignore = ["RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T20"]
+"install.py" = ["I001", "T201"]
+"aisetup/cli.py" = ["T201"]
+"aisetup/selfcheck.py" = ["T201"]
+"core/hooks/*.py" = ["T201"]
+"core/scripts/doctor.py" = ["I001", "RUF005", "RUF021", "T201"]
+"core/skills/forge/scripts/forge-stats.py" = ["I001", "T201"]
+
+[tool.ruff.format]
+exclude = [
+  "core/hooks/context_guard.py",
+  "core/hooks/require_agent_model.py",
+  "core/scripts/doctor.py",
+  "core/skills/forge/scripts/forge-stats.py",
+  "tests/golden/expected",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

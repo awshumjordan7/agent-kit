@@ -1,0 +1,8 @@
+{
+  "hooks": {},
+  "permissions": {
+    "allow": [],
+    "deny": [],
+    "ask": []
+  }
+}

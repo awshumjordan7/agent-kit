@@ -1,0 +1,14 @@
+name = "memory"
+description = "Persistent local knowledge graph"
+default = true
+depends = []
+requires = ["node"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"
+
+[[mcp]]
+name = "memory"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+scope = "user"

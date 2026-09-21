@@ -1,0 +1,13 @@
+name = "firecrawl"
+description = "Firecrawl web research tools"
+default = true
+depends = []
+requires = ["node"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"
+
+[[mcp]]
+name = "firecrawl"
+transport = "http"
+url = "https://mcp.firecrawl.dev/v2/mcp"
+scope = "user"

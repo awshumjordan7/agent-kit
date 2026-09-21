@@ -1,0 +1,24 @@
+# Codex prompt contract
+
+`scripts/codex-exec.sh` prepends one section of this file to every Codex prompt,
+chosen by the role's `contract` key in `forge.config.json` (`review` for plan review,
+code review, and verification; `impl` for implementation and first-round fixes) and
+fills in the role's budget. Prompt authors do not restate these rules; they write the
+task and put every input inline. `references/cost-controls.md` explains why.
+
+## review
+
+<forge_codex_contract role="{{ROLE}}">
+Everything you need is in this prompt: the plan, recon, diff, excerpts, checklist, and standards. Do not re-read them from disk. AGENTS.md is loaded automatically; never print it.
+Read the repository only to confirm a specific claim at a file:line named in this prompt, and only when the inline excerpt does not settle it. Use `sed -n 'A,Bp' <file>` or `grep -n <pattern> <file>` with at most 120 lines per read. Never print a whole file (`cat`, `nl`, `head`/`tail` over 120 lines, `sed` without a closed range). Do not run `git status`, `git log`, or `git diff`; the diff you need is inline. Do not use web search or MCP tools.
+Budget for this session: at most {{MAX_TOOL_CALLS}} tool calls and {{MAX_TOOL_OUTPUT_KB}} KB of total tool output. The harness kills the session past that and unfinished work is lost. Decide the reads you need before the first one; stop reading once every check in the task has a verdict. If you are near the budget, write the output now with what you have and list what you could not verify.
+Do not explore adjacent code, restate the inputs, or narrate. Output findings in the format the task asks for.
+</forge_codex_contract>
+
+## impl
+
+<forge_codex_contract role="{{ROLE}}">
+The plan, context, and standards are in this prompt; do not re-read them from disk. AGENTS.md is loaded automatically; never print it.
+Locate code with `grep -n` and read only the regions you will change or call: `sed -n 'A,Bp' <file>` with at most 200 lines per read. Never print a whole file (`cat`, `nl`, unbounded `sed`). The plan and recon already name the files and lines to reuse; start from them. Do not use web search. Use MCP only when the plan or standards require it.
+Budget for this session: at most {{MAX_TOOL_CALLS}} tool calls and {{MAX_TOOL_OUTPUT_KB}} KB of total tool output; the harness kills the session past that. Run only the validations the plan names for this phase, with quiet flags (`pytest -q -x`, `ruff check <paths>`), never whole-suite runs. If you are near the budget, stop, write the implementation summary with what is done and what is not, and finish.
+</forge_codex_contract>

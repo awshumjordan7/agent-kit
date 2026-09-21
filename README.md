@@ -7,6 +7,8 @@ CLI. Some modules also require Node.js, Codex, or GitHub CLI.
 ## Install
 
 ```sh
+git clone https://github.com/awshumjordan7/agent-kit.git ~/agent-kit
+cd ~/agent-kit
 python3 install.py install --yes
 ```
 
@@ -22,6 +24,27 @@ python3 install.py doctor --selfcheck --json
 `install --dry-run` prints the planned files, settings, and redacted MCP commands without writing them. Existing
 Claude files are backed up before replacement. `update` fetches configured layer repositories, replays the profile,
 and runs doctor.
+
+## Windows 10 and 11 (WSL2)
+
+agent-kit runs inside WSL2, not in PowerShell. Use Ubuntu 24.04; Ubuntu 22.04 ships Python 3.10, below the 3.11
+floor. Keep the clone and `~/.claude` in the Linux home directory, not under `/mnt/c`. The terminal module is
+macOS-only and skips itself on Linux.
+
+```sh
+wsl --install -d Ubuntu-24.04
+sudo apt update && sudo apt install -y git jq python3 python3-venv curl
+```
+
+Run the first command from PowerShell, then open the Ubuntu shell for the rest. Install Node.js LTS (the firecrawl,
+context7, and memory MCP servers run through `npx`) and the Claude Code CLI inside WSL, run `claude` once to sign in,
+then follow the Install steps above. Install `gh` only for the github module and `codex` only for the codex module.
+Verify with:
+
+```sh
+python3 install.py doctor --selfcheck --json
+claude mcp list
+```
 
 ## Modules
 
@@ -62,3 +85,10 @@ Use Git's `includeIf` to select identity by directory. Use an SSH host alias suc
 
 Open a pull request with a focused change. Run Ruff and the targeted tests named by the change. Public changes must
 pass the token scanner; maintainers also run the private denylist before merging external pull requests.
+
+### CI parity
+
+Run `bash tests/ci_parity.sh` to reproduce the GitHub runner locally before pushing. It runs the pinned Ruff
+check, lints workflow YAML with actionlint (skipped if Docker is unavailable), runs the golden tests under a
+foreign `$HOME`, and runs the full suite with no `claude` binary on `PATH`. Files the installer copies
+verbatim are tracked by hash only; merged and rendered files are stored in full so a review shows their effect.
