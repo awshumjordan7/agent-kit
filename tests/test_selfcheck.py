@@ -35,3 +35,13 @@ def test_selfcheck_fails_when_claude_is_missing(claude_home, layers_root, monkey
 
     claude = next(result for result in results if result.id == "claude_cli")
     assert claude.status == "fail"
+
+
+def test_selfcheck_skips_mcp_list_for_nondefault_home(tmp_path, layers_root, fake_cli):
+    fake_cli("claude")
+
+    results = run_selfcheck(tmp_path / "custom-home", layers_root)
+
+    mcp_list = next(result for result in results if result.id == "mcp_list")
+    assert mcp_list.status == "skip"
+    assert mcp_list.evidence == "--home is not the default"

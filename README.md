@@ -21,9 +21,11 @@ python3 install.py update
 python3 install.py doctor --selfcheck --json
 ```
 
-`install --dry-run` prints the planned files, settings, and redacted MCP commands without writing them. Existing
-Claude files are backed up before replacement. `update` fetches configured layer repositories, replays the profile,
-and runs doctor.
+`install --dry-run` prints the planned files, settings, redacted MCP commands, and unmanaged paths that will be
+preserved without writing them. Existing Claude files are backed up before replacement, and paths not managed by
+agent-kit are copied into the new home. The backup retains both managed and unmanaged files. When `--home` is not
+the default `~/.claude`, install and update skip MCP registration because the Claude CLI always writes user-scoped
+servers to the default home. `update` fetches configured layer repositories, replays the profile, and runs doctor.
 
 ## Windows 10 and 11 (WSL2)
 

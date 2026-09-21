@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from aisetup import __version__
-from aisetup.compose import ComposeError, compose_tree, install_tree
+from aisetup.compose import ComposeError, compose_tree, install_tree, unmanaged_paths
 from aisetup.denylist import load_entries, scan_tree
 from aisetup.deps import (
     CORE_DEPENDENCIES,
@@ -23,6 +23,7 @@ from aisetup.manifest import ManifestError, load_layer_manifest, load_module_man
 from aisetup.mcp import McpError, plans_for_layers, register_servers
 from aisetup.profile import (
     ProfileError,
+    apply_overlay_question_defaults,
     build_interactive_profile,
     load_profile,
     write_profile,
@@ -104,9 +105,12 @@ def _install(args: argparse.Namespace) -> int:
                 REPO_ROOT,
                 _module_manifests(REPO_ROOT),
                 yes=args.yes,
+                input_fn=input,
             )
             profile["layers"]["local"] = str(args.layers_root / "local")
         resolved = resolve_layers(profile)
+        if args.profile:
+            apply_overlay_question_defaults(profile, resolved)
         check_dependencies(resolved.requirements)
     except MissingDependencyError as error:
         print(format_missing_dependencies(error), file=sys.stderr)
@@ -118,14 +122,21 @@ def _install(args: argparse.Namespace) -> int:
     try:
         if args.dry_run:
             with tempfile.TemporaryDirectory(prefix="agent-kit-dry-run-") as temporary:
-                result = compose_tree(profile, Path(temporary) / "claude")
+                destination = Path(temporary) / "claude"
+                result = compose_tree(profile, destination)
+                preserved = unmanaged_paths(args.home, destination)
             print("Planned files:")
             for path in result.files:
+                print(path)
+            print("Preserved (unmanaged):")
+            for path in preserved:
                 print(path)
             print("Merged settings:")
             print(json.dumps(result.settings, indent=2))
             print("MCP commands:")
-            for command in register_servers(plans_for_layers(resolved, profile), dry_run=True):
+            for command in register_servers(
+                plans_for_layers(resolved, profile), home=args.home, dry_run=True
+            ):
                 print(command)
             for name in resolved.skipped_platforms:
                 print(f"Skipped module {name}: unsupported on this platform")
@@ -134,7 +145,7 @@ def _install(args: argparse.Namespace) -> int:
         if not local_root.exists():
             shutil.copytree(REPO_ROOT / "core/templates/local", local_root)
         result = install_tree(profile, args.home)
-        register_servers(plans_for_layers(resolved, profile))
+        register_servers(plans_for_layers(resolved, profile), home=args.home)
         write_profile(args.layers_root / "profile.json", profile)
     except ComposeError as error:
         print(f"agent-kit: {error}", file=sys.stderr)
@@ -203,7 +214,7 @@ def _update(args: argparse.Namespace) -> int:
         update_profile_commits(profile)
         result = install_tree(profile, args.home)
         resolved = resolve_layers(profile)
-        register_servers(plans_for_layers(resolved, profile))
+        register_servers(plans_for_layers(resolved, profile), home=args.home)
         write_profile(args.layers_root / "profile.json", profile)
     except (ProfileError, ManifestError) as error:
         print(f"agent-kit: {error}", file=sys.stderr)

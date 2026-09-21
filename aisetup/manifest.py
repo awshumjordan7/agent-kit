@@ -16,7 +16,7 @@ class Question:
     id: str
     prompt: str
     type: str
-    default: str | bool | int
+    default: str | bool | int | None
     secret: bool = False
     choices: tuple[str, ...] = ()
 
@@ -71,6 +71,8 @@ class OverlayManifest:
     requires_agent_kit: str | None
     claude_md_fragment: str | None
     settings_fragment: str | None
+    questions: tuple[Question, ...]
+    mcp: tuple[McpServer, ...]
     files: tuple[FileCopy, ...]
     templates: tuple[Template, ...]
 
@@ -102,6 +104,8 @@ OVERLAY_KEYS = {
     "requires_agent_kit",
     "claude_md_fragment",
     "settings_fragment",
+    "questions",
+    "mcp",
     "files",
     "templates",
 }
@@ -162,29 +166,13 @@ def _templates(data: Any, path: Path) -> tuple[Template, ...]:
     return tuple(Template(item.src, item.dest) for item in _copies(data, "templates", path))
 
 
-def load_layer_manifest(path: Path) -> LayerManifest:
-    data = _read(path)
-    _unknown(data, LAYER_KEYS, path)
-    schema = data.get("schema")
-    if schema != 1:
-        raise ManifestError(f"{path}: schema must be 1")
-    modules = _strings(data.get("modules", []), "modules", path)
-    return LayerManifest(schema, modules, _templates(data.get("templates", []), path))
-
-
-def load_module_manifest(path: Path) -> ModuleManifest:
-    data = _read(path)
-    _unknown(data, MODULE_KEYS, path)
-    name = data.get("name")
-    description = data.get("description")
-    default = data.get("default")
-    if not isinstance(name, str) or name != path.parent.name:
-        raise ManifestError(f"{path}: name must equal directory name {path.parent.name}")
-    if not isinstance(description, str) or not isinstance(default, bool):
-        raise ManifestError(f"{path}: description must be a string and default must be a boolean")
-
+def _questions(
+    data: Any, path: Path, *, allow_missing_default: bool = False
+) -> tuple[Question, ...]:
+    if not isinstance(data, list):
+        raise ManifestError(f"{path}: questions must be an array of tables")
     questions: list[Question] = []
-    for item in data.get("questions", []):
+    for item in data:
         if not isinstance(item, dict):
             raise ManifestError(f"{path}: questions must be an array of tables")
         _unknown(item, QUESTION_KEYS, path)
@@ -194,11 +182,16 @@ def load_module_manifest(path: Path) -> ModuleManifest:
             not isinstance(item.get("id"), str)
             or not isinstance(item.get("prompt"), str)
             or question_type not in {"string", "bool", "int", "choice"}
-            or not isinstance(default_value, (str, bool, int))
+            or not (
+                isinstance(default_value, (str, bool, int))
+                or (allow_missing_default and default_value is None)
+            )
         ):
             raise ManifestError(f"{path}: invalid question")
         choices = _strings(item.get("choices", []), "choices", path)
-        if question_type == "choice" and (not choices or default_value not in choices):
+        if question_type == "choice" and (
+            not choices or (default_value is not None and default_value not in choices)
+        ):
             raise ManifestError(f"{path}: choice questions need choices containing the default")
         questions.append(
             Question(
@@ -210,9 +203,14 @@ def load_module_manifest(path: Path) -> ModuleManifest:
                 choices,
             )
         )
+    return tuple(questions)
 
+
+def _mcp_servers(data: Any, path: Path) -> tuple[McpServer, ...]:
+    if not isinstance(data, list):
+        raise ManifestError(f"{path}: mcp must be an array of tables")
     servers: list[McpServer] = []
-    for item in data.get("mcp", []):
+    for item in data:
         if not isinstance(item, dict):
             raise ManifestError(f"{path}: mcp must be an array of tables")
         _unknown(item, MCP_KEYS, path)
@@ -242,6 +240,32 @@ def load_module_manifest(path: Path) -> ModuleManifest:
                 item.get("url"),
             )
         )
+    return tuple(servers)
+
+
+def load_layer_manifest(path: Path) -> LayerManifest:
+    data = _read(path)
+    _unknown(data, LAYER_KEYS, path)
+    schema = data.get("schema")
+    if schema != 1:
+        raise ManifestError(f"{path}: schema must be 1")
+    modules = _strings(data.get("modules", []), "modules", path)
+    return LayerManifest(schema, modules, _templates(data.get("templates", []), path))
+
+
+def load_module_manifest(path: Path) -> ModuleManifest:
+    data = _read(path)
+    _unknown(data, MODULE_KEYS, path)
+    name = data.get("name")
+    description = data.get("description")
+    default = data.get("default")
+    if not isinstance(name, str) or name != path.parent.name:
+        raise ManifestError(f"{path}: name must equal directory name {path.parent.name}")
+    if not isinstance(description, str) or not isinstance(default, bool):
+        raise ManifestError(f"{path}: description must be a string and default must be a boolean")
+
+    questions = _questions(data.get("questions", []), path)
+    servers = _mcp_servers(data.get("mcp", []), path)
 
     return ModuleManifest(
         name,
@@ -252,8 +276,8 @@ def load_module_manifest(path: Path) -> ModuleManifest:
         _strings(data.get("platforms", []), "platforms", path),
         data.get("claude_md_fragment"),
         data.get("settings_fragment"),
-        tuple(questions),
-        tuple(servers),
+        questions,
+        servers,
         _copies(data.get("files", []), "files", path),
         _templates(data.get("templates", []), path),
     )
@@ -270,6 +294,8 @@ def load_overlay_manifest(path: Path) -> OverlayManifest:
         data.get("requires_agent_kit"),
         data.get("claude_md_fragment"),
         data.get("settings_fragment"),
+        _questions(data.get("questions", []), path, allow_missing_default=True),
+        _mcp_servers(data.get("mcp", []), path),
         _copies(data.get("files", []), "files", path),
         _templates(data.get("templates", []), path),
     )

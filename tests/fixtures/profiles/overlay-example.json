@@ -5,6 +5,7 @@
     "overlay": {"path": "tests/fixtures/overlay-example"},
     "local": "../local-example"
   },
+  "answers": {"overlay.api_key": "fixture-token"},
   "agents": {
     "example-agent": {"model": "sonnet", "maxTurns": 15, "effort": null}
   },

@@ -4,11 +4,16 @@ import sys
 
 import pytest
 
-from aisetup.manifest import ManifestError, load_module_manifest, validate_dependencies
+from aisetup.manifest import (
+    ManifestError,
+    load_module_manifest,
+    load_overlay_manifest,
+    validate_dependencies,
+)
 
 
 def write_manifest(path, body):
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
 
 
@@ -42,3 +47,22 @@ def test_manifest_platforms_control_installation(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
 
     assert not load_module_manifest(path).supports_current_platform
+
+
+def test_overlay_manifest_accepts_questions_and_mcp(repo_root):
+    manifest = load_overlay_manifest(repo_root / "tests/fixtures/overlay-example/overlay.toml")
+
+    assert manifest.questions[0].id == "api_key"
+    assert manifest.mcp[0].transport == "http"
+
+
+def test_overlay_manifest_rejects_bad_mcp_transport(tmp_path):
+    path = tmp_path / "overlay.toml"
+    write_manifest(
+        path,
+        'name = "demo"\ndescription = "Demo"\n'
+        '[[mcp]]\nname = "bad"\ntransport = "socket"\nscope = "user"\n',
+    )
+
+    with pytest.raises(ManifestError, match=r"mcp\.transport must be stdio or http"):
+        load_overlay_manifest(path)

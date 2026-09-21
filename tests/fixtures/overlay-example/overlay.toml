@@ -2,3 +2,16 @@ name = "example"
 description = "Synthetic private overlay"
 claude_md_fragment = "CLAUDE.fragment.md"
 settings_fragment = "settings.fragment.json"
+
+[[questions]]
+id = "api_key"
+prompt = "Example API key"
+type = "string"
+default = ""
+secret = true
+
+[[mcp]]
+name = "example-http"
+transport = "http"
+scope = "user"
+url = "https://example.invalid/mcp?api_key={{answers.overlay.api_key}}"

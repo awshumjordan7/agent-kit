@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from aisetup.manifest import ModuleManifest
+from aisetup.layers import ResolvedLayers
+from aisetup.manifest import ModuleManifest, OverlayManifest
 from aisetup.merge import deep_merge
 
 
@@ -255,6 +256,19 @@ def load_recommended_profile(repo_root: Path) -> tuple[dict[str, Any], dict[str,
     return profile, document.get("recommendations", {})
 
 
+def apply_overlay_question_defaults(profile: dict[str, Any], resolved: ResolvedLayers) -> None:
+    for layer in resolved.layers:
+        if layer.overlay is None:
+            continue
+        for question in layer.overlay.questions:
+            answer = f"overlay.{question.id}"
+            if answer in profile["answers"]:
+                continue
+            if question.default is None:
+                raise ProfileError(f"profile.answers is missing required {answer}")
+            profile["answers"][answer] = question.default
+
+
 def _parse_answer(raw: str, default: str | bool | int, answer_type: str) -> str | bool | int:
     if not raw:
         return default
@@ -278,6 +292,7 @@ def build_interactive_profile(
     manifests: dict[str, ModuleManifest],
     *,
     yes: bool,
+    overlay: OverlayManifest | None = None,
     input_fn: Callable[[str], str] = input,
     secret_input_fn: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
@@ -290,9 +305,15 @@ def build_interactive_profile(
         if raw:
             profile["modules"][name] = raw in {"y", "yes"}
 
-    for name, manifest in manifests.items():
-        if not profile["modules"].get(name, False):
-            continue
+    question_manifests: list[tuple[str, ModuleManifest | OverlayManifest]] = [
+        (name, manifest)
+        for name, manifest in manifests.items()
+        if profile["modules"].get(name, False)
+    ]
+    if overlay is not None:
+        question_manifests.append(("overlay", overlay))
+
+    for name, manifest in question_manifests:
         for question in manifest.questions:
             if yes:
                 value = question.default

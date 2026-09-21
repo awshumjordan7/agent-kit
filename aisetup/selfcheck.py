@@ -8,6 +8,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from aisetup.paths import is_default_claude_home
+
 
 @dataclass(frozen=True)
 class Capability:
@@ -70,7 +72,9 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
     git = shutil.which("git")
     results.append(_result("git", git is not None, git or "not found", None if git else "missing"))
 
-    if claude is None:
+    if not is_default_claude_home(home):
+        results.append(_skip("mcp_list", "--home is not the default"))
+    elif claude is None:
         results.append(_skip("mcp_list", "claude CLI unavailable"))
     else:
         try:
