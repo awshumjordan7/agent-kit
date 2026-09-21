@@ -15,7 +15,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 - The local gate and the sandbox gate.
 - Lane limits. A quick run that turns out big **stops** with the triage and one line of
   reason. It never widens itself into a dev run.
-- The two-round fix cap. A third failure stops the run as `READY_FOR_HUMAN`, ships nothing else,
+- The three-round counted fix cap. Two consecutive zero-file rounds also stop the run as `READY_FOR_HUMAN`,
   and writes the failure list and resume pointers to `STATE.md`.
 - Bot-review triage stops for the user. Auto never addresses bot findings by itself.
 

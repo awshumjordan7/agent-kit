@@ -30,7 +30,17 @@ TOP_LEVEL_KEYS = {
 }
 LAYER_KEYS = {"path", "commit", "track"}
 AGENT_KEYS = {"model", "maxTurns", "effort"}
-FORGE_KEYS = {"roles", "stages", "gate", "workspace", "codex"}
+FORGE_KEYS = {
+    "roles",
+    "stages",
+    "gate",
+    "workspace",
+    "codex",
+    "thresholds",
+    "lenses",
+    "ticketUrl",
+    "repos",
+}
 ROLE_KEYS = {"provider", "model", "effort"}
 STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}
 DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
@@ -126,6 +136,20 @@ def validate_profile(profile: dict[str, Any]) -> None:
     if not all(isinstance(key, str) and isinstance(value, bool) for key, value in stages.items()):
         raise ProfileError("profile.forge.stages values must be booleans")
     _table(forge.get("gate"), "profile.forge.gate")
+    thresholds = _table(forge.get("thresholds"), "profile.forge.thresholds")
+    _unknown(thresholds, {"quickReviewThreshold", "fixCap"}, "profile.forge.thresholds")
+    if not all(isinstance(value, int) and value >= 1 for value in thresholds.values()):
+        raise ProfileError("profile.forge.thresholds values must be positive integers")
+    lenses = _table(forge.get("lenses"), "profile.forge.lenses")
+    _unknown(lenses, {"security", "design"}, "profile.forge.lenses")
+    if not all(isinstance(value, str) for value in lenses.values()):
+        raise ProfileError("profile.forge.lenses values must be strings")
+    if not isinstance(forge.get("ticketUrl"), str):
+        raise ProfileError("profile.forge.ticketUrl must be a string")
+    repos = _table(forge.get("repos"), "profile.forge.repos")
+    _unknown(repos, {"frontend", "backend"}, "profile.forge.repos")
+    if not all(isinstance(value, str) for value in repos.values()):
+        raise ProfileError("profile.forge.repos values must be strings")
 
     ship_pr = _table(profile.get("ship_pr"), "profile.ship_pr")
     _unknown(ship_pr, {"base_branches"}, "profile.ship_pr")
@@ -342,20 +366,25 @@ def build_interactive_profile(
             current: Any = profile
             parts = dotted_key.split(".")
             for part in parts[:-1]:
+                if not isinstance(current, dict) or part not in current:
+                    break
                 current = current[part]
-            default = current[parts[-1]]
-            raw = input_fn(
-                f"{dotted_key} [{default!s}; confidence: {recommendation.get('confidence', 'n/a')}] "
-            )
-            current[parts[-1]] = _parse_answer(
-                raw,
-                default,
-                "bool"
-                if isinstance(default, bool)
-                else "int"
-                if isinstance(default, int)
-                else "string",
-            )
+            else:
+                if not isinstance(current, dict) or parts[-1] not in current:
+                    continue
+                default = current[parts[-1]]
+                raw = input_fn(
+                    f"{dotted_key} [{default!s}; confidence: {recommendation.get('confidence', 'n/a')}] "
+                )
+                current[parts[-1]] = _parse_answer(
+                    raw,
+                    default,
+                    "bool"
+                    if isinstance(default, bool)
+                    else "int"
+                    if isinstance(default, int)
+                    else "string",
+                )
     validate_profile(profile)
     return profile
 

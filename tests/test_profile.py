@@ -51,6 +51,19 @@ def test_profile_rejects_unknown_forge_stage(repo_root, tmp_path, monkeypatch):
         load_profile(path)
 
 
+def test_profile_rejects_unknown_forge_key(repo_root, tmp_path, monkeypatch):
+    monkeypatch.chdir(repo_root)
+    document = json.loads(
+        (repo_root / "tests/fixtures/profiles/public-default.json").read_text(encoding="utf-8")
+    )
+    document["forge"] = {"mystery": True}
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProfileError, match=r"unknown key profile\.forge\.mystery"):
+        load_profile(path)
+
+
 def test_secret_question_uses_hidden_input(repo_root):
     context7 = load_module_manifest(repo_root / "modules/context7/module.toml")
     hidden_prompts = []

@@ -20,6 +20,8 @@ Read, in order, before touching git:
 
 For every `gh` command, unset each environment variable listed by
 `git config --get aisetup.gh-unset-env` using `env -u <name>`.
+Stage exactly the named file list you were given; never widen it from `git status`.
+After any interruption, run `gh pr view <n>` before reporting so the result reflects the actual PR state.
 
 Do not restate or "improve" those rules here; if one is wrong, report it so the
 skill gets fixed. Never add a Co-Authored-By or "Generated with" line to a commit

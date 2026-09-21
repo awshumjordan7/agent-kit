@@ -66,3 +66,16 @@ def test_overlay_manifest_rejects_bad_mcp_transport(tmp_path):
 
     with pytest.raises(ManifestError, match=r"mcp\.transport must be stdio or http"):
         load_overlay_manifest(path)
+
+
+def test_manifest_rejects_non_string_mcp_header(tmp_path):
+    path = tmp_path / "overlay.toml"
+    write_manifest(
+        path,
+        'name = "demo"\ndescription = "Demo"\n'
+        '[[mcp]]\nname = "bad"\ntransport = "http"\nscope = "user"\n'
+        'url = "https://example.invalid"\nheaders = { Authorization = 1 }\n',
+    )
+
+    with pytest.raises(ManifestError, match=r"mcp\.headers must contain strings"):
+        load_overlay_manifest(path)

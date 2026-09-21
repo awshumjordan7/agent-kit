@@ -18,35 +18,35 @@ const TIERS = {
   fable: {
     implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'fable', effort: 'high' },
+    triage: { model: 'fable', effort: 'high' },
     spotReviewer: { model: 'opus', effort: 'high' },
     codexWrap: { model: 'sonnet', effort: 'low' },
-    qa: { model: 'sonnet', effort: 'medium' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
     qaDraft: { model: 'sonnet', effort: 'low' },
     smoke: { model: 'sonnet', effort: 'medium' },
-    trim: { model: 'sonnet', effort: 'medium' },
+    trim: { model: 'haiku', effort: 'low' },
     lens: { model: 'sonnet', effort: 'high' },
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
-    changedFiles: { model: 'sonnet', effort: 'low' },
+    changedFiles: { model: 'haiku', effort: 'low' },
     readConfig: { model: 'haiku', effort: 'low' },
   },
   opus: {
     implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'opus', effort: 'high' },
+    triage: { model: 'opus', effort: 'high' },
     spotReviewer: { model: 'opus', effort: 'high' },
     codexWrap: { model: 'sonnet', effort: 'low' },
-    qa: { model: 'sonnet', effort: 'medium' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
     qaDraft: { model: 'sonnet', effort: 'low' },
     smoke: { model: 'sonnet', effort: 'medium' },
-    trim: { model: 'sonnet', effort: 'medium' },
+    trim: { model: 'haiku', effort: 'low' },
     lens: { model: 'sonnet', effort: 'high' },
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
-    changedFiles: { model: 'sonnet', effort: 'low' },
+    changedFiles: { model: 'haiku', effort: 'low' },
     readConfig: { model: 'haiku', effort: 'low' },
   },
 }
@@ -55,9 +55,6 @@ const ROLE_MAP = {
   implementer: ['impl', 'quick-impl'],
   reviewer: ['review'],
   spotReviewer: ['spot-review'],
-  qa: ['qa'],
-  qaDraft: ['qa'],
-  smoke: ['qa'],
 }
 
 const PARAMS = {
@@ -86,6 +83,9 @@ const PARAMS = {
   dryRunFindings: Number.isInteger(args.dryRunFindings) && args.dryRunFindings > 0 ? args.dryRunFindings : 0,
   ghEnvUnset: Array.isArray(args.ghEnvUnset) ? args.ghEnvUnset : [],
   forgeConfig: args.forgeConfig && typeof args.forgeConfig === 'object' ? args.forgeConfig : null,
+  fullySpecified: args.fullySpecified === true,
+  stageAlso: Array.isArray(args.stageAlso) ? args.stageAlso.map(String) : [],
+  fixCap: 3,
 }
 
 let FORGE_CONFIG = PARAMS.forgeConfig
@@ -101,7 +101,9 @@ let FORGE_CONFIG = PARAMS.forgeConfig
 function codexFlags(role, model, effort) {
   return `--role ${role}` + (model ? ` --model ${model}` : '') + (effort ? ` --effort ${effort}` : '')
 }
-const CODEX_IMPL_FLAGS = codexFlags(PARAMS.lane === 'quick' ? 'quick-impl' : 'impl', args.codexModelImpl || args.codexModel, args.codexEffortImpl)
+function codexImplFlags() {
+  return codexFlags(pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold()), args.codexModelImpl || args.codexModel, args.codexEffortImpl)
+}
 const CODEX_REVIEW_FLAGS = codexFlags('review', args.codexModelReview || args.codexModel, args.codexEffortReview)
 const CODEX_SH = '~/.claude/skills/forge/scripts/codex-exec.sh'
 const PLAN = PARAMS.planPath
@@ -172,8 +174,12 @@ const FORGE_CONFIG_SCHEMA = {
   properties: {
     roles: { type: 'object' },
     stages: { type: 'object' },
+    thresholds: { type: 'object' },
+    lenses: { type: 'object' },
+    ticketUrl: { type: 'string' },
+    repos: { type: 'object' },
   },
-  required: ['roles', 'stages'],
+  required: ['roles', 'stages', 'thresholds', 'lenses', 'ticketUrl', 'repos'],
 }
 const CODEX_REVIEW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -217,21 +223,47 @@ const VERIFY_SCHEMA = {
         required: ['file', 'line', 'status', 'reason'],
       },
     },
-    unresolved: { type: 'array', items: FINDING }, error: { type: 'string' },
+    unresolved: { type: 'array', items: FINDING },
+    contractViolations: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { file: { type: 'string' }, line: { type: 'integer' }, claim: { type: 'string' } },
+        required: ['file', 'line', 'claim'],
+      },
+    },
+    error: { type: 'string' },
   },
-  required: ['codexInvoked', 'threadMode', 'threadExists', 'clean', 'results', 'unresolved'],
+  required: ['codexInvoked', 'threadMode', 'threadExists', 'clean', 'results', 'unresolved', 'contractViolations'],
+}
+const TRIAGE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    verdicts: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          file: { type: 'string' }, line: { type: 'integer' },
+          real: { type: 'string', enum: ['yes', 'no', 'uncertain'] },
+          worthIt: { type: 'boolean' }, why: { type: 'string' },
+        },
+        required: ['file', 'line', 'real', 'worthIt', 'why'],
+      },
+    },
+  },
+  required: ['verdicts'],
 }
 const CONTEXT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    files: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
+    files: { type: 'array', items: { type: 'string' } },
+    preexisting: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
     diff: { type: 'string' }, planSummary: { type: 'string' },
     criteria: { type: 'array', items: { type: 'string' } },
     checklist: { type: 'string' }, standards: { type: 'string' },
     testPaths: { type: 'array', items: { type: 'string' } }, error: { type: 'string' },
     contract: { type: 'string' }, reviewerContract: { type: 'string' }, checkpointFindings: { type: 'string' },
   },
-  required: ['files', 'commandSucceeded', 'diff', 'planSummary', 'criteria', 'checklist', 'standards', 'testPaths', 'reviewerContract', 'checkpointFindings'],
+  required: ['files', 'preexisting', 'commandSucceeded', 'diff', 'planSummary', 'criteria', 'checklist', 'standards', 'testPaths', 'reviewerContract', 'checkpointFindings'],
 }
 const GATE_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -244,6 +276,14 @@ const GATE_SCHEMA = {
         required: ['tool', 'summary'],
       },
     },
+    warnings: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { tool: { type: 'string' }, summary: { type: 'string' } },
+        required: ['tool', 'summary'],
+      },
+    },
+    skipped: { type: 'array', items: { type: 'string' } },
     commands: { type: 'array', items: { type: 'string' } },
     files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
     diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
@@ -311,11 +351,90 @@ const HANDOFF_SCHEMA = {
   properties: { handoffPath: { type: 'string' } }, required: ['handoffPath'],
 }
 
+const DEFAULT_LENSES = {
+  security: '(auth|permission|identity|rbac|token|session)',
+  design: '\\.tsx?$',
+}
 const LENSES = [
-  { key: 'security', paths: /(auth|permission|identity|rbac|token|session)/i, prompt: 'Audit authentication, authorization, scoping, token/session handling, input trust, and privilege boundaries.' },
+  { key: 'security', configKey: 'security', prompt: 'Audit authentication, authorization, scoping, token/session handling, input trust, and privilege boundaries.' },
   { key: 'dx-audit', paths: /(views?|serializers?|urls?|routes?|clients?|api)\//i, skill: 'dx-audit' },
-  { key: 'design-audit', paths: /\.tsx?$/i, skill: 'design-audit' },
+  { key: 'design-audit', configKey: 'design', skill: 'design-audit' },
 ]
+
+function quickReviewThreshold() {
+  const value = FORGE_CONFIG && FORGE_CONFIG.thresholds && FORGE_CONFIG.thresholds.quickReviewThreshold
+  return Number.isInteger(value) && value >= 1 ? value : 8
+}
+
+function plannedSourceFiles(planText) {
+  const phases = /^(#{2,})\s*Phases\s*$/im.exec(String(planText || ''))
+  if (!phases) return 0
+  const after = String(planText).slice(phases.index + phases[0].length)
+  const next = after.search(new RegExp(`^#{2,${phases[1].length}}\\s+(?!Phase\\b)`, 'mi'))
+  const body = next >= 0 ? after.slice(0, next) : after
+  const knownSourceExtension = /\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)$/i
+  const paths = [...body.matchAll(/`([^`\n]+\.[A-Za-z0-9]+)`/g)]
+    .map(match => match[1])
+    .filter(path => /[\\/]/.test(path) || knownSourceExtension.test(path))
+  return new Set(paths.filter(isSourcePath)).size
+}
+
+function isSourcePath(path) {
+  const normalized = String(path).replace(/\\/g, '/').toLowerCase()
+  const name = normalized.split('/').pop() || ''
+  return !normalized.startsWith('tests/') && !normalized.includes('/tests/') &&
+    !name.startsWith('test_') && !name.endsWith('_test.py') &&
+    !name.endsWith('.md') && !name.endsWith('.json') && /\.[a-z0-9]+$/.test(name)
+}
+
+function pickImplRole(lane, fullySpecified, planText, threshold = 8) {
+  return lane === 'quick' && fullySpecified && plannedSourceFiles(planText) <= threshold
+    ? 'quick-impl'
+    : 'impl'
+}
+
+function sandboxAllowed(stageOn, repo, repos) {
+  if (!stageOn) return false
+  const basename = String(repo || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
+  return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(basename)
+}
+
+function sandboxRoots() {
+  const repos = (FORGE_CONFIG && FORGE_CONFIG.repos) || {}
+  return {
+    frontend: `/app/${repos.frontend || 'frontend'}`,
+    backend: `/app/${repos.backend || 'backend'}`,
+  }
+}
+
+function backendPrefix(root) {
+  return `cd ${root} && { [ -f /app/env.sh ] && . /app/env.sh || true; }`
+}
+
+function sandboxCheck(isUi, testPaths = ['tests/unit']) {
+  const roots = sandboxRoots()
+  return isUi
+    ? `cd ${roots.frontend} && yarn tsc --noEmit`
+    : `${backendPrefix(roots.backend)} && uv run pytest ${testPaths.join(' ')} -x -q`
+}
+
+function configuredLenses() {
+  const configured = (FORGE_CONFIG && FORGE_CONFIG.lenses) || DEFAULT_LENSES
+  return LENSES.map(lens => lens.paths
+    ? lens
+    : { ...lens, paths: configuredLensPattern(configured[lens.configKey], DEFAULT_LENSES[lens.configKey]) })
+}
+
+function configuredLensPattern(value, fallback) {
+  const pattern = typeof value === 'string' && value.length <= 500 ? value : fallback
+  // Lens expressions come from local Forge configuration and are length-bounded before compilation.
+  return new RegExp(pattern, 'i') // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+}
+
+function ticketLinks() {
+  const template = (FORGE_CONFIG && FORGE_CONFIG.ticketUrl) || ''
+  return PARAMS.tickets.map(key => ({ key, url: template ? template.replace('<KEY>', key) : '' }))
+}
 
 function dryRunPlanText() {
   if (PARAMS.planText) return PARAMS.planText
@@ -339,9 +458,9 @@ function dryFindings() {
 const STUBS = {
   implementer: () => ({ filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null }),
   reviewer: () => ({ verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }),
+  triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   spotReviewer: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
-  qa: () => ({ passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run checkpoint diff' }),
   gate: opts => PARAMS.dryRunFailGate === opts.label
     ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure' }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run checkpoint diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
     : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run checkpoint diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 },
@@ -359,26 +478,38 @@ const STUBS = {
   },
   changedFiles: opts => opts.schema === PLAN_TEXT_SCHEMA
     ? { planText: dryRunPlanText() }
+    : opts.schema === ACK_SCHEMA
+    ? { written: true }
     : opts.schema === FORGE_CONFIG_SCHEMA
-    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false } }
+    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8, fixCap: 3 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }
     : {
-      files: ['auth/api/client.py'], commandSucceeded: true, diff: 'dry-run diff', planSummary: 'dry-run plan summary',
+      files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diff: 'dry-run diff', planSummary: 'dry-run plan summary',
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
       reviewerContract: 'dry-run reviewer contract', checkpointFindings: '',
     },
-  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false } }),
+  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8, fixCap: 3 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
     if (opts.schema === CODEX_RESULT) return { codexInvoked: true, threadMode: 'start', threadExists: true, filesChanged: ['auth/api/client.py'], testsWritten: 0, summary: 'dry-run Codex', error: '' }
     if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '' }
-    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: opts.label === 'fix-1' ? 'start' : 'resume', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: '', notes: 'dry-run fix' }, error: '' }
-    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'resume', threadExists: true, clean: !PARAMS.dryRunFindings, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: 'STILL BROKEN', reason: finding.claim })), unresolved: dryFindings(), error: '' }
+    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: opts.label === 'fix-1' ? 'start' : 'resume', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: opts.label === 'fix-1' && PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: '', notes: 'dry-run fix' }, error: '' }
+    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'resume', threadExists: true, clean: !PARAMS.dryRunFindings, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: 'STILL BROKEN', reason: finding.claim })), unresolved: dryFindings(), contractViolations: [], error: '' }
     return { written: true }
   },
 }
 
 const decisions = []
+const dryRunJournal = []
+export const __test = {
+  parseCheckpoints,
+  plannedSourceFiles,
+  partitionTriage,
+  pickImplRole,
+  sandboxAllowed,
+  sandboxCheck,
+  dryRunJournal,
+}
 const runtimeAgent = agent
 let spawnCount = 0
 let capBlocked = false
@@ -389,7 +520,7 @@ async function decide(text) {
 
 function configRoleForTier(tierRole) {
   const mapped = ROLE_MAP[tierRole] || []
-  if (tierRole === 'implementer') return PARAMS.lane === 'quick' ? 'quick-impl' : 'impl'
+  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   return mapped[0] || null
 }
 
@@ -409,8 +540,10 @@ function tierProfile(tierRole) {
 }
 
 async function agentT(role, prompt, opts = {}) {
-  const isReservedHandoff = role === 'handoff' && ['handoff', 'fix-cap-state'].includes(opts.label)
-  const limit = isReservedHandoff ? PARAMS.spawnCap : PARAMS.spawnCap - 1
+  const isHandoff = role === 'handoff' && opts.label === 'handoff'
+  const isFixCapState = role === 'handoff' && opts.label === 'fix-cap-state'
+  const isReservedHandoff = isHandoff || isFixCapState
+  const limit = isHandoff ? PARAMS.spawnCap : isFixCapState ? PARAMS.spawnCap - 1 : PARAMS.spawnCap - 2
   if (spawnCount >= limit) {
     if (!isReservedHandoff && !capBlocked) {
       capBlocked = true
@@ -422,10 +555,13 @@ async function agentT(role, prompt, opts = {}) {
   if (!profile) throw new Error(`unknown tier role: ${role}`)
   spawnCount++
   const callOpts = { ...opts, model: profile.model, effort: profile.effort }
-  if (PARAMS.dryRun) return STUBS[role](opts)
+  if (PARAMS.dryRun) {
+    dryRunJournal.push({ role, label: opts.label || role, prompt })
+    return STUBS[role](opts)
+  }
   let result = await runtimeAgent(prompt, callOpts)
   if (result === null && profile.model === 'fable') {
-    if (spawnCount >= PARAMS.spawnCap - 1) {
+    if (spawnCount >= PARAMS.spawnCap - 2) {
       capBlocked = true
       await decide(`${role} returned null on Fable; the Opus fallback was not started because the spawn cap was reached.`)
       return null
@@ -489,7 +625,7 @@ function assertCodex(result, where) {
 }
 
 function assertImplementation(result, where) {
-  const role = PARAMS.lane === 'quick' ? 'quick-impl' : 'impl'
+  const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(role) || {}).provider !== 'claude') return assertCodex(result, where)
   if (!result || result.error) {
     throw new Error(`Claude implementation failed at ${where}: ${(result && result.error) || 'agent returned null'}`)
@@ -498,11 +634,11 @@ function assertImplementation(result, where) {
 }
 
 function parseCheckpoints(planText, argsCheckpoints) {
-  const phases = [...String(planText || '').matchAll(/^#{2,3}\s*Phase\s+(\d+)\b[^\n]*$/gmi)]
-    .map(match => ({ number: Number(match[1]), index: match.index }))
+  const phases = [...String(planText || '').matchAll(/^#{2,3}\s*Phase\s+([A-Za-z]*\d+)\b[^\n]*$/gmi)]
+    .map(match => ({ label: match[1], index: match.index }))
   const fallback = () => [{
-    from: phases.length ? phases[0].number : null,
-    to: phases.length ? phases[phases.length - 1].number : null,
+    from: phases.length ? phases[0].label : null,
+    to: phases.length ? phases[phases.length - 1].label : null,
     reason: '', final: true,
   }]
   let entries
@@ -516,9 +652,13 @@ function parseCheckpoints(planText, argsCheckpoints) {
     const nextHeading = afterHeading.search(/^#{2,}\s+/m)
     const body = (nextHeading >= 0 ? afterHeading.slice(0, nextHeading) : afterHeading).trim()
     const lines = body.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      .filter(line => !/^\|\s*After\s*\|\s*Reason\s*\|$/i.test(line))
+      .filter(line => !/^\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|$/.test(line))
     entries = lines.map(line => {
-      const match = /^-\s*Phases?\s+(\d+(?:-\d+)?)\s*:\s*(.+)$/i.exec(line)
-      return match && { phases: match[1], reason: match[2].trim() }
+      const bullet = /^-\s*Phases?\s+([A-Za-z]*\d+(?:\s*-\s*[A-Za-z]*\d+)?)\s*:\s*(.+)$/i.exec(line)
+      if (bullet) return { phases: bullet[1].replace(/\s/g, ''), reason: bullet[2].trim() }
+      const row = /^\|\s*(?:Phase\s+)?([A-Za-z]*\d+)(?:\s*-\s*(?:Phase\s+)?([A-Za-z]*\d+))?\s*\|\s*(.+?)\s*\|$/i.exec(line)
+      return row && { phases: row[2] ? `${row[1]}-${row[2]}` : row[1], reason: row[3].trim() }
     })
   }
   const invalid = () => {
@@ -526,26 +666,25 @@ function parseCheckpoints(planText, argsCheckpoints) {
     return fallback()
   }
   if (!phases.length || !entries.length || entries.some(entry => !entry)) return invalid()
-  const numbers = phases.map(item => item.number)
-  const found = new Set(numbers)
-  if (found.size !== numbers.length || numbers.some((number, index) => index && number <= numbers[index - 1])) return invalid()
+  const labels = phases.map(item => item.label)
+  const found = new Set(labels)
+  if (found.size !== labels.length) return invalid()
   const segments = []
-  let expected = numbers[0]
+  let expectedIndex = 0
   for (const entry of entries) {
-    const range = /^(\d+)(?:-(\d+))?$/.exec(entry.phases.trim())
+    const range = /^([A-Za-z]*\d+)(?:-([A-Za-z]*\d+))?$/.exec(entry.phases.trim())
     if (!range || !entry.reason.trim()) return invalid()
-    const from = Number(range[1])
-    const to = Number(range[2] || range[1])
-    if (from !== expected || to < from) return invalid()
-    for (let number = from; number <= to; number++) if (!found.has(number)) return invalid()
+    const from = range[1]
+    const to = range[2] || range[1]
+    const fromIndex = labels.indexOf(from)
+    const toIndex = labels.indexOf(to)
+    if (fromIndex !== expectedIndex || toIndex < fromIndex) return invalid()
     segments.push({ from, to, reason: entry.reason.trim(), final: false })
-    expected = to + 1
+    expectedIndex = toIndex + 1
   }
-  const last = numbers[numbers.length - 1]
-  if (expected <= last) {
-    for (let number = expected; number <= last; number++) if (!found.has(number)) return invalid()
-    segments.push({ from: expected, to: last, reason: '', final: true })
-  } else if (expected === last + 1) {
+  if (expectedIndex < labels.length) {
+    segments.push({ from: labels[expectedIndex], to: labels[labels.length - 1], reason: '', final: true })
+  } else if (expectedIndex === labels.length) {
     segments[segments.length - 1].final = true
   } else {
     return invalid()
@@ -555,11 +694,12 @@ function parseCheckpoints(planText, argsCheckpoints) {
 
 function planPhases(planText, segment) {
   if (!segment || segment.from === null || segment.to === null) return String(planText || '')
-  const headings = [...String(planText || '').matchAll(/^#{2,3}\s*Phase\s+(\d+)\b[^\n]*$/gmi)]
-  const first = headings.findIndex(match => Number(match[1]) === segment.from)
-  const after = headings.findIndex(match => Number(match[1]) > segment.to)
+  const headings = [...String(planText || '').matchAll(/^#{2,3}\s*Phase\s+([A-Za-z]*\d+)\b[^\n]*$/gmi)]
+  const first = headings.findIndex(match => match[1] === segment.from)
+  const last = headings.findIndex(match => match[1] === segment.to)
+  const after = last < 0 ? -1 : last + 1
   if (first < 0) return ''
-  return String(planText).slice(headings[first].index, after < 0 ? undefined : headings[after].index).trim()
+  return String(planText).slice(headings[first].index, after < 0 || after >= headings.length ? undefined : headings[after].index).trim()
 }
 
 function planCriteria(planText) {
@@ -572,15 +712,35 @@ function planCriteria(planText) {
 }
 
 function readPlan() {
-  return agentT('changedFiles', `Read ${PLAN} completely with ranged sed reads only; keep each range under 200 lines and the total under 1500 lines. Do not read or change repository files. If the file is longer than 1500 lines, return what you read and append the line [TRUNCATED] at the end of planText. Return the plan's exact text unchanged as planText.`,
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py read-plan --plan-file ${shellQuote(PLAN)}`,
   { label: 'read-plan', phase: 'Implement', schema: PLAN_TEXT_SCHEMA })
 }
 
 async function loadForgeConfig() {
-  if (FORGE_CONFIG) return
-  const result = await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return only its roles and stages objects. If it is missing or invalid, return empty roles and all stages false. Do not read repository files.`,
+  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, and repos. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
     { label: 'read-config', phase: 'Implement', schema: FORGE_CONFIG_SCHEMA })
-  FORGE_CONFIG = result || { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false } }
+  const defaults = {
+    roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false },
+    thresholds: { quickReviewThreshold: 8, fixCap: 3 }, lenses: DEFAULT_LENSES,
+    ticketUrl: '', repos: { frontend: '', backend: '' },
+  }
+  FORGE_CONFIG = {
+    ...defaults, ...(result || {}),
+    thresholds: { ...defaults.thresholds, ...((result && result.thresholds) || {}) },
+    lenses: { ...defaults.lenses, ...((result && result.lenses) || {}) },
+    repos: { ...defaults.repos, ...((result && result.repos) || {}) },
+  }
+  PARAMS.fixCap = Number.isInteger(FORGE_CONFIG.thresholds.fixCap) && FORGE_CONFIG.thresholds.fixCap >= 1
+    ? FORGE_CONFIG.thresholds.fixCap : 3
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function baselineContext() {
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py baseline --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)}`,
+    { label: 'baseline', phase: 'Implement', schema: ACK_SCHEMA })
 }
 
 function segmentThread(index) {
@@ -591,8 +751,12 @@ function fullTestPromptInstruction() {
   return `With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for ${PARAMS.projectDir}, and name its exact tests command in the Codex prompt under FULL TEST COMMAND. Tell Codex to run that full test command before returning; the gate re-runs it, and Codex's run is the first line of defense. Codex must include the test summary line in summary and never report tests as intentionally skipped.`
 }
 
+function runBeforeReturningInstruction() {
+  return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
+}
+
 function implement(segment, index, total, pendingCheckpointLines = [], previousResult = null) {
-  const implementationRole = PARAMS.lane === 'quick' ? 'quick-impl' : 'impl'
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
     const findings = pendingCheckpointLines.length ? JSON.stringify(pendingCheckpointLines) : '[]'
     return agentT('implementer', `Implement this confirmed Forge plan segment in ${PARAMS.projectDir}. Never commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped. Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN SEGMENT\n${planPhases(PARAMS.planText, segment)}\n\nCHECKPOINT FINDINGS\n${findings}`,
@@ -614,15 +778,16 @@ function implement(segment, index, total, pendingCheckpointLines = [], previousR
     : ''
   const mode = index === 0 ? `test -f ${threadFile} && MODE=resume || MODE=start` : 'MODE=start'
   return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
-Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading.${scope} ${previous}Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. Before returning, run ruff check, ruff format --check, makemigrations --check, and semgrep on the files touched, skipping Semgrep when missing; fix what they report. Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
-${persistFindings}Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${promptPath} --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${CODEX_IMPL_FLAGS} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
+Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading.${scope} ${previous}Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. ${runBeforeReturningInstruction()} Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
+${persistFindings}Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${promptPath} --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
   { label: index === 0 ? 'implement' : `implement-cp${index + 1}`, phase: 'Implement', schema: CODEX_RESULT })
 }
 
-function localGate(label = 'gate', gatePhase = 'Gate', files = []) {
+function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = []) {
   const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
-  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: <stderr tail> }], commands: [] }\`.`,
+  const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
+  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>" }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -638,6 +803,7 @@ function gateFindings(gate) {
       claim: `${failure.tool}: ${failure.summary}`,
       fix_hint: 'Resolve this gate failure only.',
       source: 'gate',
+      tool: failure.tool,
     }
   })
 }
@@ -683,19 +849,12 @@ async function recordFixCap(gate, threadFile, branch, findings = []) {
 }
 
 function stopped(state) {
-  return state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN'
+  return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN'
 }
 
-function changedFiles(checkpointLines = []) {
-  return agentT('changedFiles', `You collect the exact Forge review inputs. Do not review or edit code. Work in ${PARAMS.projectDir}.
-1. Collect file paths and a complete textual diff, including staged and untracked files. For lane ${PARAMS.lane}, ${PARAMS.lane === 'review' ? 'review uncommitted changes against HEAD' : 'resolve the branch base and review the merge-base-to-HEAD branch diff plus any uncommitted changes'}.
-2. Read ${PLAN} if present. Return its ## Summary section, or its first 4000 characters when absent.
-3. Acceptance criteria are this args array when non-empty: ${JSON.stringify(PARAMS.criteria)}. Otherwise extract the plan's ## Acceptance Criteria section.
-4. Read and return the complete contents of ~/.claude/skills/forge/references/review-checklist.md, ~/.claude/skills/forge/references/code-standards.md, and ~/.claude/skills/forge/references/claude-reviewer-contract.md. Return the last file as reviewerContract.
-5. Extract plan-specified pytest paths; fall back to tests/unit.
-6. Extract the plan's ## Public API contract section verbatim as field contract; return an empty string when absent.
-7. Append each missing line from ${JSON.stringify(checkpointLines)} to ${PARAMS.runDir}/checkpoint-findings.md, creating it if needed. Do not duplicate an existing line. Return the file's complete text as checkpointFindings, or an empty string when it has no content.
-Return per schema.`,
+function changedFiles(checkpointLines = [], allDirty = false) {
+  const mode = allDirty ? ' --all-dirty' : ''
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate --checkpoint-json ${shellQuote(JSON.stringify(checkpointLines))}${mode}`,
   { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
 }
 
@@ -877,7 +1036,7 @@ function uniqueFindings(rows) {
   const seen = new Set()
   const findings = []
   for (const row of rows) for (const finding of row.result.findings || []) {
-    const key = JSON.stringify([finding.file, finding.line, finding.claim])
+    const key = findingKey(finding)
     if (!seen.has(key)) {
       seen.add(key)
       findings.push({ ...finding, reviewer: row.key })
@@ -886,32 +1045,76 @@ function uniqueFindings(rows) {
   return findings
 }
 
+function findingKey(finding) {
+  return JSON.stringify([finding.file || '', finding.line || 0, String(finding.claim || '').slice(0, 200)])
+}
+
+function partitionTriage(findings, verdicts, auto = false) {
+  const fix = []
+  const disputes = []
+  const dropped = []
+  for (const finding of findings) {
+    const verdict = (verdicts || []).find(item => item.file === finding.file && item.line === finding.line)
+    if (!verdict || verdict.real === 'uncertain') {
+      if (auto) fix.push(finding)
+      else disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
+    } else if (verdict.real === 'yes' && verdict.worthIt) {
+      fix.push(finding)
+    } else {
+      dropped.push({ finding, reason: verdict.why })
+    }
+  }
+  return { fix, disputes, dropped }
+}
+
+function triageFindings(findings, context, label = 'triage') {
+  if (!findings.length) return Promise.resolve({ verdicts: [] })
+  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding. Findings: ${JSON.stringify(findings)}\n\nBOUNDED DIFF\n${boundedDiff(context)}`,
+    { label, phase: 'Review', schema: TRIAGE_SCHEMA, agentType: 'triage' })
+}
+
 async function applyRulings(findings, contradictions) {
   const dropped = new Set()
+  const applied = new Set()
   const unresolved = []
   for (const contradiction of contradictions) {
     const finding = contradiction.finding
     const ruling = (PARAMS.rulings || []).find(item => item.file === finding.file && item.line === finding.line)
     if (ruling) {
-      if (ruling.decision === 'drop') dropped.add(JSON.stringify([finding.file, finding.line]))
+      const key = JSON.stringify([finding.file, finding.line])
+      if (ruling.decision === 'drop') dropped.add(key)
+      else applied.add(key)
     } else if (PARAMS.auto) {
       await decide(`Auto ruling applied ${finding.file}:${finding.line} conservatively: ${finding.claim}`)
     } else {
       unresolved.push(contradiction)
     }
   }
+  for (const finding of findings) {
+    const ruling = (PARAMS.rulings || []).find(item => item.file === finding.file && item.line === finding.line)
+    if (ruling) {
+      const key = JSON.stringify([finding.file, finding.line])
+      if (ruling.decision === 'drop') dropped.add(key)
+      else applied.add(key)
+    }
+  }
   return {
     unresolved,
-    confirmed: findings.filter(finding => !dropped.has(JSON.stringify([finding.file, finding.line]))),
+    applied: findings.filter(finding => applied.has(JSON.stringify([finding.file, finding.line]))),
+    confirmed: findings.filter(finding => {
+      const key = JSON.stringify([finding.file, finding.line])
+      return !dropped.has(key) && !applied.has(key)
+    }),
   }
 }
 
 async function reviewPanel(context) {
-  const selected = LENSES.filter(lens => (context.files || []).some(file => lens.paths.test(file)))
+  const selected = configuredLenses().filter(lens => (context.files || []).some(file => lens.paths.test(file)))
   const reviewProvider = (configuredRole('review') || {}).provider || 'codex'
   const specs = []
   if (reviewProvider === 'codex') specs.push({ key: 'codex', lens: false, run: () => codexReview(context) })
-  if (reviewProvider === 'claude' || PARAMS.lane === 'dev') specs.push({ key: 'claude', lens: false, run: () => claudeReview(context) })
+  const sourceFileCount = (context.files || []).filter(isSourcePath).length
+  if (reviewProvider === 'claude' || PARAMS.lane === 'dev' || sourceFileCount > quickReviewThreshold()) specs.push({ key: 'claude', lens: false, run: () => claudeReview(context) })
   for (const lens of selected) specs.push({ key: lens.key, lens: true, run: () => lensReview(lens, context) })
   // A reviewer that never returns (a hung model call) must not hang the run: after
   // REVIEW_TIMEOUT_MS it is treated as FAIL and the panel proceeds without it.
@@ -922,7 +1125,19 @@ async function reviewPanel(context) {
   const findings = uniqueFindings(rows)
   const disputes = detectContradictions(rows)
   const ruled = await applyRulings(findings, disputes)
-  return { reviews: rows, findings, disputes, unresolvedDisputes: ruled.unresolved, confirmed: ruled.confirmed, failures, returned: present.length }
+  const triage = await triageFindings(ruled.confirmed, context)
+  let partitioned
+  if (triage) {
+    partitioned = partitionTriage(ruled.confirmed, triage.verdicts, PARAMS.auto)
+  } else {
+    await decide('Triage agent returned no result; retaining the pre-triage confirmed findings.')
+    partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
+  }
+  for (const item of partitioned.dropped) {
+    await decide(`Triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
+  }
+  const unresolvedDisputes = [...ruled.unresolved, ...partitioned.disputes]
+  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed: [...ruled.applied, ...partitioned.fix], failures, returned: present.length }
 }
 
 function unresolvedAfterVerification(items, verify) {
@@ -933,24 +1148,32 @@ function unresolvedAfterVerification(items, verify) {
     const matches = verify.results.filter(result => result.file === finding.file && result.line === finding.line)
     if (matches.length === 0 || matches.some(match => match.status === 'STILL BROKEN')) unresolved.push(finding)
   }
-  const seen = new Set(unresolved.map(finding => JSON.stringify([finding.file, finding.line, finding.claim])))
+  const seen = new Set(unresolved.map(findingKey))
   for (const finding of verify.unresolved || []) {
-    const key = JSON.stringify([finding.file, finding.line, finding.claim])
+    const key = findingKey(finding)
     if (!seen.has(key)) {
       seen.add(key)
-      const original = items.find(item => JSON.stringify([item.file, item.line, item.claim]) === key)
+      const original = items.find(item => findingKey(item) === key)
       unresolved.push(original && original.source ? { ...finding, source: original.source } : finding)
+    }
+  }
+  for (const violation of verify.contractViolations || []) {
+    const finding = { ...violation, severity: 'HIGH', fix_hint: 'Match the public API contract.' }
+    const key = findingKey(finding)
+    if (!seen.has(key)) {
+      seen.add(key)
+      unresolved.push(finding)
     }
   }
   return unresolved
 }
 
 async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
-  const round = label === 'fix-2' ? 2 : 1
+  const round = Number(label.match(/(\d+)$/)?.[1] || 1)
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
-  const implementationRole = PARAMS.lane === 'quick' ? 'quick-impl' : 'impl'
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(items)}. Verify each against current code first. Do not commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped.`,
+    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(items)}. Verify each against current code first. Do not commit or ship. ${runBeforeReturningInstruction()} Include the test summary line in summary and never report tests as intentionally skipped.`,
       { label, phase: fixPhase, schema: IMPL_RESULT, agentType: 'implementer' })
     if (!result || result.error) return null
     return { fixed: items.map(item => item.claim), couldNotFix: [], touchedFiles: result.filesChanged, diff: '', notes: result.summary }
@@ -959,22 +1182,24 @@ async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
     ? 'MODE=start'
     : `test -f ${threadFile} && MODE=resume || MODE=start`
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. Before returning, run ruff check, ruff format --check, makemigrations --check, and semgrep on the files touched, skipping Semgrep when missing; fix what they report. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${CODEX_IMPL_FLAGS} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
+Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
+Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
   if (!assertCodex(result, label)) return null
   return result.fix
 }
 
-function verifyFixes(items, fixResult, round) {
+function verifyFixes(items, fixResult, round, context = {}) {
   const diff = String(fixResult.diff || '').slice(0, 12000)
   if ((configuredRole('review') || {}).provider === 'claude') {
-    return agentT('reviewer', `Verify only these findings after the fix: ${JSON.stringify(items)}. Inspect the current code and mark each result RESOLVED, STILL BROKEN, or REBUTTAL ACCEPTED. Raise no new findings.`,
+    return agentT('reviewer', `Verify only these findings after the fix: ${JSON.stringify(items)}. Inspect the current code and mark each result RESOLVED, STILL BROKEN, or REBUTTAL ACCEPTED. Check every fix against this public API contract and return deviations in contractViolations: ${(context && context.contract) || '(none declared)'}. Raise no other new findings.`,
       { label: `verify-${round}`, phase: 'Fix', schema: VERIFY_SCHEMA, agentType: 'reviewer' })
   }
   return codexAgent(`You orchestrate FIX VERIFICATION ROUND ${round}. ${codexWrapper}
-Write ${PARAMS.runDir}/verify-${round}-prompt.md as a self-contained Codex prompt with the confirmed findings below and the fix diff. Ask the reviewer to mark every finding, including findings raised by the Fable reviewer, RESOLVED, STILL BROKEN, or REBUTTAL ACCEPTED. Verify only these findings; test execution belongs to the gate. Do not raise new findings. Verify against the code and any harness evidence in ${PARAMS.runDir} (STATUS.json, selfcheck*.json); a finding is RESOLVED only if you can point at the changed code, not because the fixer said so.
+Write ${PARAMS.runDir}/verify-${round}-prompt.md as a self-contained Codex prompt with the confirmed findings below, the public API contract, and the fix diff. Ask the reviewer to mark every finding, including findings raised by the Fable reviewer, RESOLVED, STILL BROKEN, or REBUTTAL ACCEPTED. Verify only these findings plus contract compliance; test execution belongs to the gate. Return contract deviations only in contractViolations and raise no other new findings. Verify against the code and any harness evidence in ${PARAMS.runDir} (STATUS.json, selfcheck*.json); a finding is RESOLVED only if you can point at the changed code, not because the fixer said so.
 FINDINGS: ${JSON.stringify(items)}
+PUBLIC API CONTRACT:
+${(context && context.contract) || '(none declared)'}
 FIX DIFF (capped at 12000 characters): ${diff}
 Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start. This stage must resume the review thread, so if MODE is start, return an invocation error instead of running. Otherwise invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/verify-${round}-prompt.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-verify-${round}.jsonl --out ${PARAMS.runDir}/codex-verify-${round}-final.md. Translate without changing the verdicts.`,
   { label: `verify-${round}`, phase: 'Fix', schema: VERIFY_SCHEMA })
@@ -997,53 +1222,79 @@ async function converge(panel, context) {
     await decide('Fix stage skipped because the review panel returned no confirmed findings.')
     return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, capReached: false, gatePassed: true, gate: null, gateRan: false }
   }
-  const fix = await fixAgent(unresolved, context, 'fix-1', CODEX_FIX_THREAD)
-  if (!fix) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: false, gatePassed: false, gate: null, gateRan: false }
-  fixesApplied = (fix.touchedFiles || []).length > 0
-  touched.push(...(fix.touchedFiles || []))
-  const gate = await localGate('gate-fix-1', 'Fix')
-  const verify = await verifyFixes(unresolved, fix, 1)
-  if (!assertVerification(verify, 'verify-1')) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: false, gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate) }
-  unresolved = unresolvedAfterVerification(unresolved, verify)
-  if (gate && gate.passed) {
-    unresolved = unresolved.filter(finding => finding.source !== 'gate')
-  } else {
-    unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+  let countedRounds = 0
+  let attempt = 0
+  let zeroFileRounds = 0
+  let gate = null
+  let verificationFailed = false
+  while (unresolved.length && countedRounds < PARAMS.fixCap && zeroFileRounds < 2) {
+    attempt += 1
+    const round = attempt
+    const findingsToVerify = unresolved
+    const fix = await fixAgent(unresolved, context, `fix-${round}`, CODEX_FIX_THREAD)
+    if (!fix) {
+      verificationFailed = true
+      break
+    }
+    const roundTouched = fix.touchedFiles || []
+    touched.push(...roundTouched)
+    if (roundTouched.length) {
+      fixesApplied = true
+      countedRounds += 1
+      zeroFileRounds = 0
+    } else {
+      zeroFileRounds += 1
+    }
+    gate = await localGate(`gate-fix-${round}`, 'Fix', [...new Set(touched)], ['tests'])
+    let verify = null
+    if (roundTouched.length) {
+      verify = await verifyFixes(findingsToVerify, fix, round, context)
+      if (!assertVerification(verify, `verify-${round}`)) {
+        verificationFailed = true
+        break
+      }
+      unresolved = unresolvedAfterVerification(findingsToVerify, verify)
+    }
+    if (gate && gate.passed) {
+      unresolved = unresolved.filter(finding => finding.source !== 'gate' || finding.tool !== 'tests')
+    } else {
+      unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+    }
+    const deduped = new Map(unresolved.map(finding => [findingKey(finding), finding]))
+    unresolved = [...deduped.values()]
+    rounds.push({ round, fix, gate, verify })
+    await writeStatus({
+      rounds: { fix: countedRounds },
+      open_findings: unresolved.map(finding => ({ file: finding.file, line: finding.line, severity: finding.severity, summary: finding.claim })),
+    }, 'Fix')
   }
-  rounds.push({ round: 1, fix, gate, verify })
-  await writeStatus({
-    rounds: { fix: 1 },
-    open_findings: unresolved.map(finding => ({ file: finding.file, line: finding.line, severity: finding.severity, summary: finding.claim })),
-  }, 'Fix')
-  if (!unresolved.length) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, capReached: false, gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate) }
-
-  const fix2 = await fixAgent(unresolved, context, 'fix-2', CODEX_FIX_THREAD)
-  if (!fix2) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: false, gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate) }
-  fixesApplied = fixesApplied || (fix2.touchedFiles || []).length > 0
-  touched.push(...(fix2.touchedFiles || []))
-  const gate2 = await localGate('gate-fix-2', 'Fix')
-  const verify2 = await verifyFixes(unresolved, fix2, 2)
-  if (!assertVerification(verify2, 'verify-2')) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: false, gatePassed: Boolean(gate2 && gate2.passed), gate: gate2, gateRan: Boolean(gate2) }
-  unresolved = unresolvedAfterVerification(unresolved, verify2)
-  if (gate2 && gate2.passed) {
-    unresolved = unresolved.filter(finding => finding.source !== 'gate')
-  } else {
-    unresolved = [...unresolved, ...gateFindings(gate2 || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+  if (zeroFileRounds >= 2) await decide('Fix loop stopped after two consecutive rounds touched zero files.')
+  if (fixesApplied) {
+    gate = await localGate('gate-final', 'Fix', [...new Set(touched)])
+    if (gate && gate.passed) {
+      unresolved = unresolved.filter(finding => finding.source !== 'gate')
+    } else {
+      unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+    }
   }
-  rounds.push({ round: 2, fix: fix2, gate: gate2, verify: verify2 })
-  await writeStatus({
-    rounds: { fix: 2 },
-    open_findings: unresolved.map(finding => ({ file: finding.file, line: finding.line, severity: finding.severity, summary: finding.claim })),
-  }, 'Fix')
-  if (!unresolved.length) return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, capReached: false, gatePassed: Boolean(gate2 && gate2.passed), gate: gate2, gateRan: Boolean(gate2) }
-  return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: true, capReached: true, gatePassed: Boolean(gate2 && gate2.passed), gate: gate2, gateRan: Boolean(gate2) }
+  const capReached = unresolved.length > 0 && countedRounds >= PARAMS.fixCap
+  const blocked = verificationFailed || unresolved.length > 0 || !gate || !gate.passed
+  return {
+    unresolved, fixesApplied, rounds, touchedFiles: [...new Set(touched)], blocked, capReached,
+    gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate),
+  }
 }
 
 // The working tree can carry unrelated local work, including tracked secret-bearing env
 // files; the shipper stages only the run's own files, never "whatever git status shows".
-function stagingRules(files) {
-  const list = files.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(files)}. A listed path that does not exist is skipped and reported.` : 'Stage only the files this run changed.'
-  return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '*.env*' file, or any file outside that list even if 'git status' shows it modified or untracked.`
+function stagingRules(files, context = {}) {
+  const vouched = new Set(PARAMS.stageAlso)
+  const preexisting = new Set(context.preexisting || [])
+  const staged = [...new Set([...(files || []), ...(context.files || []), ...PARAMS.stageAlso])]
+    .filter(path => vouched.has(path) || !preexisting.has(path))
+    .filter(path => !String(path).split('/').includes('.envs') && !/(^|\/)\.env(?:\.|$)|\.env$/i.test(String(path)))
+  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. A listed path that does not exist is skipped and reported.` : 'No run-owned files are eligible for staging.'
+  return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file, or any file outside that list even if 'git status' shows it modified or untracked.`
 }
 
 function ghEnvironmentInstruction() {
@@ -1053,13 +1304,13 @@ function ghEnvironmentInstruction() {
   return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
 }
 
-function ship(existing = null, files = []) {
+function ship(existing = null, files = [], context = {}) {
   const dependency = PARAMS.dependsOnGate
     ? `Before creating a branch or pushing, poll ${PARAMS.dependsOnGate} every 60 seconds for up to 30 minutes. Continue only after it exists and its JSON field passed is true. Otherwise return {branch:"",prUrl:"",prNumber:0,repo:${JSON.stringify(PARAMS.repo)},skipped:true,reason:"waited on ${PARAMS.dependsOnGate}; API gate never passed"} without creating a branch, committing, pushing, or editing a PR. `
     : ''
   const prompt = existing
-    ? `${dependency}${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. Include supplied ticket keys without inventing links: ${JSON.stringify(PARAMS.tickets)}. ${stagingRules(files)}`
-    : `${dependency}${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. Include supplied ticket keys without inventing links: ${JSON.stringify(PARAMS.tickets)}. ${stagingRules(files)}`
+    ? `${dependency}${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    : `${dependency}${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1067,8 +1318,8 @@ function qaArtifactDraft(shipResult, context) {
   const criteria = acceptanceCriteria(context)
   return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
 1. Read lines 1-70 of ~/.claude/skills/forge/references/qa-artifact.html for its complete data and placeholder contract. Read ${PARAMS.runDir}/sandbox.json with ranged reads if it exists.
-2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from sandbox.json when present, otherwise "" so handoff can fill them. Set jiraTickets to one row per key in ${JSON.stringify(PARAMS.tickets)}, each with key, url="", title="", and role="". Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary.
-Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Add one item per acceptance criterion not already covered: ${JSON.stringify(criteria)}. Every item has title, ticketKey, ticketUrl, before, whatChanged, why, steps with 2-6 concrete entries, expected, evidence="", pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup guessed from its file area, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}. Wrap endpoint paths and commands in single backticks. Build users from sandbox.json testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
+2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from sandbox.json when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary.
+Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered: ${JSON.stringify(criteria)}. Every item has title, ticketKey, ticketUrl, before, whatChanged, why, steps with 2-6 concrete entries, expected, evidence="", pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup guessed from its file area, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}. Wrap endpoint paths and commands in single backticks. Build users from sandbox.json testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
 3. Write a small Python renderer to ${PARAMS.runDir}/qa-render.py that loads qa-data.json and substitutes every {{KEY}} placeholder according to the template header contract. Run it to render ${PARAMS.runDir}/qa-artifact.html, then run open ${PARAMS.runDir}/qa-artifact.html on macOS. If the Artifact tool is available, publish the rendered file titled "${PARAMS.ticket} <shortTitle> QA".
 4. Return path=${PARAMS.runDir}/qa-artifact.html, the qaItems count as items, whether open succeeded as opened, and error="". On any error return that path, items=0, opened=false, and the error text.`,
   { label: 'qa-draft', phase: 'Ship', agentType: 'worker', schema: QA_DRAFT_SCHEMA })
@@ -1085,11 +1336,10 @@ function qaDraftSummary(draft) {
 const sandboxToolFallback = `If the sandbox MCP tools are missing or fail with a connection error, follow the overlay's references/stages/sandbox.md fallback. Only when both configured methods fail return skipped=true and name both errors.`
 
 function sandboxQA(shipResult, context) {
-  const isUi = /frontend$/.test(PARAMS.repo)
+  const repoBase = String(PARAMS.repo).split('/').filter(Boolean).pop() || ''
+  const isUi = repoBase === FORGE_CONFIG.repos.frontend
   const branchField = isUi ? 'ui_branch' : 'api_branch'
-  const check = isUi
-    ? 'cd /app/frontend && yarn tsc --noEmit'
-    : `cd /app/backend && uv run pytest ${(context.testPaths || ['tests/unit']).join(' ')} -x -q`
+  const check = sandboxCheck(isUi, context.testPaths || ['tests/unit'])
   if (PARAMS.existingSandbox) {
     return agentT('sandboxQA', `You run SANDBOX QA for Forge against an existing sandbox. ${syncInstructions(PARAMS.existingSandbox, shipResult, context.files || [], isUi, false, check, sandboxToolFallback)}`,
     { label: 'sandbox-qa', phase: 'Sandbox', schema: SANDBOX_SCHEMA })
@@ -1100,20 +1350,21 @@ Create one sandbox with ${branchField}=${shipResult.branch}, tier=${PARAMS.tierS
 }
 
 function syncInstructions(sandbox, shipResult, files, isUi, allowSkip, check, toolFallback) {
-  const repo = isUi ? 'frontend' : 'backend'
-  const root = `/app/${repo}`
+  const roots = sandboxRoots()
+  const root = isUi ? roots.frontend : roots.backend
+  const commandPrefix = isUi ? `cd ${root}` : backendPrefix(root)
   const branchField = isUi ? 'ui_branch' : 'api_branch'
   const branch = shipResult.branch
   const fileHint = files.length ? `${files.length} files changed: ${JSON.stringify(files)}` : '0 files supplied; the changed set is unknown'
-  const migrate = 'cd /app/backend && uv run python manage.py migrate --no-input'
+  const migrate = `${backendPrefix(roots.backend)} && uv run python manage.py migrate --no-input`
   const skipAction = allowSkip
     ? 'Set mode="skip", skipped=false, testsPassed=false, and summary="fork already at <sha>; sync skipped" with the sync seconds. Return the same sandbox metadata immediately and DO NOT run the check command. The workflow may carry forward a prior passing result for this same fork.'
     : 'Set mode="skip" and summary="fork already at <sha>; sync skipped", but continue to the check command. This QA stage has no prior result to carry forward, so only the upload is skipped.'
   return `Existing sandbox metadata: ${JSON.stringify(sandbox)}. The branch is ${branch}; the file-count hint is ${fileHint}. Use the sandbox tools named by the overlay stage reference. ${toolFallback}
 Perform these steps IN ORDER and measure elapsed seconds for the whole sync step:
-1. Skip check. Locally in ${PARAMS.projectDir}, run git fetch origin ${branch} --quiet && git rev-parse origin/${branch} to get TIP. In sandbox ${sandbox.sandboxId}, use exec_command for cd ${root} && git rev-parse HEAD to get FORK_HEAD, then cd ${root} && git status --porcelain | wc -l to get DIRTY. If TIP equals FORK_HEAD and DIRTY is 0: ${skipAction} Otherwise continue.
+1. Skip check. Locally in ${PARAMS.projectDir}, run git fetch origin ${branch} --quiet && git rev-parse origin/${branch} to get TIP. In sandbox ${sandbox.sandboxId}, use exec_command for ${commandPrefix} && git rev-parse HEAD to get FORK_HEAD, then ${commandPrefix} && git status --porcelain | wc -l to get DIRTY. If TIP equals FORK_HEAD and DIRTY is 0: ${skipAction} Otherwise continue.
 2. Determine the changed set locally in ${PARAMS.projectDir} with git diff --name-only <FORK_HEAD> origin/${branch}, substituting the FORK_HEAD sha from step 1. Treat ${JSON.stringify(files)} only as a cross-check hint. If the derived set and hint disagree, report that in summary and use the derived set. If FORK_HEAD is not present locally or git diff errors, fall back to the hint when it is non-empty; otherwise use re-fork. Measure total bytes with wc -c against the corresponding files under ${PARAMS.projectDir}; deleted files count as zero bytes. The measured set and byte count control the choice.
-3. Git-fetch first. In sandbox ${sandbox.sandboxId}, run: cd ${root} && GIT_TERMINAL_PROMPT=0 git fetch origin ${branch} && git checkout -B ${branch} FETCH_HEAD. On success set mode="git-fetch". If the changed set contains a migrations/ path, run with timeout 600: ${migrate}; a non-zero migration is a blocker with the last 20 output lines in summary. Then ${isUi ? 'let vite reload itself' : 'restart the API process with the fork start script'}. Skip steps 4 and 5 and continue to step 6. If fetch or checkout fails, say so in summary and continue to the hot-patch fallback.
+3. Git-fetch first. In sandbox ${sandbox.sandboxId}, run: ${commandPrefix} && GIT_TERMINAL_PROMPT=0 git fetch origin ${branch} && git checkout -B ${branch} FETCH_HEAD. On success set mode="git-fetch". If the changed set contains a migrations/ path, run with timeout 600: ${migrate}; a non-zero migration is a blocker with the last 20 output lines in summary. Then ${isUi ? 'let vite reload itself' : 'restart the API process with the fork start script'}. Skip steps 4 and 5 and continue to step 6. If fetch or checkout fails, say so in summary and continue to the hot-patch fallback.
 4. Hot-patch after a failed git-fetch only when the known changed set has at most 3 entries and totals at most 40000 bytes. Set mode="hot-patch". For each repo-relative path, use upload_file to upload inline text from ${PARAMS.projectDir}/<path> to ${root}/<path> in sandbox ${sandbox.sandboxId}; remove a deleted file with exec_command rm at ${root}/<path>. ${isUi ? 'The vite dev server hot-reloads.' : `If any path is under a migrations/ directory, first use exec_command with timeout 600 for: ${migrate}. A non-zero exit is a blocker: return skipped=true, put the last 20 output lines in summary, preserve the current sandbox metadata, and set testsPassed=false. Then restart the API process with the fork start script.`} Skip step 5 and continue to step 6.
 5. Re-fork after a failed git-fetch when hot-patch is not allowed. Set mode="re-fork". Read ${PARAMS.runDir}/sandbox.json when present and retain its cohort and team values. Call create_sandbox with ${branchField}=${branch}, tier=${PARAMS.tierSandbox}, login_email="" for token injection, and ide=True; leave other arguments at their defaults. Treat ide_url and ide_password as credentials: write them only to ${PARAMS.runDir}/sandbox.json and never return them in a message, summary, or structured output. Wait until the tool reports the new sandbox healthy. If the changed set touches a migrations/ path, run in the NEW sandbox with timeout 600: ${migrate}. If migration exits non-zero, call teardown_sandbox on the NEW sandbox id without force and never retry with force; keep and return the OLD sandbox metadata, set skipped=true and testsPassed=false, and name the torn-down new id plus the migration's last 20 output lines in summary. Only after the new sandbox is healthy${isUi ? '' : ' and any migration succeeds'}, copy ${PARAMS.runDir}/sandbox.json when present to ${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json, then call teardown_sandbox on OLD sandbox ${sandbox.sandboxId}, without force. If teardown of the OLD sandbox fails, including a 403 because another developer owns it, report the failure in summary and continue on the NEW fork; never retry with force. Write ${PARAMS.runDir}/sandbox.json with the NEW sandbox metadata, the retained cohort and team when present, seedRecipe="${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json", and seedsReplayed=false. From this point, use and return the NEW sandboxId, loginUrl, previewUrl, and seedRecipe. The summary must say "seeds not replayed; recipe at ${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json".
 6. Unless the allowed clean-fork skip returned early, run in the current sandbox with timeout 900: ${check}. Set testsPassed from its exit result and skipped=false.
@@ -1127,7 +1378,7 @@ function postSandboxMarker(shipResult, sandbox) {
 }
 
 function writeStatus(patch, phaseLabel) {
-  return agentT('trim', `Merge this JSON patch into ${PARAMS.runDir}/STATUS.json. If the file does not exist, create it as {"criteria":[],"rounds":{},"open_findings":[]} first. Rules: never delete existing keys; "criteria" entries match by "text" (fall back to matching by array index when texts differ); for a matched criterion overwrite status/evidence/round only when the patch provides them; "rounds" merges key-by-key (patch wins); "open_findings" is REPLACED by the patch's array when provided; set "updated" to the current ISO timestamp. Write the merged JSON back with 2-space indentation and return written=true. Patch: ${JSON.stringify(patch)}`,
+  return agentT('trim', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/status_merge.py --status ${shellQuote(`${PARAMS.runDir}/STATUS.json`)} --patch-json ${shellQuote(JSON.stringify(patch))}`,
   { label: `status-${phaseLabel}`, phase: phaseLabel, schema: ACK_SCHEMA })
 }
 
@@ -1151,8 +1402,9 @@ async function smoke(sandbox, context) {
 }
 
 function sandboxRefresh(sandbox, shipResult, context) {
-  const isUi = /frontend$/.test(PARAMS.repo)
-  const check = isUi ? 'cd /app/frontend && yarn tsc --noEmit' : `cd /app/backend && uv run pytest ${(context.testPaths || ['tests/unit']).join(' ')} -x -q`
+  const repoBase = String(PARAMS.repo).split('/').filter(Boolean).pop() || ''
+  const isUi = repoBase === FORGE_CONFIG.repos.frontend
+  const check = sandboxCheck(isUi, context.testPaths || ['tests/unit'])
   return agentT('sandboxQA', `You run SANDBOX POST-FIX RE-RUN. ${syncInstructions(sandbox, shipResult, context.files || [], isUi, true, check, sandboxToolFallback)}`,
   { label: 'sandbox-refresh', phase: 'Fix', schema: SANDBOX_SCHEMA })
 }
@@ -1236,8 +1488,31 @@ async function runCheckpointSegments(state, firstResult, segments) {
       await decide(`[cp${checkpoint}] gate pass, spot review null (0 findings, 0 fixed)`)
     } else {
       const findings = review.findings || []
-      const blocking = findings.filter(finding => ['CRITICAL', 'HIGH'].includes(finding.severity))
-      const deferred = findings.filter(finding => ['MEDIUM', 'LOW'].includes(finding.severity))
+      const ruled = await applyRulings(findings, [])
+      const triageContext = {
+        files: gate.files || [], diff: gate.diff || '', diffPath: gate.diffPath || '',
+        diffBytes: gate.diffBytes || 0, diffTruncated: Boolean(gate.diffTruncated),
+      }
+      const triage = await triageFindings(ruled.confirmed, triageContext, `triage-cp${checkpoint}`)
+      let partitioned
+      if (triage) {
+        partitioned = partitionTriage(ruled.confirmed, triage.verdicts, PARAMS.auto)
+      } else {
+        await decide(`Checkpoint ${checkpoint} triage agent returned no result; retaining the pre-triage confirmed findings.`)
+        partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
+      }
+      for (const item of partitioned.dropped) {
+        await decide(`Checkpoint ${checkpoint} triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
+      }
+      if (partitioned.disputes.length) {
+        state.needsJudge = true
+        state.review = { findings, unresolvedDisputes: partitioned.disputes }
+        await decide(`Checkpoint ${checkpoint} triage left ${partitioned.disputes.length} uncertain finding(s) for judgment.`)
+        break
+      }
+      const confirmed = [...ruled.applied, ...partitioned.fix]
+      const blocking = confirmed.filter(finding => ['CRITICAL', 'HIGH'].includes(finding.severity))
+      const deferred = confirmed.filter(finding => ['MEDIUM', 'LOW'].includes(finding.severity))
       const deferredLines = deferred.map(finding => `[cp${checkpoint}] ${finding.severity} ${finding.file}:${finding.line} ${finding.claim}`)
       state.checkpointFindings.push(...deferredLines)
       let fixed = 0
@@ -1290,6 +1565,8 @@ async function fullLane() {
   } else {
     PARAMS.planText = PARAMS.planText || ''
   }
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
   const checkpointArgs = PARAMS.lane === 'dev' ? PARAMS.checkpoints : []
   const segments = parseCheckpoints(PARAMS.planText, checkpointArgs)
   const initial = { status: 'DONE', implement: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null, checkpointFindings: [] }
@@ -1325,7 +1602,13 @@ async function fullLane() {
         await decide('Ship, sandbox, and smoke stages skipped because args.noShip is true.')
         return state
       }
-      state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [])
+      state.context = state.context || await changedFiles(state.checkpointFindings)
+      if (contextFailed(state.context)) {
+        state.status = 'BLOCKED'
+        await decide(`Changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`)
+        return state
+      }
+      state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [], state.context)
       if (!state.ship || state.ship.skipped) {
         state.status = 'BLOCKED'
         if (state.ship && state.ship.reason) await decide(state.ship.reason)
@@ -1343,7 +1626,7 @@ async function fullLane() {
         await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      if (!configuredStage('sandbox')) {
+      if (!sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos)) {
         state.qaDraft = await qaArtifactDraft(state.ship, state.context)
         if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
         await decide('Sandbox and smoke skipped because stages.sandbox is off.')
@@ -1375,7 +1658,7 @@ async function fullLane() {
       phase('Review')
       if (stopped(state)) return state
       state.context = state.context || await changedFiles(state.checkpointFindings)
-      if (PARAMS.lane === 'quick') await decide('Quick lane omits the Claude general reviewer by lane design.')
+      if (PARAMS.lane === 'quick' && (configuredRole('review') || {}).provider !== 'claude' && (state.context.files || []).filter(isSourcePath).length <= quickReviewThreshold()) await decide('Quick lane omitted the Claude general reviewer because the changed source-file count stayed within the review threshold.')
       state.review = await reviewPanel(state.context)
       if ((configuredRole('review') || {}).provider !== 'claude' && state.review.failures.some(failure => failure.key === 'codex')) {
         // Cross-model review is the contract; never continue Claude-only.
@@ -1411,14 +1694,14 @@ async function fullLane() {
         const synced = await ship(state.ship, [
           ...((state.implement && state.implement.filesChanged) || []),
           ...((state.convergence && state.convergence.touchedFiles) || []),
-        ])
+        ], state.context)
         if (!synced || synced.skipped) {
           state.status = 'BLOCKED'
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
         } else {
           state.ship = synced
         }
-        if (configuredStage('sandbox') && state.sandbox && state.sandbox.sandboxId && synced && !synced.skipped) {
+        if (sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos) && state.sandbox && state.sandbox.sandboxId && synced && !synced.skipped) {
           const refreshFiles = [...new Set([
             ...((state.context && state.context.files) || []),
             ...((state.implement && state.implement.filesChanged) || []),
@@ -1459,7 +1742,7 @@ async function fullLane() {
 async function reviewLane() {
   await decide('Review lane skipped Implement, standalone Gate, Ship, Sandbox, and Smoke stages.')
   phase('Review')
-  const context = await changedFiles()
+  const context = await changedFiles([], true)
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
     return { status: 'BLOCKED', context: context || { criteria: PARAMS.criteria }, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
@@ -1479,6 +1762,7 @@ async function reviewLane() {
 }
 
 await loadForgeConfig()
+await baselineContext()
 let state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
 if (state.needsJudge) {
   return { status: 'needsJudge', findings: state.review.findings, disputes: state.review.unresolvedDisputes, runDir: PARAMS.runDir }

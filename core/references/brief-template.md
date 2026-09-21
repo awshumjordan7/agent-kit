@@ -7,7 +7,7 @@ MAY CHANGE: <paths, or "nothing (read-only)">
 MUST VERIFY: <what counts as done, with the command or check>
 DO NOT: <off-limits actions>
 KNOWN: <facts already established, so they are not rediscovered>
-OUTPUT: <exact shape; where long output is written>
+OUTPUT: <exact shape; written with the Write tool to the named path, never inline>
 CAP: <max lines in the final message; maxTurns if different from the agent file>
 ```
 

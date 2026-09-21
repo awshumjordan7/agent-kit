@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 
 from aisetup import update
+from aisetup.compose import install_tree
+from aisetup.profile import load_profile
 
 
 def _git(path, *args):
@@ -117,3 +119,27 @@ def test_update_checks_out_overlay_agent_kit_pin(tmp_path):
     assert head == tag
     assert core_status.behind == 0
     assert core_status.ahead == 0
+
+
+def test_content_check_reports_unknown_and_agent_override_sources(repo_root, tmp_path, monkeypatch):
+    monkeypatch.chdir(repo_root)
+    profile = load_profile(repo_root / "tests/fixtures/profiles/public-default.json")
+    profile["agents"]["scout"] = {"model": "sonnet", "maxTurns": 76, "effort": None}
+    profile_without_override = {**profile, "agents": {**profile["agents"]}}
+    profile_without_override["agents"].pop("scout")
+    home = tmp_path / ".claude"
+    install_tree(profile_without_override, home)
+    (home / "settings.json").write_text("{}\n", encoding="utf-8")
+
+    drift = {item.path: item.source for item in update.check_content(profile, home)}
+
+    assert "settings.json" not in drift
+    assert drift["agents/scout.md"] == "profile.agents override"
+
+    install_tree(profile, home)
+    scout = home / "agents/scout.md"
+    scout.write_text(f"{scout.read_text(encoding='utf-8')}\nchanged\n", encoding="utf-8")
+
+    drift = {item.path: item.source for item in update.check_content(profile, home)}
+
+    assert drift["agents/scout.md"] == "unknown"

@@ -50,7 +50,12 @@ def _json_file(capability_id: str, path: Path) -> Capability:
 
 
 def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
+    from aisetup.compose import ComposeError
+    from aisetup.layers import resolve_layers
+    from aisetup.manifest import ManifestError
+    from aisetup.mcp import McpError, _matches, registration_for_layers
     from aisetup.profile import ProfileError, load_profile
+    from aisetup.update import check_content
 
     home = home.expanduser()
     layers_root = layers_root.expanduser()
@@ -115,15 +120,76 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
     )
 
     profile_path = layers_root / "profile.json"
+    profile = None
     if profile_path.exists():
         try:
-            load_profile(profile_path)
+            profile = load_profile(profile_path)
         except ProfileError as error:
             results.append(_result("profile_valid", False, str(profile_path), str(error)))
         else:
             results.append(_result("profile_valid", True, str(profile_path)))
     else:
         results.append(_skip("profile_valid", f"{profile_path} not installed"))
+
+    if profile is None:
+        results.append(_skip("managed_content", "valid profile unavailable"))
+        results.append(_skip("mcp_registered_set", "valid profile unavailable"))
+    else:
+        try:
+            drift = check_content(profile, home)
+        except (ComposeError, OSError) as error:
+            results.append(_result("managed_content", False, str(home), str(error)))
+        else:
+            paths = ", ".join(item.path for item in drift) or "composed tree matches"
+            results.append(
+                _result(
+                    "managed_content",
+                    not drift,
+                    paths,
+                    None if not drift else "managed files differ",
+                )
+            )
+
+        if not is_default_claude_home(home):
+            results.append(_skip("mcp_registered_set", "--home is not the default"))
+        elif claude is None:
+            results.append(_skip("mcp_registered_set", "claude CLI unavailable"))
+        else:
+            try:
+                resolved = resolve_layers(profile)
+                plans, retire = registration_for_layers(resolved, profile)
+                problems: list[str] = []
+                for plan in plans:
+                    completed = subprocess.run(
+                        [claude, "mcp", "get", plan.server.name],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    if completed.returncode != 0 or not _matches(plan, completed.stdout):
+                        problems.append(plan.server.name)
+                for name in retire:
+                    completed = subprocess.run(
+                        [claude, "mcp", "get", name],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    if completed.returncode == 0:
+                        problems.append(f"extra:{name}")
+                evidence = ", ".join(problems) or "registered set matches"
+                results.append(
+                    _result(
+                        "mcp_registered_set",
+                        not problems,
+                        evidence,
+                        None if not problems else "registered servers differ",
+                    )
+                )
+            except (ManifestError, McpError, OSError, subprocess.TimeoutExpired) as error:
+                results.append(_result("mcp_registered_set", False, "claude mcp get", str(error)))
 
     claude_md = home / "CLAUDE.md"
     results.append(

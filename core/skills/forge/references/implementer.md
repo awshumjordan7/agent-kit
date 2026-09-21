@@ -93,6 +93,7 @@ effort spent hand-deleting excess AI-written tests. More tests is not more quali
 ## Validation
 
 Run the plan's per-phase validations and any test path that needs no services. Before returning,
+prioritize service-free tests for the touched behavior. Then
 run `uv run ruff check <changed files>`, `uv run ruff format --check <changed files>`,
 `uv run python manage.py makemigrations --check --dry-run` in Django repos, and
 `semgrep --config auto <changed files>` when Semgrep is installed. Fix what they report. The gate

@@ -29,6 +29,7 @@ class McpServer:
     command: str | None = None
     args: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
     url: str | None = None
 
 
@@ -111,7 +112,7 @@ OVERLAY_KEYS = {
 }
 LAYER_KEYS = {"schema", "modules", "templates"}
 QUESTION_KEYS = {"id", "prompt", "type", "default", "secret", "choices"}
-MCP_KEYS = {"name", "transport", "command", "args", "scope", "env", "url"}
+MCP_KEYS = {"name", "transport", "command", "args", "scope", "env", "headers", "url"}
 COPY_KEYS = {"src", "dest"}
 
 
@@ -229,6 +230,11 @@ def _mcp_servers(data: Any, path: Path) -> tuple[McpServer, ...]:
             isinstance(key, str) and isinstance(value, str) for key, value in env.items()
         ):
             raise ManifestError(f"{path}: mcp.env must contain strings")
+        headers = item.get("headers", {})
+        if not isinstance(headers, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in headers.items()
+        ):
+            raise ManifestError(f"{path}: mcp.headers must contain strings")
         servers.append(
             McpServer(
                 item["name"],
@@ -237,6 +243,7 @@ def _mcp_servers(data: Any, path: Path) -> tuple[McpServer, ...]:
                 item.get("command"),
                 args,
                 env,
+                headers,
                 item.get("url"),
             )
         )

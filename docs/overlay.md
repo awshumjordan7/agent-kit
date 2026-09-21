@@ -22,6 +22,7 @@ name = "company-api"
 transport = "http"
 scope = "user"
 url = "https://mcp.example.com/?api_key={{answers.overlay.api_key}}"
+headers = { Authorization = "Bearer {{answers.overlay.api_key}}" }
 ```
 
 Overlay `hooks/`, `agents/`, `skills/`, `references/`, and `scripts/` copy over core files. JSON files in `data/`
@@ -32,6 +33,11 @@ Overlay `[[questions]]` and `[[mcp]]` entries use the same fields and validation
 answers use the `overlay.<question id>` key in profiles and `answers.overlay.<question id>` in templates.
 Missing `answers.overlay.<question id>` values use the question default. If no default exists, profile validation
 fails and install exits with status 4.
+
+Overlay data may supply `forge.thresholds` (`quickReviewThreshold`, `fixCap`), path-regex strings under
+`forge.lenses` (`security`, `design`), a `forge.ticketUrl` template containing `<KEY>`, and repository basenames
+under `forge.repos` (`frontend`, `backend`). Stage-specific instructions can be provided at
+`references/stages/<stage>.md`, allowing private behavior without replacing the core workflow implementation.
 
 Keep the private denylist in the overlay repository and configure the same list as the public repository's
 `DENYLIST` secret. Before merging a fork pull request, run the scan locally because fork events cannot read secrets.

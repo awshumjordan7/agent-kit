@@ -77,7 +77,7 @@ case "$MODE" in
     *) echo "usage: codex-exec.sh start|resume|watch|config|stats --thread-file <f> --prompt-file <p> --log <l> --out <o> [...]" >&2; exit 64 ;;
 esac
 
-SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SKILL_DIR="${FORGE_CODEX_EXEC_SKILL_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 CONFIG_FILE="$SKILL_DIR/forge.config.json"
 CONTRACT_FILE="$SKILL_DIR/references/codex-prompt-contract.md"
 STATE_DIR="${FORGE_CODEX_STATE_DIR:-$SKILL_DIR/.state}"
@@ -391,7 +391,10 @@ rm -f "$OUT" "$LOG.status"
 
 if [ "$FOREGROUND" != "true" ]; then
     SELF_PATH="$SKILL_DIR/scripts/codex-exec.sh"
-    nohup bash "$SELF_PATH" "${ORIGINAL_ARGS[@]}" --foreground </dev/null >"$LOG.launcher" 2>&1 &
+    # Run a copy: a fix round may edit this script while a session is still running.
+    LAUNCH_COPY="$LOG.launcher.sh"
+    cp "$SELF_PATH" "$LAUNCH_COPY"
+    FORGE_CODEX_EXEC_SKILL_DIR="$SKILL_DIR" nohup bash "$LAUNCH_COPY" "${ORIGINAL_ARGS[@]}" --foreground </dev/null >"$LOG.launcher" 2>&1 &
     echo "CODEX_STARTED mode=$MODE role=$ROLE log=$LOG out=$OUT watch=\"bash $SELF_PATH watch --log $LOG --out $OUT --max-wait 2400\""
     exit 0
 fi

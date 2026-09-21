@@ -33,6 +33,10 @@ def test_forge_config_codex_off_uses_claude_and_disables_stages(repo_root, monke
         assert rendered["roles"][role]["provider"] == "claude"
         assert rendered["roles"][role]["model"] == "opus"
     assert rendered["stages"] == {"sandbox": False, "ff_review": False, "qa_login": False}
+    assert rendered["thresholds"] == {"quickReviewThreshold": 8, "fixCap": 3}
+    assert rendered["ticketUrl"] == ""
+    assert rendered["repos"] == {"frontend": "", "backend": ""}
+    assert set(rendered["lenses"]) == {"security", "design"}
 
 
 def test_forge_config_codex_on_uses_codex_role_defaults(repo_root, tmp_path, monkeypatch):

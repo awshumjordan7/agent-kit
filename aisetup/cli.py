@@ -20,7 +20,7 @@ from aisetup.deps import (
 )
 from aisetup.layers import resolve_layers
 from aisetup.manifest import ManifestError, load_layer_manifest, load_module_manifest
-from aisetup.mcp import McpError, plans_for_layers, register_servers
+from aisetup.mcp import McpError, register_servers, registration_for_layers
 from aisetup.profile import (
     ProfileError,
     apply_overlay_question_defaults,
@@ -32,6 +32,7 @@ from aisetup.selfcheck import print_selfcheck, run_selfcheck
 from aisetup.tune import TuneError, collect_metrics, format_report, recommendations
 from aisetup.update import (
     UpdateError,
+    check_content,
     check_repositories,
     commit_subjects,
     update_profile_commits,
@@ -134,9 +135,8 @@ def _install(args: argparse.Namespace) -> int:
             print("Merged settings:")
             print(json.dumps(result.settings, indent=2))
             print("MCP commands:")
-            for command in register_servers(
-                plans_for_layers(resolved, profile), home=args.home, dry_run=True
-            ):
+            plans, retire = registration_for_layers(resolved, profile)
+            for command in register_servers(plans, home=args.home, dry_run=True, retire=retire):
                 print(command)
             for name in resolved.skipped_platforms:
                 print(f"Skipped module {name}: unsupported on this platform")
@@ -145,7 +145,8 @@ def _install(args: argparse.Namespace) -> int:
         if not local_root.exists():
             shutil.copytree(REPO_ROOT / "core/templates/local", local_root)
         result = install_tree(profile, args.home)
-        register_servers(plans_for_layers(resolved, profile), home=args.home)
+        plans, retire = registration_for_layers(resolved, profile)
+        register_servers(plans, home=args.home, retire=retire)
         write_profile(args.layers_root / "profile.json", profile)
     except ComposeError as error:
         print(f"agent-kit: {error}", file=sys.stderr)
@@ -205,16 +206,25 @@ def _update(args: argparse.Namespace) -> int:
     try:
         profile = load_profile(profile_path)
         if args.check:
-            for status in check_repositories(profile):
+            statuses = check_repositories(profile)
+            for status in statuses:
                 print(status.as_json())
-            return 0
+            drifts = check_content(profile, args.home)
+            if drifts:
+                print(
+                    f"Managed content: {len(drifts)} managed file(s) differ from the composed tree"
+                )
+                for drift in drifts:
+                    print(f"{drift.path}: drift (source: {drift.source})")
+            return 1 if any(status.behind for status in statuses) or drifts else 0
         update_repositories(profile)
         for repo, subject in commit_subjects(profile):
             print(f"{repo}: {subject}")
         update_profile_commits(profile)
         result = install_tree(profile, args.home)
         resolved = resolve_layers(profile)
-        register_servers(plans_for_layers(resolved, profile), home=args.home)
+        plans, retire = registration_for_layers(resolved, profile)
+        register_servers(plans, home=args.home, retire=retire)
         write_profile(args.layers_root / "profile.json", profile)
     except (ProfileError, ManifestError) as error:
         print(f"agent-kit: {error}", file=sys.stderr)

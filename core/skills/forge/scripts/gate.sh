@@ -16,19 +16,22 @@ run_dir=''
 label=''
 files_given=false
 skip_tests=false
+only_stages=''
+only_given=false
 commit_message=''
 push=false
 files=()
 
 while (($#)); do
   case "$1" in
-    --repo|--run-dir|--label|--commit)
+    --repo|--run-dir|--label|--commit|--only)
       (($# >= 2)) || die "gate.sh: $1 requires a value"
       case "$1" in
         --repo) repo=$2 ;;
         --run-dir) run_dir=$2 ;;
         --label) label=$2 ;;
         --commit) commit_message=$2 ;;
+        --only) only_stages=$2; only_given=true ;;
       esac
       shift 2
       ;;
@@ -53,6 +56,20 @@ while (($#)); do
   esac
 done
 
+all_stages='lint,typecheck,migrations,tests,semgrep,parity'
+if $only_given; then
+  [[ -n $only_stages ]] || die 'gate.sh: --only requires at least one stage'
+  IFS=',' read -r -a requested_stages <<<"$only_stages"
+  ((${#requested_stages[@]})) || die 'gate.sh: --only requires at least one stage'
+  for requested_stage in "${requested_stages[@]}"; do
+    [[ ,$all_stages, == *",$requested_stage,"* ]] || die "gate.sh: unknown --only stage: $requested_stage"
+  done
+fi
+
+stage_enabled() {
+  [[ -z $only_stages || ,$only_stages, == *",$1,"* ]]
+}
+
 [[ -n $repo ]] || die 'gate.sh: --repo is required'
 [[ -n $run_dir ]] || die 'gate.sh: --run-dir is required'
 [[ -n $label ]] || die 'gate.sh: --label is required'
@@ -65,7 +82,7 @@ if [[ $push == true && -z $commit_message ]]; then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || die 'gate.sh: cannot resolve script directory'
-config_file="$script_dir/../forge.config.json"
+config_file="${GATE_CONFIG:-$script_dir/../forge.config.json}"
 [[ -f $config_file ]] || die "gate.sh: missing config: $config_file"
 
 if [[ ! -d $repo ]]; then
@@ -204,6 +221,18 @@ parity = entry.get("parity", [])
 if not isinstance(parity, list) or not all(isinstance(command, str) for command in parity):
     print(f"gate.sh: invalid parity config for repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
+env = entry.get("env", {})
+if not isinstance(env, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
+    print(f"gate.sh: invalid env config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
+setup = entry.get("setup", "")
+if not isinstance(setup, str):
+    print(f"gate.sh: invalid setup config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
+for rule in entry["testPathRules"]:
+    if "command" in rule and not isinstance(rule["command"], str):
+        print(f"gate.sh: invalid testPathRules command for repository: {repo}", file=sys.stderr)
+        raise SystemExit(2)
 
 worktree_mode = detected_raw == "true" or prefix_fallback or "/.claude/worktrees/" in repo_real
 selected = dict(entry)
@@ -276,6 +305,8 @@ if isinstance(value, bool):
     print("true" if value else "false")
 elif isinstance(value, list):
     print(json.dumps(value, separators=(",", ":")))
+elif isinstance(value, dict):
+    print(json.dumps(value, separators=(",", ":")))
 else:
     print(value)
 PY
@@ -296,14 +327,41 @@ record_command() {
   printf '%s\0' "$1" >>"$commands_file"
 }
 
+repo_command_prefix=$(python3 - "$entry_file" <<'PY'
+import json
+import shlex
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    entry = json.load(handle)
+parts = [f"export {key}={shlex.quote(value)}" for key, value in sorted(entry.get("env", {}).items())]
+setup = entry.get("setup", "").strip()
+if setup:
+    parts.append(setup)
+print("; ".join(parts))
+PY
+) || die 'gate.sh: cannot read repo command context'
+
+wrap_repo_command() {
+  if [[ -n $repo_command_prefix ]]; then
+    printf '%s && %s' "$repo_command_prefix" "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 run_tool() {
   local tool=$1
   local command=$2
   local timeout_seconds=$3
   local log="$run_dir/gate-$label-$tool.log"
+  local log_name=${4:-$tool}
+  log="$run_dir/gate-$label-$log_name.log"
   local result
   record_command "$command"
-  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$command") >"$log" 2>&1
+  local wrapped
+  wrapped=$(wrap_repo_command "$command")
+  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped") >"$log" 2>&1
   result=$?
   printf '%s\t%s\t%s\t%s\n' "$tool" "$result" "$timeout_seconds" "$log" >>"$results_file"
 }
@@ -317,7 +375,9 @@ run_parity() {
   local summary_log="$state_prefix-parity-$index-summary.log"
   timeout_seconds=$(timeout_for parity) || die 'gate.sh: cannot read parity timeout'
   record_command "$command"
-  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$command") >"$log" 2>&1
+  local wrapped
+  wrapped=$(wrap_repo_command "$command")
+  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped") >"$log" 2>&1
   result=$?
   if ((result == 0)); then
     printf '%s\t%s\t%s\t%s\n' parity 0 "$timeout_seconds" "$log" >>"$results_file"
@@ -344,7 +404,9 @@ attempt_tool() {
   local timeout_seconds=$3
   local log="$run_dir/gate-$label-$tool.log"
   record_command "$command"
-  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$command") >"$log" 2>&1
+  local wrapped
+  wrapped=$(wrap_repo_command "$command")
+  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped") >"$log" 2>&1
 }
 
 record_failure() {
@@ -353,6 +415,14 @@ record_failure() {
   local log="$run_dir/gate-$label-$tool.log"
   printf '%s\n' "$summary" >"$log"
   printf '%s\t1\t0\t%s\n' "$tool" "$log" >>"$results_file"
+}
+
+record_warning() {
+  local tool=$1
+  local summary=$2
+  local log="$run_dir/gate-$label-$tool-warning.log"
+  printf '%s\n' "$summary" >"$log"
+  printf '%s\twarning\t0\t%s\n' "$tool" "$log" >>"$results_file"
 }
 
 run_configured_tool() {
@@ -413,6 +483,16 @@ lint_command=$(config_value lint) || die 'gate.sh: cannot read lint config'
 typecheck_command=$(config_value typecheck) || die 'gate.sh: cannot read typecheck config'
 migrations_command=$(config_value migrations) || die 'gate.sh: cannot read migrations config'
 tests_command=$(config_value tests) || die 'gate.sh: cannot read tests config'
+create_db_arg=''
+if ((${#files[@]})); then
+  for changed_file in "${files[@]}"; do
+    if [[ $changed_file == */migrations/*.py ]]; then
+      create_db_arg=' --create-db'
+      break
+    fi
+  done
+fi
+tests_command=${tests_command//<create-db>/$create_db_arg}
 parity_commands_file="$state_prefix-parity-commands.nul"
 python3 - "$entry_file" "$parity_commands_file" <<'PY'
 import json
@@ -446,23 +526,28 @@ if [[ $worktree_mode == true ]]; then
   fi
 fi
 
-run_configured_tool lint "$lint_command" lintExtensions
-run_configured_tool typecheck "$typecheck_command" typecheckExtensions
-[[ -z $migrations_command ]] || run_tool migrations "$migrations_command" "$(timeout_for migrations)"
+stage_enabled lint && run_configured_tool lint "$lint_command" lintExtensions
+stage_enabled typecheck && run_configured_tool typecheck "$typecheck_command" typecheckExtensions
+if stage_enabled migrations && [[ -n $migrations_command ]]; then
+  run_tool migrations "$migrations_command" "$(timeout_for migrations)"
+fi
 
-if $skip_tests; then
+if ! stage_enabled tests; then
+  :
+elif $skip_tests; then
   record_command 'tests skipped'
 elif [[ -z $tests_command ]]; then
   record_command 'tests skipped by config'
 else
-  targets_file="$state_prefix-test-targets.nul"
-  python3 - "$repo" "$entry_file" "$files_file" "$targets_file" <<'PY'
+  test_commands_file="$state_prefix-test-commands.nul"
+  python3 - "$repo" "$entry_file" "$files_file" "$test_commands_file" "$tests_command" "$create_db_arg" <<'PY'
 import fnmatch
 import json
 import os
+import shlex
 import sys
 
-repo, config_path, files_path, output_path = sys.argv[1:]
+repo, config_path, files_path, output_path, default_command, create_db_arg = sys.argv[1:]
 with open(config_path, encoding="utf-8") as handle:
     test_config = json.load(handle)
 rules = test_config["testPathRules"]
@@ -471,14 +556,22 @@ with open(files_path, "rb") as handle:
     files = [item.decode("utf-8", "surrogateescape") for item in handle.read().split(b"\0") if item]
 
 source_suffixes = {".py", ".js", ".jsx", ".ts", ".tsx", ".vue"}
-targets = []
+groups = {}
+
+
+def add_target(command, target):
+    targets = groups.setdefault(command.replace("<create-db>", create_db_arg), [])
+    if target and target not in targets:
+        targets.append(target)
+
+
 for path in files:
     normalized = path.replace(os.sep, "/").removeprefix("./")
     full_path = os.path.join(repo, normalized)
     if not os.path.exists(full_path):
         continue
     if "/tests/" in f"/{normalized}" or os.path.basename(normalized).startswith("test_"):
-        targets.append(normalized)
+        add_target(default_command, normalized)
         continue
     if os.path.splitext(normalized)[1] not in source_suffixes:
         continue
@@ -488,7 +581,7 @@ for path in files:
         if normalized.startswith(pattern) or fnmatch.fnmatch(normalized, pattern):
             target = str(rule.get("tests", "")).strip()
             if target.startswith("-k ") or (target and os.path.exists(os.path.join(repo, target))):
-                targets.append(target)
+                add_target(str(rule.get("command", default_command)), target)
             matched = True
     if matched:
         continue
@@ -496,39 +589,39 @@ for path in files:
     while parent not in ("", "."):
         candidate = os.path.join(parent, "tests")
         if os.path.isdir(os.path.join(repo, candidate)):
-            targets.append(candidate.replace(os.sep, "/"))
+            add_target(default_command, candidate.replace(os.sep, "/"))
             break
         parent = os.path.dirname(parent)
     else:
         if root_tests_fallback and os.path.isdir(os.path.join(repo, "tests")):
-            targets.append("tests")
+            add_target(default_command, "tests")
 
-seen = set()
 with open(output_path, "wb") as handle:
-    for target in targets:
-        if target and target not in seen:
-            seen.add(target)
-            handle.write(target.encode("utf-8", "surrogateescape") + b"\0")
+    for command, targets in groups.items():
+        path_args = []
+        for target in targets:
+            if target.startswith("-k "):
+                path_args.extend(["-k", target[3:]])
+            else:
+                path_args.append(target)
+        paths = " ".join(shlex.quote(item) for item in path_args)
+        expanded = command.replace("<paths>", paths)
+        handle.write(expanded.encode("utf-8", "surrogateescape") + b"\0")
 PY
   target_status=$?
   ((target_status == 0)) || die 'gate.sh: cannot select targeted tests'
-  test_targets=()
-  while IFS= read -r -d '' target; do
-    test_targets+=("$target")
-  done <"$targets_file"
-  if ((${#test_targets[@]} == 0)); then
+  test_commands=()
+  while IFS= read -r -d '' test_command; do
+    test_commands+=("$test_command")
+  done <"$test_commands_file"
+  if ((${#test_commands[@]} == 0)); then
     record_command 'tests skipped: no matching targeted tests'
   else
-    paths=''
-    for target in "${test_targets[@]}"; do
-      if [[ $target == '-k '* ]]; then
-        paths+=" -k $(shell_quote "${target#-k }")"
-      else
-        paths+=" $(shell_quote "$target")"
-      fi
+    test_index=0
+    for test_command in "${test_commands[@]}"; do
+      ((test_index += 1))
+      run_tool tests "$test_command" "$(timeout_for tests)" "tests-$test_index"
     done
-    paths=${paths# }
-    run_tool tests "${tests_command//<paths>/"$paths"}" "$(timeout_for tests)"
   fi
 fi
 
@@ -539,7 +632,7 @@ if ((${#files[@]})); then
   done
 fi
 semgrep_bin="${GATE_SEMGREP_BIN:-semgrep}"
-if [[ $semgrep_enabled == true ]]; then
+if stage_enabled semgrep && [[ $semgrep_enabled == true ]]; then
   if ! command -v "$semgrep_bin" >/dev/null 2>&1; then
     record_command 'semgrep skipped: binary not found'
   elif ((${#semgrep_files[@]} == 0)); then
@@ -591,7 +684,7 @@ import sys
 rules = {
     "rules": [
         {
-            "id": "forge-hardcoded-private-key",
+            "id": "forge-security-hardcoded-private-key",
             "languages": ["generic"],
             "message": "Private key material must not be committed",
             "severity": "ERROR",
@@ -634,6 +727,7 @@ PY
       semgrep_comparison="$state_prefix-semgrep-comparison.txt"
       if python3 - "$semgrep_current_json" "$semgrep_base_json" "$semgrep_new_json" "$repo" "$semgrep_base_dir" "$semgrep_comparison" <<'PY'
 import collections
+import fnmatch
 import json
 import os
 import sys
@@ -673,26 +767,58 @@ for finding in current:
     else:
         new_findings.append(finding)
 
+
+def is_test_path(path):
+    parts = path.split("/")
+    name = os.path.basename(path)
+    return (
+        any(part in {"tests", "test", "e2e"} for part in parts[:-1])
+        or name.startswith("test_") and name.endswith(".py")
+        or name.endswith("_test.py")
+        or fnmatch.fnmatch(name, "*.spec.*")
+        or fnmatch.fnmatch(name, "*.test.*")
+    )
+
+
+blocking = []
+warning_findings = []
+for finding in new_findings:
+    check_id = str(finding.get("check_id", ""))
+    path = relative_path(finding.get("path", ""), repo)
+    severity = str((finding.get("extra") or {}).get("severity", "")).upper()
+    if severity == "ERROR" and "security" in check_id.lower() and not is_test_path(path):
+        blocking.append(finding)
+    else:
+        warning_findings.append(finding)
+
 with open(new_path, "w", encoding="utf-8") as handle:
     json.dump({"results": new_findings}, handle, ensure_ascii=True, separators=(",", ":"))
     handle.write("\n")
 
 with open(comparison_path, "w", encoding="utf-8") as handle:
-    handle.write(f"{len(current)} {pre_existing} {len(new_findings)}\n")
-    for finding in new_findings[:15]:
-        check_id = finding.get("check_id", "")
-        path = relative_path(finding.get("path", ""), repo)
-        line = (finding.get("start") or {}).get("line", "?")
-        handle.write(f"{check_id} {path}:{line}\n")
+    handle.write(
+        f"{len(current)} {pre_existing} {len(new_findings)} "
+        f"{len(blocking)} {len(warning_findings)}\n"
+    )
+    for category, findings in (("BLOCK", blocking), ("WARN", warning_findings)):
+        for finding in findings[:15]:
+            check_id = finding.get("check_id", "")
+            path = relative_path(finding.get("path", ""), repo)
+            line = (finding.get("start") or {}).get("line", "?")
+            handle.write(f"{category}\t{check_id} {path}:{line}\n")
 PY
       then
-        read -r semgrep_total semgrep_pre_existing semgrep_new <"$semgrep_comparison"
+        read -r semgrep_total semgrep_pre_existing semgrep_new semgrep_blocking semgrep_warnings <"$semgrep_comparison"
         record_command "semgrep: $semgrep_total findings, $semgrep_pre_existing pre-existing at HEAD, $semgrep_new new"
-        if ((semgrep_new > 0)); then
-          semgrep_failure=$(sed -n '2,16p' "$semgrep_comparison")
+        if ((semgrep_blocking > 0)); then
+          semgrep_failure=$(sed -n $'s/^BLOCK\t//p' "$semgrep_comparison")
           record_failure semgrep "$semgrep_failure"
         else
           printf '%s\t0\t120\t%s\n' semgrep "$semgrep_log" >>"$results_file"
+        fi
+        if ((semgrep_warnings > 0)); then
+          semgrep_warning=$(sed -n $'s/^WARN\t//p' "$semgrep_comparison")
+          record_warning semgrep "$semgrep_warning"
         fi
       else
         record_failure semgrep 'semgrep: could not compare current findings with HEAD'
@@ -702,7 +828,7 @@ PY
 fi
 
 parity_index=0
-if ((${#parity_commands[@]})); then
+if stage_enabled parity && ((${#parity_commands[@]})); then
   for parity_command in "${parity_commands[@]}"; do
     ((parity_index += 1))
     run_parity "$parity_index" "$parity_command"
@@ -711,7 +837,7 @@ fi
 
 result_path="$run_dir/gate-$label.json"
 diff_path="$run_dir/gate-$label.diff"
-python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" <<'PY'
+python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" <<'PY'
 import fnmatch
 import json
 import os
@@ -729,6 +855,7 @@ import sys
     diff_exclude_raw,
     commit_message,
     push_raw,
+    only_stages_raw,
 ) = sys.argv[1:]
 files_given = files_given_raw == "true"
 push = push_raw == "true"
@@ -742,10 +869,19 @@ with open(commands_path, "rb") as handle:
     commands = [item.decode("utf-8", "replace") for item in handle.read().split(b"\0") if item]
 
 failures = []
+warnings = []
 with open(results_path, encoding="utf-8") as handle:
     for row in handle:
         tool, status, timeout_seconds, log_path = row.rstrip("\n").split("\t", 3)
         if status == "0":
+            continue
+        if status == "warning":
+            try:
+                with open(log_path, encoding="utf-8", errors="replace") as log:
+                    summary = log.read().strip()
+            except OSError as exc:
+                summary = f"warning log unavailable: {exc}"
+            warnings.append({"tool": tool, "summary": summary[-2048:]})
             continue
         if status == "142":
             summary = f"timed out after {timeout_seconds} s"
@@ -762,7 +898,17 @@ with open(results_path, encoding="utf-8") as handle:
                 summary = f"command exited {status}"
         failures.append({"tool": tool, "summary": summary[-2048:]})
 
-result = {"passed": not failures, "failures": failures, "commands": commands, "commit": None}
+all_stages = ["lint", "typecheck", "migrations", "tests", "semgrep", "parity"]
+requested_stages = set(filter(None, only_stages_raw.split(",")))
+skipped = [stage for stage in all_stages if requested_stages and stage not in requested_stages]
+result = {
+    "passed": not failures,
+    "failures": failures,
+    "warnings": warnings,
+    "skipped": skipped,
+    "commands": commands,
+    "commit": None,
+}
 if files_given:
     result["files"] = files
     kept = []
