@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -214,6 +215,28 @@ def unmanaged_paths(home: Path, staged: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def _restore_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> None:
+    def merge_dir(source: Path, target: Path) -> None:
+        if target.exists() and not target.is_dir():
+            return
+        target.mkdir(parents=True, exist_ok=True)
+        for entry in sorted(source.iterdir()):
+            dst = target / entry.name
+            if entry.is_dir() and not entry.is_symlink():
+                merge_dir(entry, dst)
+            elif not (dst.exists() or dst.is_symlink()):
+                shutil.copy2(entry, dst, follow_symlinks=False)
+
+    for relative in preserved:
+        source = backup / relative
+        target = home / relative
+        if source.is_dir() and not source.is_symlink():
+            merge_dir(source, target)
+        elif not (target.exists() or target.is_symlink()):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target, follow_symlinks=False)
+
+
 def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
     home = home.expanduser().resolve()
     home.parent.mkdir(parents=True, exist_ok=True)
@@ -234,19 +257,7 @@ def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
                 os.replace(backup, home)
             raise
         if backup is not None:
-            for relative in preserved:
-                source = backup / relative
-                target = home / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if source.is_dir() and not source.is_symlink():
-                    shutil.copytree(
-                        source,
-                        target,
-                        copy_function=shutil.copy2,
-                        symlinks=True,
-                    )
-                else:
-                    shutil.copy2(source, target, follow_symlinks=False)
+            _restore_unmanaged(backup, home, preserved)
             sys.stdout.write(f"preserved {len(preserved)} unmanaged path(s) from {backup}\n")
         _install_auxiliary(auxiliary, home.parent)
         return ComposeResult(result.files, result.settings, backup)

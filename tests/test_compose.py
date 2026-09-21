@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 from aisetup import cli
-from aisetup.compose import compose_tree, install_tree
+from aisetup.compose import _restore_unmanaged, compose_tree, install_tree
 from aisetup.profile import load_profile
 
 
@@ -53,6 +54,25 @@ def test_install_replaces_managed_files_and_preserves_unmanaged_paths(
     assert (result.backup / "CLAUDE.md").read_text(encoding="utf-8") == "old managed"
     assert (result.backup / "old.txt").read_text(encoding="utf-8") == "old"
     assert (result.backup / "projects/session.jsonl").read_text(encoding="utf-8") == "session"
+
+
+def test_restore_unmanaged_merges_add_only(tmp_path):
+    backup = tmp_path / "backup"
+    home = tmp_path / "home"
+    (backup / "projects/sub").mkdir(parents=True)
+    (backup / "projects/a.jsonl").write_text("old-a", encoding="utf-8")
+    (backup / "projects/sub/b.txt").write_text("b", encoding="utf-8")
+    (backup / "note.txt").write_text("note", encoding="utf-8")
+    (home / "projects").mkdir(parents=True)
+    (home / "projects/live.jsonl").write_text("live", encoding="utf-8")
+    (home / "projects/a.jsonl").write_text("new-a", encoding="utf-8")
+
+    _restore_unmanaged(backup, home, (Path("projects"), Path("note.txt")))
+
+    assert (home / "projects/live.jsonl").read_text(encoding="utf-8") == "live"
+    assert (home / "projects/a.jsonl").read_text(encoding="utf-8") == "new-a"
+    assert (home / "projects/sub/b.txt").read_text(encoding="utf-8") == "b"
+    assert (home / "note.txt").read_text(encoding="utf-8") == "note"
 
 
 def test_install_preserves_unmanaged_symlink(repo_root, tmp_path, monkeypatch):
