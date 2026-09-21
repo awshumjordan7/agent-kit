@@ -1,0 +1,22 @@
+name = "context7"
+description = "Current library and framework documentation"
+default = true
+depends = []
+requires = ["node"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"
+
+[[questions]]
+id = "api_key"
+prompt = "Context7 API key (optional; raises limits)"
+type = "string"
+default = ""
+secret = true
+
+[[mcp]]
+name = "context7"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+scope = "user"
+env = { CONTEXT7_API_KEY = "{{answers.context7.api_key}}" }

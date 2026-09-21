@@ -1,0 +1,15 @@
+theme = Catppuccin Mocha
+font-size = 15
+background-blur-radius = 20
+mouse-hide-while-typing = true
+window-decoration = true
+macos-option-as-alt = true
+background-opacity = 1
+keybind = shift+enter=text:\x1b\r
+window-save-state = always
+window-new-tab-position = end
+window-padding-balance = true
+resize-overlay = always
+macos-titlebar-style = tabs
+auto-update = check
+cursor-style-blink = true

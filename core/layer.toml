@@ -1,0 +1,14 @@
+schema = 1
+modules = ["firecrawl", "context7", "memory", "codex", "playwright", "github", "marketing", "terminal"]
+
+[[templates]]
+src = "templates/forge.config.json.tmpl"
+dest = "skills/forge/forge.config.json"
+
+[[templates]]
+src = "templates/base-branches.json.tmpl"
+dest = "skills/ship-pr/references/base-branches.json"
+
+[[templates]]
+src = "templates/doctor.toml.tmpl"
+dest = "scripts/doctor.toml"

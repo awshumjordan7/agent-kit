@@ -1,0 +1,12 @@
+{
+  "theme": "overlay",
+  "permissions": {"allow": ["WebSearch"]},
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "overlay",
+        "hooks": [{"type": "command", "command": "python3 $HOME/.claude/hooks/overlay_hook.py"}]
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "layers": {
+    "core": {"path": ".", "track": "main"},
+    "overlay": null,
+    "local": "../missing-local"
+  },
+  "modules": {"firecrawl": true, "context7": true, "memory": true}
+}

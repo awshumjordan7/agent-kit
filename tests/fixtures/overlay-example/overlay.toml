@@ -1,0 +1,4 @@
+name = "example"
+description = "Synthetic private overlay"
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"

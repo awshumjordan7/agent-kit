@@ -1,0 +1,381 @@
+<!--
+  Rendered by a worker from <runDir>/qa-data.json; the main session writes the data file
+  and never edits the HTML.
+  Page placeholders -> qa-data.json key:
+    TICKET                -> ticket
+    SHORT_TITLE            -> shortTitle (2-4 words)
+    DATE                   -> date
+    TIER                   -> tier
+    BRANCH                 -> branch
+    SANDBOX_ID              -> sandboxId
+    PREVIEW_URL             -> previewUrl
+    ROOT_LOGIN_EMAIL         -> rootLoginEmail
+    ROOT_LOGIN_PASSWORD      -> rootLoginPassword
+    ADMIN_CREDS              -> adminCreds
+    USERS_ROWS_HTML          -> one row per item in users[] (role, email, note); users[] is
+                                 optional and defaults to [] (Users card omitted when empty).
+                                 The card is wrapped in USERS_SECTION_START / USERS_SECTION_END
+                                 HTML comment markers in the template; the render script drops
+                                 everything between them (markers included) when users[] is
+                                 empty, otherwise fills USERS_ROWS_HTML and strips just the two
+                                 marker comments.
+    JIRA_TICKET_ROWS_HTML    -> one row per item in jiraTickets[] (key, url, title, role)
+    LINKS_HTML               -> one <li> per item in links[] (label, url)
+    CONTEXT_ITEMS_HTML       -> one <li> per string in contextItems[]; backtick spans render as
+                                 copyable code (see "Copyable code spans" below)
+    QA_ITEMS_HTML            -> one <details> per item in qaItems[]
+                                 Required: title, ticketKey, ticketUrl, before, steps[], expected,
+                                 evidence. Optional: pr (default "" = unlabelled), screenGroup
+                                 (default "Other"), whatChanged (functional + visual change;
+                                 default "" = row omitted), why
+                                 (default "" = row omitted), clickPass (default absent = not run),
+                                 and id (default = 1-based index as a string).
+                                 clickPass is {status: "PASS" | "FAIL" | "SKIP" | "PENDING", note:
+                                 string, screenshot: string (path or URL, may be "")}; omit its
+                                 row when absent and omit its link when screenshot is "". PENDING
+                                 pill text is "pending", muted grey (reuses the skip/none colour);
+                                 the summary strip counts pending separately from SKIP.
+                                 Backtick spans in before, steps[], expected, and evidence render
+                                 as copyable code (see "Copyable code spans" below).
+    WHAT_CHANGED_HTML        -> handoff.whatChanged
+    GATE_RESULTS_HTML        -> handoff.gateResults
+    REVIEW_SCORES_HTML       -> handoff.reviewScores
+    OPEN_FINDINGS_HTML       -> handoff.openFindings
+    BOT_VERDICTS_HTML        -> handoff.botVerdicts
+    JUDGMENT_CALLS_HTML      -> handoff.judgmentCalls
+    FOLLOWUPS_HTML           -> handoff.followUps
+    PR_LINKS_HTML            -> handoff.prLinks
+  Access card rows. Each button's data-copy is filled once with the row's placeholder; the
+  inline script copies that value into the visible cell (and into href, for Preview URL):
+    <tr class="copy-row"><th>Preview URL</th><td><a class="copy-value" data-role="value"
+    href="#" target="_blank" rel="noopener"></a></td><td><button type="button" class="copy-btn"
+    data-copy="{{PREVIEW_URL}}">Copy</button></td></tr>
+    <tr class="copy-row"><th>Login email</th><td><span class="copy-value" data-role="value">
+    </span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_EMAIL}}">
+    Copy</button></td></tr>
+  (Password and Admin creds rows repeat the Login email markup with ROOT_LOGIN_PASSWORD and
+  ADMIN_CREDS.)
+  Users card, directly after the Access card. Omitted entirely when users[] is empty. One row
+  per item in users[] (role, email, note optional). The row reuses the Access card's
+  copy-row class so the same script fills the value and wires the button; no credential
+  column of any kind:
+    <tr class="copy-row"><td>{{role}}</td><td><span class="copy-value" data-role="value"></span></td>
+    <td><button type="button" class="copy-btn" data-copy="{{email}}">Copy</button></td>
+    <td>{{note}}</td></tr>
+  Jira ticket row markup, one per item in jiraTickets[]:
+    <tr><td><a href="{{url}}">{{key}}</a></td><td>{{title}}</td><td>{{role}}</td></tr>
+  Copyable code spans: any text wrapped in single backticks inside qaItems[] (before, steps[],
+  expected, evidence) or contextItems[] renders as
+  <code class="copy-code">text</code><button type="button" class="copy-btn copy-code-btn"
+  data-copy="text">Copy</button>, with the code text HTML-escaped first. One delegated click
+  handler copies the button's data-copy and reuses the Access card's copy feedback (swap the
+  label to "Copied" and disable briefly).
+  QA item markup, one per item in qaItems[]; N is the 1-based index. Omit the What changed and Why
+  pairs when empty. Omit Click pass when clickPass is absent and its screenshot link when empty.
+  Use status-none/not run when clickPass is absent; otherwise use the lowercase status in the
+  class and the uppercase status as the label. data-status carries the clickPass status verbatim
+  in uppercase (PASS, FAIL, SKIP, PENDING), or `none` when absent; the pill class uses the
+  lowercase form. PENDING is the one exception to "uppercase status as the label": its pill text
+  is the lowercase word "pending", not "PENDING".
+  Items are collapsed by default (no open attribute):
+    <details class="qa-item" data-id="{{id}}" data-pr="{{pr}}" data-group="{{screenGroup}}" data-status="{{clickPass.status or 'none'}}">
+    <summary><span class="qa-num">{{N}}.</span> <span class="qa-title">{{TITLE}}</span>
+    <span class="qa-badges"><span class="pill pr">{{pr}}</span><span class="pill group">{{screenGroup}}</span><span class="pill status status-pass|status-fail|status-skip|status-pending|status-none">PASS|FAIL|SKIP|pending|not run</span></span>
+    <label class="verify"><input type="checkbox" class="verify-toggle"> verified</label></summary>
+    <dl><dt>Ticket</dt><dd><a href="{{ticketUrl}}">{{KEY}}</a></dd>
+    <dt>Before</dt><dd>{{before}}</dd>
+    <dt>What changed</dt><dd>{{whatChanged}}</dd>
+    <dt>Why</dt><dd>{{why}}</dd>
+    <dt>Steps</dt><dd><ol><li>{{step}}</li>...</ol></dd>
+    <dt>Expected</dt><dd>{{expected}}</dd>
+    <dt>Click pass</dt><dd>{{clickPass.status}} - {{clickPass.note}} <a href="{{clickPass.screenshot}}">screenshot</a></dd>
+    <dt>Evidence</dt><dd>{{evidence}}</dd>
+    </dl></details>
+  Two-phase render. Render 1 happens right after the PR push: every clickPass is
+  {status: "PENDING", note: "steward click pass pending", screenshot: ""} and every handoff.*
+  key is empty. Render 2 happens at handoff: the same file is replaced with the steward's
+  PASS/FAIL rows and the filled-in handoff content.
+-->
+<title>{{TICKET}} {{SHORT_TITLE}}</title>
+<style>
+  :root { --ground:#F2F4F7; --surface:#FFFFFF; --surface-2:#E9EDF2; --ink:#1C2128; --ink-2:#4B5563; --muted:#6B7480; --line:#D6DCE4; --steel:#2F5D8A; --ember:#C8501E; --ember-soft:#FBE7DC; --code:#EEF1F5; --link:#1A56DB; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ground:#14171C; --surface:#1C2129; --surface-2:#232A34; --ink:#E6E9EE; --ink-2:#B6BEC9; --muted:#8E98A5; --line:#2C333D; --steel:#7FAEE0; --ember:#F07A3E; --ember-soft:#3A2419; --code:#10131A; --link:#8AB4F8; } }
+  :root[data-theme="dark"] { --ground:#14171C; --surface:#1C2129; --surface-2:#232A34; --ink:#E6E9EE; --ink-2:#B6BEC9; --muted:#8E98A5; --line:#2C333D; --steel:#7FAEE0; --ember:#F07A3E; --ember-soft:#3A2419; --code:#10131A; --link:#8AB4F8; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family: Georgia, "Source Serif 4", serif; font-size:17px; line-height:1.55; }
+  a, a:visited { color:var(--link); text-decoration-color:var(--line); } a:hover { text-decoration-color:var(--link); }
+  h1,h2,h3 { font-family: "Helvetica Neue", Arial, sans-serif; margin:0; line-height:1.15; text-wrap:balance; }
+  h1 { font-size:2.2rem; } h2 { font-size:1.35rem; } h3 { font-size:1.05rem; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size:0.85em; background:var(--code); padding:0.1em 0.35em; border-radius:3px; }
+  .page { max-width:900px; margin:0 auto; padding:0 clamp(16px,4vw,40px) 80px; }
+  header { padding:48px 0 24px; border-bottom:2px solid var(--ink); display:grid; gap:12px; }
+  .meta { display:flex; flex-wrap:wrap; gap:8px 20px; color:var(--muted); font-size:0.9rem; font-family:"Helvetica Neue",Arial,sans-serif; }
+  .eyebrow { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); }
+  section { padding-top:36px; display:grid; gap:12px; }
+  .prose { max-width:66ch; display:grid; gap:12px; color:var(--ink-2); }
+  .prose p { margin:0; }
+  ul,ol { margin:0; padding-left:1.3em; display:grid; gap:6px; color:var(--ink-2); }
+  .table-wrap { overflow-x:auto; border:1px solid var(--line); background:var(--surface); }
+  table { border-collapse:collapse; width:100%; font-size:0.92rem; }
+  th,td { text-align:left; vertical-align:top; padding:9px 12px; border-bottom:1px solid var(--line); }
+  th { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.74rem; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); white-space:nowrap; }
+  tr:last-child td, tr:last-child th { border-bottom:none; }
+  .pill { display:inline-block; font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; padding:2px 8px; border-radius:2px; background:var(--surface-2); color:var(--ink-2); }
+  .copy-value { font-family: ui-monospace, Menlo, monospace; font-size:0.88em; word-break:break-all; color:var(--ink); }
+  .copy-btn { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.78rem; font-weight:700; padding:5px 12px; border:1px solid var(--steel); background:var(--surface); color:var(--steel); border-radius:3px; cursor:pointer; white-space:nowrap; }
+  .copy-btn:hover { background:var(--surface-2); }
+  .copy-btn[disabled] { opacity:0.7; cursor:default; }
+  .copy-code-btn { font-size:0.68rem; padding:1px 6px; margin-left:4px; vertical-align:middle; }
+  .qa-strip { position:sticky; top:0; z-index:2; display:grid; gap:6px; padding:8px 0; background:var(--ground); font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.78rem; }
+  .qa-counts,.qa-filter-rows,.filter-row,.qa-controls { display:flex; align-items:center; flex-wrap:wrap; gap:5px 8px; }
+  .qa-counts { color:var(--ink-2); }
+  .filter-label { min-width:48px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:3px 9px; background:var(--surface); color:var(--ink-2); font:inherit; cursor:pointer; }
+  .chip[aria-pressed="true"] { border-color:var(--ember); background:var(--ember-soft); color:var(--ink); }
+  .qa-controls button { border:1px solid var(--steel); border-radius:3px; padding:3px 9px; background:var(--surface); color:var(--steel); font:inherit; font-weight:700; cursor:pointer; }
+  .qa-controls label { margin-right:auto; }
+  .qa-items { display:grid; gap:10px; }
+  .qa-item { background:var(--surface); border:1px solid var(--line); padding:0; }
+  .qa-item.hidden { display:none; }
+  .qa-item > summary { display:flex; align-items:center; gap:7px; min-width:0; padding:11px 14px; white-space:nowrap; list-style:none; }
+  .qa-item > summary::-webkit-details-marker { display:none; }
+  .qa-item > summary::before { content:"\25B8"; color:var(--muted); }
+  .qa-item[open] > summary::before { content:"\25BE"; }
+  .qa-num { flex:none; color:var(--muted); }
+  .qa-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .qa-badges { display:flex; flex:none; gap:5px; margin-left:auto; }
+  .status-pass { color:var(--steel); } .status-fail { color:var(--ember); } .status-skip,.status-none,.status-pending { color:var(--muted); }
+  .verify { flex:none; font-size:0.78rem; font-weight:400; color:var(--ink-2); cursor:pointer; }
+  .qa-item.is-verified .qa-title { color:var(--muted); }
+  .qa-item dl { margin:0; padding:4px 38px 14px; display:grid; gap:10px; }
+  .qa-item dt { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
+  .qa-item dd { margin:2px 0 0; color:var(--ink-2); }
+  .qa-item ol { margin:0; }
+  details { background:var(--surface); border:1px solid var(--line); padding:10px 14px; }
+  summary { font-family:"Helvetica Neue",Arial,sans-serif; font-size:1.05rem; font-weight:700; cursor:pointer; }
+  details[open] summary { margin-bottom:8px; }
+  .qa-item[open] > summary { margin-bottom:0; }
+</style>
+<div class="page">
+  <header>
+    <span class="eyebrow">Manual QA checklist</span>
+    <h1>{{TICKET}} - {{SHORT_TITLE}}</h1>
+    <div class="meta"><span>{{DATE}}</span><span class="pill">tier: {{TIER}}</span><span class="pill">branch: {{BRANCH}}</span><span class="pill">sandbox: {{SANDBOX_ID}}</span></div>
+  </header>
+  <section>
+    <h2>Access card</h2>
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr class="copy-row"><th>Preview URL</th><td><a class="copy-value" data-role="value" href="#" target="_blank" rel="noopener"></a></td><td><button type="button" class="copy-btn" data-copy="{{PREVIEW_URL}}">Copy</button></td></tr>
+          <tr class="copy-row"><th>Login email</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_EMAIL}}">Copy</button></td></tr>
+          <tr class="copy-row"><th>Password</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_PASSWORD}}">Copy</button></td></tr>
+          <tr class="copy-row"><th>Admin creds</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ADMIN_CREDS}}">Copy</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <!--USERS_SECTION_START-->
+  <section>
+    <h2>Users</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Role</th><th>Email</th><th>Copy</th><th>Note</th></tr></thead>
+        <tbody>{{USERS_ROWS_HTML}}</tbody>
+      </table>
+    </div>
+  </section>
+  <!--USERS_SECTION_END-->
+  <section>
+    <h2>Jira tickets</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Ticket</th><th>Title</th><th>Role in run</th></tr></thead>
+        <tbody>{{JIRA_TICKET_ROWS_HTML}}</tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <h2>Links</h2>
+    <ul>{{LINKS_HTML}}</ul>
+  </section>
+  <section>
+    <h2>Useful context</h2>
+    <ul>{{CONTEXT_ITEMS_HTML}}</ul>
+  </section>
+  <section>
+    <h2>QA items</h2>
+    <div class="qa-strip">
+      <div class="qa-counts" aria-live="polite"></div>
+      <div class="qa-filter-rows"></div>
+      <div class="qa-controls"><label><input type="checkbox" class="hide-verified"> Hide verified</label><button type="button" class="expand-all">Expand all</button><button type="button" class="collapse-all">Collapse all</button></div>
+    </div>
+    <div class="qa-items" data-ticket="{{TICKET}}" data-sandbox="{{SANDBOX_ID}}">{{QA_ITEMS_HTML}}</div>
+  </section>
+  <section>
+    <h2>Handoff</h2>
+    <details><summary>What changed</summary><div class="prose">{{WHAT_CHANGED_HTML}}</div></details>
+    <details><summary>Gate results</summary><div class="prose">{{GATE_RESULTS_HTML}}</div></details>
+    <details><summary>Review scores</summary><div class="prose">{{REVIEW_SCORES_HTML}}</div></details>
+    <details><summary>Open findings</summary><div class="prose">{{OPEN_FINDINGS_HTML}}</div></details>
+    <details><summary>Bot review verdicts</summary><div class="prose">{{BOT_VERDICTS_HTML}}</div></details>
+    <details><summary>Judgment calls</summary><div class="prose">{{JUDGMENT_CALLS_HTML}}</div></details>
+    <details><summary>Follow-ups</summary><div class="prose">{{FOLLOWUPS_HTML}}</div></details>
+    <details><summary>PR links</summary><div class="prose">{{PR_LINKS_HTML}}</div></details>
+  </section>
+</div>
+<script>
+(function () {
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (err) { /* clipboard unavailable */ }
+    document.body.removeChild(ta);
+    return Promise.resolve();
+  }
+  document.querySelectorAll('.copy-row').forEach(function (row) {
+    var btn = row.querySelector('.copy-btn');
+    var val = row.querySelector('[data-role="value"]');
+    var text = btn.getAttribute('data-copy') || '';
+    if (val) {
+      val.textContent = text;
+      if (val.tagName === 'A') { val.href = text; }
+    }
+    btn.addEventListener('click', function () {
+      copyText(text).then(function () {
+        var original = btn.textContent;
+        btn.textContent = 'Copied';
+        btn.disabled = true;
+        setTimeout(function () {
+          btn.textContent = original;
+          btn.disabled = false;
+        }, 1500);
+      });
+    });
+  });
+  document.addEventListener('click', function (event) {
+    var btn = event.target.closest ? event.target.closest('.copy-code-btn') : null;
+    if (!btn) { return; }
+    var text = btn.getAttribute('data-copy') || '';
+    copyText(text).then(function () {
+      var original = btn.textContent;
+      btn.textContent = 'Copied';
+      btn.disabled = true;
+      setTimeout(function () {
+        btn.textContent = original;
+        btn.disabled = false;
+      }, 1500);
+    });
+  });
+  var container = document.querySelector('.qa-items');
+  var items = Array.prototype.slice.call(container.querySelectorAll('.qa-item'));
+  var filters = { pr: '*', status: '*', group: '*' };
+  var hideVerified = document.querySelector('.hide-verified');
+  var storageKey = 'qa-verified:' + container.dataset.ticket + ':' + container.dataset.sandbox;
+  var restored = [];
+  try {
+    var saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    if (Array.isArray(saved)) { restored = saved.map(String); }
+  } catch (err) { /* persistence unavailable */ }
+  function labelFor(dimension, value) {
+    if (dimension === 'pr' && !value) { return 'Unlabelled'; }
+    if (dimension === 'status') { return value === 'none' ? 'not run' : value.toUpperCase(); }
+    return value || 'Other';
+  }
+  function valuesFor(dimension) {
+    return items.map(function (item) { return item.dataset[dimension] || ''; })
+      .filter(function (value, index, values) { return values.indexOf(value) === index; });
+  }
+  function updateCounts() {
+    var parts = ['Total ' + items.length];
+    valuesFor('pr').forEach(function (value) {
+      var count = items.filter(function (item) { return (item.dataset.pr || '') === value; }).length;
+      parts.push(labelFor('pr', value) + ' ' + count);
+    });
+    ['PASS', 'FAIL', 'SKIP', 'PENDING', 'none'].forEach(function (value) {
+      var count = items.filter(function (item) { return item.dataset.status === value; }).length;
+      parts.push(labelFor('status', value) + ' ' + count);
+    });
+    var verified = items.filter(function (item) { return item.querySelector('.verify-toggle').checked; }).length;
+    parts.push(verified + ' / ' + items.length + ' verified');
+    document.querySelector('.qa-counts').textContent = parts.join(' \u00b7 ');
+  }
+  function applyFilters() {
+    items.forEach(function (item) {
+      var matches = Object.keys(filters).every(function (key) {
+        return filters[key] === '*' || (item.dataset[key] || '') === filters[key];
+      });
+      item.classList.toggle('hidden', !matches || (hideVerified.checked && item.classList.contains('is-verified')));
+    });
+  }
+  function saveVerified() {
+    var ids = items.filter(function (item) { return item.querySelector('.verify-toggle').checked; })
+      .map(function (item) { return item.dataset.id; });
+    try { localStorage.setItem(storageKey, JSON.stringify(ids)); } catch (err) { /* persistence unavailable */ }
+  }
+  function makeFilterRow(dimension, name) {
+    var values = valuesFor(dimension);
+    if (values.length < 2) { return; }
+    var row = document.createElement('div');
+    row.className = 'filter-row';
+    var label = document.createElement('span');
+    label.className = 'filter-label';
+    label.textContent = name;
+    row.appendChild(label);
+    ['*'].concat(values).forEach(function (value) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip';
+      button.dataset.value = value;
+      button.setAttribute('aria-pressed', value === '*' ? 'true' : 'false');
+      button.textContent = value === '*' ? 'All' : labelFor(dimension, value);
+      button.addEventListener('click', function () {
+        filters[dimension] = value;
+        row.querySelectorAll('.chip').forEach(function (chip) {
+          chip.setAttribute('aria-pressed', chip === button ? 'true' : 'false');
+        });
+        applyFilters();
+        var strip = document.querySelector('.qa-strip');
+        if (container.getBoundingClientRect().top < strip.offsetHeight) { container.scrollIntoView({ block: 'start' }); }
+      });
+      row.appendChild(button);
+    });
+    document.querySelector('.qa-filter-rows').appendChild(row);
+  }
+  items.forEach(function (item) {
+    var toggle = item.querySelector('.verify-toggle');
+    var verify = item.querySelector('.verify');
+    var pr = item.querySelector('.pill.pr');
+    if (pr && !pr.textContent.trim()) { pr.textContent = labelFor('pr', ''); }
+    toggle.checked = restored.indexOf(item.dataset.id) !== -1;
+    item.classList.toggle('is-verified', toggle.checked);
+    verify.addEventListener('click', function (event) { event.stopPropagation(); });
+    toggle.addEventListener('click', function (event) { event.stopPropagation(); });
+    toggle.addEventListener('change', function () {
+      item.classList.toggle('is-verified', toggle.checked);
+      saveVerified();
+      updateCounts();
+      applyFilters();
+    });
+  });
+  makeFilterRow('pr', 'PR');
+  makeFilterRow('status', 'Status');
+  makeFilterRow('group', 'Screen');
+  hideVerified.addEventListener('change', applyFilters);
+  document.querySelector('.expand-all').addEventListener('click', function () {
+    items.filter(function (item) { return !item.classList.contains('hidden'); }).forEach(function (item) { item.open = true; });
+  });
+  document.querySelector('.collapse-all').addEventListener('click', function () {
+    items.filter(function (item) { return !item.classList.contains('hidden'); }).forEach(function (item) { item.open = false; });
+  });
+  updateCounts();
+  applyFilters();
+})();
+</script>

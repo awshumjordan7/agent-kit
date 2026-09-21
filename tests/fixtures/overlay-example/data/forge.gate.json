@@ -1,0 +1,11 @@
+{
+  "forge": {
+    "stages": {"sandbox": true},
+    "gate": {
+      "~/Projects/example": {
+        "tests": "python -m pytest -q",
+        "lint": "ruff check ."
+      }
+    }
+  }
+}

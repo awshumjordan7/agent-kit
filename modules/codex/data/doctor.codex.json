@@ -1,0 +1,9 @@
+{
+  "doctor": {
+    "codex": {
+      "agents_md": "~/.codex/AGENTS.md",
+      "exclude_sections": ["Model Routing (Sub-Agents)"],
+      "exclude_bullets": ["Use `planner` for feature planning", "memory & auto-memory"]
+    }
+  }
+}

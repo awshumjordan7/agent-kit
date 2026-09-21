@@ -1,0 +1,17 @@
+[models]
+codex_version = "5.6"
+claude_tiers = ["haiku", "sonnet", "opus", "fable"]
+
+[ignore]
+globs = ["skills-archive/**", "backups*/**", "plugins/**", "projects/*/**", "file-history/**", "session-env/**", "shell-snapshots/**", "paste-cache/**", "cache/**", "security/**", "tasks/**", "jobs/**", "history.jsonl", "*.jsonl"]
+
+[thresholds]
+agent_max_lines = 60
+
+[repos]
+roots = {{json doctor.repo_roots}}
+
+[codex]
+agents_md = "{{doctor.codex.agents_md}}"
+exclude_sections = {{json doctor.codex.exclude_sections}}
+exclude_bullets = {{json doctor.codex.exclude_bullets}}

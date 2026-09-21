@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "layers": {
+    "core": {"path": ".", "track": "main"},
+    "overlay": {"path": "tests/fixtures/overlay-example"},
+    "local": "../local-example"
+  },
+  "agents": {
+    "example-agent": {"model": "sonnet", "maxTurns": 15, "effort": null}
+  },
+  "forge": {
+    "gate": {
+      "~/Projects/example": {
+        "tests": "python -m pytest -q",
+        "lint": "ruff check ."
+      }
+    }
+  },
+  "ship_pr": {
+    "base_branches": {"example/private": {"branch": "develop"}}
+  },
+  "doctor": {
+    "codex": {"agents_md": "/home/example/.codex/AGENTS.md"}
+  }
+}

@@ -1,0 +1,35 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+personality = "pragmatic"
+project_doc_max_bytes = 131072
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[mcp_servers.memory]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+
+[mcp_servers.semgrep]
+command = "semgrep"
+args = ["mcp"]
+
+[mcp_servers.semgrep.tools.semgrep_scan]
+approval_mode = "approve"
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+
+[mcp_servers.playwright.tools.browser_navigate]
+approval_mode = "approve"
+
+[mcp_servers.playwright.tools.browser_evaluate]
+approval_mode = "approve"
+
+[features]
+multi_agent = true
+
+[sandbox_workspace_write]
+writable_roots = ["~/.ai-skills"]

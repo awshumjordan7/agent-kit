@@ -1,0 +1,7 @@
+{
+  "ship_pr": {
+    "base_branches": {
+      "example/private": {"branch": "develop"}
+    }
+  }
+}

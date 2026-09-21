@@ -1,0 +1,6 @@
+name = "marketing"
+description = "Market research and content production workflows"
+default = false
+depends = ["firecrawl"]
+requires = []
+claude_md_fragment = "CLAUDE.fragment.md"

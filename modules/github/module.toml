@@ -1,0 +1,13 @@
+name = "github"
+description = "GitHub CLI and official GitHub MCP tools"
+default = false
+depends = []
+requires = ["gh"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"
+
+[[mcp]]
+name = "github"
+transport = "http"
+url = "https://api.githubcopilot.com/mcp/"
+scope = "user"

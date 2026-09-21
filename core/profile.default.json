@@ -1,0 +1,100 @@
+{
+  "profile": {
+    "schema": 1,
+    "layers": {
+      "core": {"path": ".", "commit": "", "track": "main"},
+      "overlay": null,
+      "local": "~/.ai-setup/local"
+    },
+    "modules": {
+      "firecrawl": true,
+      "context7": true,
+      "memory": true,
+      "codex": false,
+      "playwright": false,
+      "github": false,
+      "marketing": false,
+      "terminal": false
+    },
+    "answers": {},
+    "agents": {
+      "scout": {"model": "sonnet", "maxTurns": 50, "effort": null},
+      "locator": {"model": "haiku", "maxTurns": 20, "effort": null},
+      "worker": {"model": "sonnet", "maxTurns": 90, "effort": null},
+      "shipper": {"model": "sonnet", "maxTurns": 30, "effort": null},
+      "reviewer": {"model": "inherit", "maxTurns": 40, "effort": null},
+      "spot-reviewer": {"model": "opus", "maxTurns": 40, "effort": null},
+      "implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
+    },
+    "forge": {
+      "roles": {
+        "impl": {"provider": "claude", "model": "opus", "effort": "high"},
+        "quick-impl": {"provider": "claude", "model": "opus", "effort": "high"},
+        "review": {"provider": "claude", "model": "opus", "effort": "high"},
+        "plan-review": {"provider": "claude", "model": "opus", "effort": "high"},
+        "spot-review": {"provider": "claude", "model": "opus", "effort": "high"},
+        "qa": {"provider": "claude", "model": "sonnet", "effort": "medium"}
+      },
+      "stages": {"sandbox": false, "ff_review": false, "qa_login": false},
+      "codex": {
+        "roles": {
+          "impl": {"model": "gpt-5.6-sol", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
+          "quick-impl": {"model": "gpt-5.6-luna", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
+          "review": {"model": "gpt-5.6-sol", "effort": "high", "maxToolCalls": 90, "maxToolOutputKB": 300, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"},
+          "plan-review": {"model": "gpt-5.6-sol", "effort": "high", "maxToolCalls": 30, "maxToolOutputKB": 200, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"}
+        },
+        "defaultRole": "review",
+        "stallTimeoutSeconds": 300,
+        "lockWaitSeconds": 1800,
+        "creditCooldownMinutes": 60
+      },
+      "gate": {
+        "~/Projects/personal/agent-kit": {
+          "tests": "uv run --with pytest --python 3.12 python -m pytest -q tests",
+          "lint": "ruff check .",
+          "typecheck": "",
+          "migrations": "",
+          "testPathRules": [{"match": "install.py", "tests": "tests"}, {"match": "core/**", "tests": "tests"}, {"match": "modules/**", "tests": "tests"}],
+          "rootTestsFallback": true,
+          "lintExtensions": [".py"],
+          "semgrep": true,
+          "semgrepConfig": "auto",
+          "timeoutSeconds": {"lint": 600, "typecheck": 600, "migrations": 600, "tests": 600}
+        }
+      },
+      "workspace": "~/Projects"
+    },
+    "ship_pr": {"base_branches": {}},
+    "doctor": {
+      "repo_roots": [],
+      "known_repos": [],
+      "metrics": {
+        "since": null,
+        "until": null,
+        "timezone": "+00:00",
+        "transcripts": "~/.claude/projects"
+      },
+      "codex": {
+        "agents_md": "~/.codex/AGENTS.md",
+        "exclude_sections": ["Model Routing (Sub-Agents)"],
+        "exclude_bullets": ["Use `planner` for feature planning", "memory & auto-memory"]
+      }
+    },
+    "auto_update": false
+  },
+  "recommendations": {
+    "agents.scout.maxTurns": {"evidence": "126 of 314 runs reached 25 turns; p90 was 45", "confidence": "medium"},
+    "agents.locator.maxTurns": {"evidence": "3 of 7 runs reached 15 turns", "confidence": "low"},
+    "agents.worker.maxTurns": {"evidence": "6% of runs reached the cap", "confidence": "high"},
+    "agents.shipper.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
+    "agents.reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
+    "agents.spot-reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
+    "agents.scout.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
+    "agents.locator.model": {"evidence": "7 of 7 runs used Haiku", "confidence": "high"},
+    "agents.worker.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
+    "agents.shipper.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
+    "agents.reviewer.model": {"evidence": "13 of 13 runs inherited the session model", "confidence": "high"},
+    "agents.spot-reviewer.model": {"evidence": "Role definition with no counter-evidence", "confidence": "medium"},
+    "auto_update": {"evidence": "Automatic replacement during a live session is opt-in", "confidence": "n/a"}
+  }
+}
