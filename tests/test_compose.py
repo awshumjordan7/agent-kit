@@ -55,8 +55,9 @@ def test_install_replaces_managed_files_and_preserves_unmanaged_paths(
     assert (result.backup / "projects/session.jsonl").read_text(encoding="utf-8") == "session"
 
 
-def test_install_dry_run_lists_unmanaged_paths(repo_root, tmp_path, monkeypatch, capsys):
+def test_install_dry_run_lists_unmanaged_paths(repo_root, tmp_path, monkeypatch, capsys, fake_cli):
     monkeypatch.chdir(repo_root)
+    fake_cli("claude")
     profile = repo_root / "tests/fixtures/profiles/public-default.json"
     home = tmp_path / ".claude"
     (home / "projects").mkdir(parents=True)
@@ -77,8 +78,8 @@ def test_install_dry_run_lists_unmanaged_paths(repo_root, tmp_path, monkeypatch,
     )
 
     output = capsys.readouterr().out
-    preserved = output.split("Preserved (unmanaged):\n", 1)[1].split("Merged settings:\n", 1)[0]
     assert result == 0
+    preserved = output.split("Preserved (unmanaged):\n", 1)[1].split("Merged settings:\n", 1)[0]
     assert preserved.splitlines() == ["old.txt", "projects"]
 
 
