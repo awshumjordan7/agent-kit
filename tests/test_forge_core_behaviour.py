@@ -138,3 +138,13 @@ def test_dry_run_records_triage_tests_only_gates_and_full_final_gate(repo_root):
     assert labels.count("fix-3") == 1
     assert "verify-2" not in labels
     assert "verify-3" not in labels
+
+
+# The Workflow runtime evaluates everything after the meta export as a script,
+# so a second top-level `export` keyword breaks loading.
+def test_forge_core_has_single_meta_export(repo_root):
+    source = (repo_root / "core/skills/forge/references/forge-core.js").read_text()
+    export_lines = [line for line in source.splitlines() if line.startswith("export ")]
+
+    assert len(export_lines) == 1
+    assert export_lines[0].startswith("export const meta")
