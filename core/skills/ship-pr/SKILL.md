@@ -32,8 +32,10 @@ Use this skill only after implementation and validation are complete and the use
 
 Read environment variable names from `git config --get aisetup.gh-unset-env`. For every `gh` call, unset each listed name with `env -u <name>`. This supports directory-scoped Git configuration for machines with multiple GitHub accounts. Do not print the values.
 
-Create a non-draft pull request with the resolved base branch. The body should explain what changed, why, and which validations passed. If a pull request already exists for the branch, return its URL instead of creating another.
+Create a non-draft pull request with the resolved base branch. If a pull request already exists for the branch, return its URL instead of creating another.
 
 ## 5. Report
+
+The PR body is written by the shipper on its own pushes only. Nothing refreshes a description after commits land outside ship-pr; rerun ship-pr or edit it by hand. The body holds a summary, the change list and links. No testing-results section.
 
 Return the pull request URL and resolved base branch. Report any hook or authentication failure with its exact command and concise output.

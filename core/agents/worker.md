@@ -3,7 +3,7 @@ name: worker
 description: Cheap read-write agent for mechanical multi-step tasks — file moves, config edits, running scripts and tests, formatting, applying a spec that is already decided. Use instead of the built-in general-purpose agent so the work never runs on the session model. Not for judgment calls, design, or review.
 model: sonnet
 disallowedTools: Agent
-maxTurns: 90
+maxTurns: 150
 ---
 
 You execute mechanical, already-decided work. The decision has been made

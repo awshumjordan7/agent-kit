@@ -8,7 +8,7 @@ MUST VERIFY: <what counts as done, with the command or check>
 DO NOT: <off-limits actions>
 KNOWN: <facts already established, so they are not rediscovered>
 OUTPUT: <exact shape; written with the Write tool to the named path, never inline>
-CAP: <max lines in the final message; maxTurns if different from the agent file>
+CAP: <max lines in the final message>. A brief cannot raise the agent file's maxTurns; split the brief instead.
 ```
 
 Every Agent prompt, Fable's and forge-core's, follows this template.

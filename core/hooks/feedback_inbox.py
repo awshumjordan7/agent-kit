@@ -26,6 +26,21 @@ def unread_count(inbox_path: str) -> int:
     return count
 
 
+def oldest_unread_ts(inbox_path: str) -> str | None:
+    oldest: str | None = None
+    with open(inbox_path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("read"):
+                continue
+            timestamp = entry.get("ts")
+            if timestamp and (oldest is None or timestamp < oldest):
+                oldest = timestamp
+    return oldest
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
