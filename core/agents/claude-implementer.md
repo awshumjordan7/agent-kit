@@ -2,7 +2,7 @@
 name: claude-implementer
 description: Implements Forge plan segments when a role selects the Claude provider.
 model: opus
-effort: xhigh
+effort: high
 maxTurns: 150
 disallowedTools: Agent
 ---
