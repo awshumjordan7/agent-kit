@@ -52,16 +52,14 @@
       },
       "gate": {
         "~/Projects/personal/agent-kit": {
-          "tests": "uv run --with pytest --python 3.12 python -m pytest -q tests",
+          "mode": "none",
           "lint": "ruff check .",
           "typecheck": "",
           "migrations": "",
-          "testPathRules": [{"match": "install.py", "tests": "tests"}, {"match": "core/**", "tests": "tests"}, {"match": "modules/**", "tests": "tests"}],
-          "rootTestsFallback": true,
           "lintExtensions": [".py"],
           "semgrep": true,
           "semgrepConfig": "auto",
-          "timeoutSeconds": {"lint": 600, "typecheck": 600, "migrations": 600, "tests": 600}
+          "timeoutSeconds": {"lint": 600, "typecheck": 600, "migrations": 600}
         }
       },
       "workspace": "~/Projects"

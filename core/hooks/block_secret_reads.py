@@ -60,7 +60,7 @@ SECRET_COMMANDS = re.compile(
 
 # Path shapes that indicate credential material.
 #
-# Two subtleties, both found by the test suite rather than by inspection:
+# Two subtleties prevent false negatives and false positives:
 #   - `.envs?\b` (not `.env\b`) is required to catch a repository's real secrets
 #     file, service/.envs/.django -- `.env\b` fails on ".envs" because
 #     "v"->"s" is not a word boundary.

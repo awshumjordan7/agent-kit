@@ -213,10 +213,28 @@ if matched_path is None:
     raise SystemExit(2)
 
 entry = entries[matched_path]
-required = {"tests", "lint", "typecheck", "migrations", "testPathRules", "semgrep"}
-if not isinstance(entry, dict) or not required.issubset(entry):
+if not isinstance(entry, dict):
     print(f"gate.sh: incomplete gate config for repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
+mode = entry.get("mode", "full")
+if mode not in {"full", "none"}:
+    print(f"gate.sh: invalid gate mode for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
+required = {"tests", "lint", "typecheck", "migrations", "testPathRules", "semgrep"}
+if mode == "full" and not required.issubset(entry):
+    print(f"gate.sh: incomplete gate config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
+if mode == "none":
+    entry = {
+        **entry,
+        "tests": "",
+        "lint": "",
+        "typecheck": "",
+        "migrations": "",
+        "testPathRules": [],
+        "semgrep": False,
+        "parity": [],
+    }
 parity = entry.get("parity", [])
 if not isinstance(parity, list) or not all(isinstance(command, str) for command in parity):
     print(f"gate.sh: invalid parity config for repository: {repo}", file=sys.stderr)

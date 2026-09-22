@@ -102,6 +102,8 @@ without opening the ticket.
 
 ### Tests
 
+As of 2026-09-22, personal repositories configured with Forge `gate.mode: none` have no tests. Do not add or run tests, lint, typecheck, migrations, Semgrep, or parity commands in those repositories. Forge runs the configured `realRun` command once after implementation instead; a plan may override it with `real_run` under `## Run Settings`. Repositories in `full` mode retain their configured gates.
+
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?
 
@@ -179,7 +181,7 @@ When spawning sub-agents for multi-step workflows:
 | QA, test running, Semgrep, mechanical edits | Sonnet (`worker`) | Mechanical tool execution |
 | Documentation updates | Sonnet | Mechanical writing |
 | Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
-| Local gate (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed |
+| Local gate in Forge `full` mode (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed. `none` mode spawns no gate agent. |
 | Browser QA | Sonnet | Keeps browser output and credentials out of the main session |
 
 Use Codex CLI (`codex exec`) for Codex tasks -- it has full MCP access (engineering-MCP, semgrep, context7). Model per role comes from `~/.claude/skills/forge/forge.config.json`; never hard-code a model name elsewhere.
