@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """UserPromptSubmit/PostToolUse/Stop hook: nag by context-size band, block once at 280k.
 
+As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
+block at 160k, then at 240k every tool call except progress-file edits and
+StructuredOutput is blocked. Other sub-agents and the main session pass through.
+
 Fail-open by design: exit 0 silently on any missing/unreadable transcript,
-subagent payload, or parse error, same contract as the other hooks here.
+other subagent payload, or parse error, same contract as the other hooks here.
 """
 
+import glob
 import json
 import os
+import re
 import sys
 
 BAND_160K = 160_000
@@ -47,6 +53,17 @@ MESSAGES = {
         "run in its final stage finishes first. " + REPORT_ISSUE_LINE
     ),
 }
+
+
+IMPLEMENTER_AGENT = "claude-implementer"
+PROGRESS_MARKER = "/impl-progress-"
+PROGRESS_TOOLS = ("Write", "Edit", "Read")
+AGENT_ID_SHAPE = re.compile(r"^[\w-]+$")
+IMPL_SOFT_MESSAGE = (
+    "Context is at {n}k. If little work remains, retry this call and finish. "
+    "Otherwise update your progress file and return status PARTIAL."
+)
+IMPL_HARD_MESSAGE = "Context limit reached. Update your progress file and return status PARTIAL now."
 
 
 def find_last_assistant_usage(path, block_size=65536):
@@ -148,11 +165,74 @@ def emit_block(reason):
     print(json.dumps({"decision": "block", "reason": reason}))
 
 
+def find_agent_transcript(transcript_path, session_id, agent_id):
+    """Sub-agent transcripts live under <session dir>/subagents/, optionally
+    nested under workflows/<runId>/."""
+    name = f"agent-{agent_id}.jsonl"
+    if os.path.basename(transcript_path) == name:
+        return transcript_path
+    root = os.path.join(os.path.dirname(transcript_path), session_id, "subagents")
+    matches = glob.glob(os.path.join(glob.escape(root), "**", name), recursive=True)
+    return matches[0] if matches else None
+
+
+def progress_file_call(payload):
+    tool_name = payload.get("tool_name")
+    if tool_name == "StructuredOutput":
+        return True
+    if tool_name not in PROGRESS_TOOLS:
+        return False
+    tool_input = payload.get("tool_input")
+    path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
+    return isinstance(path, str) and PROGRESS_MARKER in path
+
+
+def deny_tool_call(message):
+    print(f"Blocked by context_guard hook (claude-implementer context limit): {message}", file=sys.stderr)
+    return 2
+
+
+def implementer_pretool(payload):
+    if payload.get("agent_type") != IMPLEMENTER_AGENT:
+        return 0
+    agent_id = payload.get("agent_id")
+    session_id = payload.get("session_id")
+    transcript_path = payload.get("transcript_path")
+    if not all(isinstance(v, str) and v for v in (agent_id, session_id, transcript_path)):
+        return 0
+    if not AGENT_ID_SHAPE.match(agent_id):
+        return 0
+    agent_transcript = find_agent_transcript(transcript_path, session_id, agent_id)
+    if not agent_transcript or not os.path.isfile(agent_transcript):
+        return 0
+    measure = measure_from_transcript(agent_transcript)
+    if measure is None or measure < BAND_160K:
+        return 0
+    if measure >= BAND_240K:
+        return 0 if progress_file_call(payload) else deny_tool_call(IMPL_HARD_MESSAGE)
+    state_path = os.path.join(STATE_DIR, f"impl-{agent_id}.json")
+    if load_state(state_path)["blocked"]:
+        return 0
+    # An unsaved warning would block every call, so a failed save allows this one.
+    save_state(state_path, BAND_160K, True)
+    return deny_tool_call(IMPL_SOFT_MESSAGE.format(n=measure // 1000))
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError, OSError):
         return 0
+    if not isinstance(payload, dict):
+        return 0
+
+    if payload.get("hook_event_name") == "PreToolUse":
+        if not payload.get("agent_id"):
+            return 0
+        try:
+            return implementer_pretool(payload)
+        except (ValueError, OSError):
+            return 0
 
     if payload.get("agent_id"):
         return 0

@@ -187,6 +187,8 @@ const IMPL_RESULT = {
     testsWritten: { type: 'boolean' }, summary: { type: 'string' },
     unverified: { type: 'array', items: { type: 'string' } },
     error: { type: ['string', 'null'] },
+    status: { type: 'string', enum: ['DONE', 'PARTIAL'] },
+    progressFile: { type: ['string', 'null'] },
   },
   required: ['filesChanged', 'testsWritten', 'summary', 'unverified', 'error'],
 }
@@ -818,6 +820,11 @@ function assertCodex(result, where) {
 function assertImplementation(result, where) {
   const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(role) || {}).provider !== 'claude') return assertCodex(result, where)
+  if (capBlocked && !result) return false
+  // claudeImplement resolves every PARTIAL through continuations or throws, so one here skipped that path.
+  if (result && result.status === 'PARTIAL') {
+    throw new Error(`Claude implementation returned PARTIAL outside the continuation path at ${where}`)
+  }
   if (!result || result.error) {
     throw new Error(`Claude implementation failed at ${where}: ${(result && result.error) || 'agent returned null'}`)
   }
@@ -894,6 +901,28 @@ function phaseScope(phase) {
   return `Implement only Phase ${phase.id}: ${phase.title}. The full plan is context: earlier phases are already committed, and later phases are implemented separately.${partial}`
 }
 
+// A PARTIAL result, or a null that did not come from the spawn cap, starts a fresh implementer
+// from the progress file; the context guard hook is what makes an implementer hand off.
+async function claudeImplement(prompt, opts, progressFile) {
+  let result = await agentT('implementer', prompt, opts)
+  for (let n = 1; ; n++) {
+    const partial = Boolean(result && result.status === 'PARTIAL')
+    if (result && !partial) return result
+    if (!result && capBlocked) return null
+    if (n > MAX_IMPL_CONTINUATIONS) throw new Error(`Claude implementation handoff limit reached at ${opts.label}`)
+    const context = partial ? /\b(\d+)k context\b/.exec(String(result.summary || '')) : null
+    await decide(`${opts.label} handoff ${n} of ${MAX_IMPL_CONTINUATIONS}: reason=${partial ? 'PARTIAL' : 'null result'} context=${context ? `${context[1]}k` : 'unknown'}`)
+    PARAMS.spawnCap += 1
+    const continuation = `## Continuation (${n} of ${MAX_IMPL_CONTINUATIONS})
+
+An earlier implementer stopped before finishing this work. Progress file: ${(partial && result.progressFile) || progressFile}
+First read the progress file, then run \`git -C ${shellQuote(PARAMS.projectDir)} diff --stat\` and \`git -C ${shellQuote(PARAMS.projectDir)} status --short\` to see the work already in the tree.
+
+Continue from the progress file; do not redo work it marks done; do not re-read files the diff shows as complete. List every file changed by this work, including earlier implementers' files, in filesChanged.`
+    result = await agentT('implementer', `${prompt}\n\n${continuation}`, { ...opts, label: `${opts.label}-h${n}` })
+  }
+}
+
 function implement(phase = null) {
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   const suffix = phase ? `-phase-${phase.id}` : ''
@@ -901,8 +930,9 @@ function implement(phase = null) {
   const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
   const scope = phaseScope(phase)
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    return agentT('implementer', `Implement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified.\n\nPLAN\n${PARAMS.planText}`,
-      { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' })
+    const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
+    return claudeImplement(`Implement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.\n\nPLAN\n${PARAMS.planText}`,
+      { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
   }
   const promptPath = `${PARAMS.runDir}/implement${suffix}-prompt.md`
   const logPath = `${PARAMS.runDir}/codex-implement${suffix}.jsonl`
@@ -1106,6 +1136,7 @@ ${review}`,
 
 const REVIEW_TIMEOUT_MS = 25 * 60 * 1000
 const MAX_FIX_ROUNDS = 2
+const MAX_IMPL_CONTINUATIONS = 2
 
 function withTimeout(promise, ms, label) {
   if (typeof setTimeout !== 'function') return promise

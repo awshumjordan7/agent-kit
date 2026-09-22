@@ -79,6 +79,16 @@
             "command": "python3 $HOME/.claude/hooks/require_agent_model.py"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/context_guard.py",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
