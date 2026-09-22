@@ -19,7 +19,7 @@ HOME="$(mktemp -d)" uv run --with pytest --python 3.12 python -m pytest -q tests
 echo "parity: golden ok"
 
 B="$(mktemp -d)"
-for tool in python3 uv git bash sh env perl jq node npx dirname basename sed grep awk cat mktemp mkdir find touch cp mv rm ln ls readlink uname; do
+for tool in python3 uv git bash sh env perl jq node npx dirname basename sed grep awk cat head tail sort wc tr mktemp mkdir find touch cp mv rm ln ls readlink uname date sleep kill stat nohup; do
   path="$(command -v "$tool" 2>/dev/null || true)"
   if [ -n "$path" ]; then
     ln -s "$path" "$B/$tool"

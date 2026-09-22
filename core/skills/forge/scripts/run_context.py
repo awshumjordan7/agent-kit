@@ -99,8 +99,8 @@ def context(
     repo: Path,
     plan_file: Path,
     label: str,
-    checkpoint_lines: list[str] | None = None,
     all_dirty: bool = False,
+    base: str | None = None,
 ) -> dict:
     baseline_path = run_dir / "baseline.json"
     document = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -109,18 +109,26 @@ def context(
         files, preexisting = list(dict.fromkeys(dirty)), []
     else:
         files, preexisting = _changed_since_baseline(repo, document)
+    diff_base = document["head"]
+    if base:
+        diff_base = str(_git(repo, "merge-base", base, "HEAD")).strip()
+        committed = str(
+            _git(repo, "diff", "--name-only", "--diff-filter=ACMRD", diff_base, "HEAD")
+        ).splitlines()
+        files = list(dict.fromkeys([*files, *committed]))
+        preexisting = [path for path in preexisting if path not in files]
     gate_diff = run_dir / f"gate-{label}.diff"
     if gate_diff.is_file():
         diff = gate_diff.read_text(encoding="utf-8", errors="replace")
     elif files:
-        diff = str(_git(repo, "diff", "--no-ext-diff", document["head"], "--", *files))
+        diff = str(_git(repo, "diff", "--no-ext-diff", diff_base, "--", *files))
         for path in files:
             tracked = subprocess.run(
                 ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", path],
                 check=False,
                 capture_output=True,
             )
-            if tracked.returncode or not (repo / path).is_file():
+            if tracked.returncode and (repo / path).is_file():
                 addition = subprocess.run(
                     [
                         "git",
@@ -140,18 +148,12 @@ def context(
                 diff += addition.stdout
     else:
         diff = ""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    diff_path = run_dir / f"review-{label}.diff"
+    diff_path.write_text(diff, encoding="utf-8")
+    diff_valid = bool(diff) and diff.startswith("diff --git")
     plan = plan_file.read_text(encoding="utf-8") if plan_file.is_file() else ""
     references = Path(__file__).resolve().parent.parent / "references"
-    checkpoint_path = run_dir / "checkpoint-findings.md"
-    if checkpoint_lines:
-        existing = (
-            checkpoint_path.read_text(encoding="utf-8").splitlines()
-            if checkpoint_path.is_file()
-            else []
-        )
-        additions = [line for line in checkpoint_lines if line not in existing]
-        if additions:
-            checkpoint_path.write_text("\n".join([*existing, *additions]) + "\n", encoding="utf-8")
     tests = [
         token.strip("`.,:;()")
         for token in plan.split()
@@ -161,7 +163,10 @@ def context(
         "files": files,
         "preexisting": preexisting,
         "commandSucceeded": True,
-        "diff": diff,
+        "diffPath": str(diff_path),
+        "diffBytes": len(diff.encode("utf-8")),
+        "diffLines": len(diff.splitlines()),
+        "diffValid": diff_valid,
         "planSummary": _section(plan, "Summary") or plan[:4000],
         "criteria": [
             line.removeprefix("- [ ] ").removeprefix("- ").strip()
@@ -176,14 +181,7 @@ def context(
         "reviewerContract": (references / "claude-reviewer-contract.md").read_text(
             encoding="utf-8"
         ),
-        "checkpointFindings": checkpoint_path.read_text(encoding="utf-8")
-        if checkpoint_path.is_file()
-        else "",
     }
-
-
-def read_plan(plan_file: Path) -> dict:
-    return {"planText": plan_file.read_text(encoding="utf-8")}
 
 
 def main() -> None:
@@ -197,10 +195,8 @@ def main() -> None:
     context_parser.add_argument("--repo", type=Path, required=True)
     context_parser.add_argument("--plan-file", type=Path, required=True)
     context_parser.add_argument("--label", required=True)
-    context_parser.add_argument("--checkpoint-json", default="[]")
     context_parser.add_argument("--all-dirty", action="store_true")
-    read_parser = subparsers.add_parser("read-plan")
-    read_parser.add_argument("--plan-file", type=Path, required=True)
+    context_parser.add_argument("--base")
     args = parser.parse_args()
     if args.command == "baseline":
         result = baseline(args.run_dir, args.repo)
@@ -210,11 +206,9 @@ def main() -> None:
             args.repo,
             args.plan_file,
             args.label,
-            json.loads(args.checkpoint_json),
             args.all_dirty,
+            args.base,
         )
-    else:
-        result = read_plan(args.plan_file)
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
 
 

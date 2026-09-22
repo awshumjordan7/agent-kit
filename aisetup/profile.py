@@ -40,6 +40,7 @@ FORGE_KEYS = {
     "lenses",
     "ticketUrl",
     "repos",
+    "ghEnvUnset",
 }
 ROLE_KEYS = {"provider", "model", "effort"}
 STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}

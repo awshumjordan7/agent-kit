@@ -1,0 +1,2 @@
+bash-n-exit:0
+node-check-exit:0

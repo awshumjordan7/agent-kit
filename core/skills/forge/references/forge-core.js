@@ -19,7 +19,7 @@ const TIERS = {
     implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'fable', effort: 'high' },
     triage: { model: 'fable', effort: 'high' },
-    spotReviewer: { model: 'opus', effort: 'high' },
+    judge: { model: 'fable', effort: 'high' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
@@ -36,7 +36,7 @@ const TIERS = {
     implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'opus', effort: 'high' },
     triage: { model: 'opus', effort: 'high' },
-    spotReviewer: { model: 'opus', effort: 'high' },
+    judge: { model: 'opus', effort: 'high' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
@@ -54,11 +54,12 @@ const TIERS = {
 const ROLE_MAP = {
   implementer: ['impl', 'quick-impl'],
   reviewer: ['review'],
-  spotReviewer: ['spot-review'],
 }
 
+const requestedLane = args.lane || 'build'
+const canonicalLane = ['quick', 'dev'].includes(requestedLane) ? 'build' : requestedLane
 const PARAMS = {
-  lane: args.lane || 'dev',
+  lane: canonicalLane,
   auto: args.auto === true,
   runDir: args.runDir,
   projectDir: args.projectDir,
@@ -74,18 +75,16 @@ const PARAMS = {
   noShip: args.noShip === true,
   spawnCap: Number.isInteger(args.spawnCap) && args.spawnCap >= 1 ? args.spawnCap : 32,
   rulings: Array.isArray(args.rulings) ? args.rulings : null,
-  checkpoints: Array.isArray(args.checkpoints) ? args.checkpoints : null,
   planText: typeof args.planText === 'string' ? args.planText : null,
   planPath: typeof args.planPath === 'string' && args.planPath ? args.planPath : `${args.runDir}/plan.md`,
-  dependsOnGate: typeof args.dependsOnGate === 'string' && args.dependsOnGate.startsWith('/') ? args.dependsOnGate : null,
   dryRun: args.dryRun === true,
   dryRunFailGate: typeof args.dryRunFailGate === 'string' ? args.dryRunFailGate : null,
+  dryRunStubborn: args.dryRunStubborn === true,
   dryRunFindings: Number.isInteger(args.dryRunFindings) && args.dryRunFindings > 0 ? args.dryRunFindings : 0,
-  ghEnvUnset: Array.isArray(args.ghEnvUnset) ? args.ghEnvUnset : [],
+  ghEnvUnset: Array.isArray(args.ghEnvUnset) ? args.ghEnvUnset : null,
   forgeConfig: args.forgeConfig && typeof args.forgeConfig === 'object' ? args.forgeConfig : null,
   fullySpecified: args.fullySpecified === true,
   stageAlso: Array.isArray(args.stageAlso) ? args.stageAlso.map(String) : [],
-  fixCap: 3,
 }
 
 let FORGE_CONFIG = PARAMS.forgeConfig
@@ -110,18 +109,18 @@ const PLAN = PARAMS.planPath
 
 // Persistent Codex thread files:
 // CODEX_PLAN_THREAD / codex-plan.thread is reserved for Phase 3 plan review outside this script.
-// Each implementation segment owns its thread and its checkpoint fixes.
-// CODEX_FIX_THREAD / codex-fix.thread owns final review fixes.
 // CODEX_REVIEW_THREAD / codex-review.thread owns review and all fix verification.
 const CODEX_PLAN_THREAD = `${PARAMS.runDir}/codex-plan.thread`
 const CODEX_IMPL_THREAD = `${PARAMS.runDir}/codex-impl.thread`
-const CODEX_FIX_THREAD = `${PARAMS.runDir}/codex-fix.thread`
 const CODEX_REVIEW_THREAD = `${PARAMS.runDir}/codex-review.thread`
 
 if (!PARAMS.runDir || !PARAMS.projectDir) {
   throw new Error('forge-core requires args.runDir and args.projectDir')
 }
-if (!['quick', 'dev', 'review'].includes(PARAMS.lane)) {
+if (!PARAMS.planText) {
+  throw new Error('planText is required; pass the plan text in args')
+}
+if (!['build', 'review'].includes(PARAMS.lane)) {
   throw new Error(`unsupported forge lane: ${PARAMS.lane}`)
 }
 
@@ -155,7 +154,7 @@ const CODEX_RESULT = {
   properties: {
     codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
     threadExists: { type: 'boolean' }, filesChanged: { type: 'array', items: { type: 'string' } },
-    testsWritten: { type: 'integer' }, summary: { type: 'string' }, error: { type: 'string' },
+    testsWritten: { type: 'integer' }, summary: { type: 'string' }, error: { type: ['string', 'null'] },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'filesChanged', 'testsWritten', 'summary'],
 }
@@ -178,6 +177,7 @@ const FORGE_CONFIG_SCHEMA = {
     lenses: { type: 'object' },
     ticketUrl: { type: 'string' },
     repos: { type: 'object' },
+    ghEnvUnset: { type: 'object' },
   },
   required: ['roles', 'stages', 'thresholds', 'lenses', 'ticketUrl', 'repos'],
 }
@@ -185,7 +185,7 @@ const CODEX_REVIEW_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
-    threadExists: { type: 'boolean' }, review: REVIEW_SCHEMA, error: { type: 'string' },
+    threadExists: { type: 'boolean' }, review: REVIEW_SCHEMA, error: { type: ['string', 'null'] },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'review'],
 }
@@ -203,14 +203,14 @@ const CODEX_FIX_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
-    threadExists: { type: 'boolean' }, fix: FIX_SCHEMA, error: { type: 'string' },
+    threadExists: { type: 'boolean' }, fix: FIX_SCHEMA, error: { type: ['string', 'null'] },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'fix'],
 }
 const VERIFY_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['resume'] },
+    codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start'] },
     threadExists: { type: 'boolean' }, clean: { type: 'boolean' },
     results: {
       type: 'array', items: {
@@ -231,7 +231,7 @@ const VERIFY_SCHEMA = {
         required: ['file', 'line', 'claim'],
       },
     },
-    error: { type: 'string' },
+    error: { type: ['string', 'null'] },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'clean', 'results', 'unresolved', 'contractViolations'],
 }
@@ -252,18 +252,36 @@ const TRIAGE_SCHEMA = {
   },
   required: ['verdicts'],
 }
+const JUDGE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    decisions: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          id: { type: 'string' }, verdict: { type: 'string', enum: ['dismiss', 'respec', 'fixed'] },
+          instruction: { type: 'string' }, reason: { type: 'string' },
+        },
+        required: ['id', 'verdict', 'instruction', 'reason'],
+      },
+    },
+    cannotDecide: { type: 'boolean' },
+  },
+  required: ['decisions', 'cannotDecide'],
+}
 const CONTEXT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     files: { type: 'array', items: { type: 'string' } },
     preexisting: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
-    diff: { type: 'string' }, planSummary: { type: 'string' },
+    diffPath: { type: 'string' }, diffBytes: { type: 'integer' }, diffLines: { type: 'integer' },
+    diffValid: { type: 'boolean' }, planSummary: { type: 'string' },
     criteria: { type: 'array', items: { type: 'string' } },
     checklist: { type: 'string' }, standards: { type: 'string' },
     testPaths: { type: 'array', items: { type: 'string' } }, error: { type: 'string' },
-    contract: { type: 'string' }, reviewerContract: { type: 'string' }, checkpointFindings: { type: 'string' },
+    contract: { type: 'string' }, reviewerContract: { type: 'string' },
   },
-  required: ['files', 'preexisting', 'commandSucceeded', 'diff', 'planSummary', 'criteria', 'checklist', 'standards', 'testPaths', 'reviewerContract', 'checkpointFindings'],
+  required: ['files', 'preexisting', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'planSummary', 'criteria', 'checklist', 'standards', 'testPaths', 'error', 'contract', 'reviewerContract'],
 }
 const GATE_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -272,8 +290,8 @@ const GATE_SCHEMA = {
     failures: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
-        properties: { tool: { type: 'string' }, summary: { type: 'string' } },
-        required: ['tool', 'summary'],
+        properties: { tool: { type: 'string' }, summary: { type: 'string' }, file: { type: ['string', 'null'] }, line: { type: ['integer', 'null'] } },
+        required: ['tool', 'summary', 'file', 'line'],
       },
     },
     warnings: {
@@ -296,10 +314,6 @@ const GATE_SCHEMA = {
     },
   },
   required: ['passed', 'failures', 'commands'],
-}
-const PLAN_TEXT_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: { planText: { type: 'string' } }, required: ['planText'],
 }
 const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -388,7 +402,7 @@ function isSourcePath(path) {
 }
 
 function pickImplRole(lane, fullySpecified, planText, threshold = 8) {
-  return lane === 'quick' && fullySpecified && plannedSourceFiles(planText) <= threshold
+  return fullySpecified && plannedSourceFiles(planText) <= threshold
     ? 'quick-impl'
     : 'impl'
 }
@@ -436,18 +450,6 @@ function ticketLinks() {
   return PARAMS.tickets.map(key => ({ key, url: template ? template.replace('<KEY>', key) : '' }))
 }
 
-function dryRunPlanText() {
-  if (PARAMS.planText) return PARAMS.planText
-  if (!PARAMS.checkpoints || !PARAMS.checkpoints.length) return '## Phase 0\n'
-  const ranges = PARAMS.checkpoints.map(item => String(item.phases || '').match(/^(\d+)(?:-(\d+))?$/)).filter(Boolean)
-  if (!ranges.length) return '## Phase 0\n'
-  const first = Number(ranges[0][1])
-  const last = Math.max(...ranges.map(match => Number(match[2] || match[1]))) + 1
-  const phases = Array.from({ length: last - first + 1 }, (_, offset) => `## Phase ${first + offset}\n`)
-  const checkpoints = PARAMS.checkpoints.map(item => `- Phases ${item.phases}: ${item.reason || ''}`)
-  return `${phases.join('\n')}\n## Checkpoints\n${checkpoints.join('\n')}\n`
-}
-
 function dryFindings() {
   return Array.from({ length: PARAMS.dryRunFindings }, (_, index) => ({
     file: 'auth/api/client.py', line: index + 1, severity: 'HIGH',
@@ -459,11 +461,15 @@ const STUBS = {
   implementer: () => ({ filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null }),
   reviewer: () => ({ verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }),
   triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
-  spotReviewer: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
+  judge: () => ({ decisions: dryFindings().map(finding => ({ id: findingKey(finding), verdict: 'respec', instruction: finding.fix_hint, reason: 'dry-run respec' })), cannotDecide: false }),
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
-  gate: opts => PARAMS.dryRunFailGate === opts.label
-    ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure' }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run checkpoint diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
-    : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run checkpoint diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 },
+  gate: opts => {
+    const forcedFailure = PARAMS.dryRunFailGate === opts.label
+      || (PARAMS.dryRunFailGate && dryRunJournal.some(entry => entry.role === 'gate' && entry.label === PARAMS.dryRunFailGate))
+    return forcedFailure
+      ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
+      : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
+  },
   shipper: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : { branch: `${PARAMS.ticket}-dry-run`, prUrl: 'https://example.invalid/pr/1', prNumber: 1, repo: PARAMS.repo || 'owner/repo' },
@@ -476,39 +482,38 @@ const STUBS = {
     const criteria = smokeCriteria({ criteria: PARAMS.criteria }).slice((number - 1) * 6, number * 6)
     return { results: criteria.map(criterion => ({ criterion, passed: true, note: 'dry run', screenshot: `${PARAMS.runDir}/smoke/dry-run.png` })) }
   },
-  changedFiles: opts => opts.schema === PLAN_TEXT_SCHEMA
-    ? { planText: dryRunPlanText() }
-    : opts.schema === ACK_SCHEMA
+  changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : opts.schema === FORGE_CONFIG_SCHEMA
-    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8, fixCap: 3 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }
+    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }
     : {
-      files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diff: 'dry-run diff', planSummary: 'dry-run plan summary',
+      files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary',
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
-      reviewerContract: 'dry-run reviewer contract', checkpointFindings: '',
+      contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
     },
-  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8, fixCap: 3 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }),
+  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
     if (opts.schema === CODEX_RESULT) return { codexInvoked: true, threadMode: 'start', threadExists: true, filesChanged: ['auth/api/client.py'], testsWritten: 0, summary: 'dry-run Codex', error: '' }
     if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '' }
     if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: opts.label === 'fix-1' ? 'start' : 'resume', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: opts.label === 'fix-1' && PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: '', notes: 'dry-run fix' }, error: '' }
-    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'resume', threadExists: true, clean: !PARAMS.dryRunFindings, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: 'STILL BROKEN', reason: finding.claim })), unresolved: dryFindings(), contractViolations: [], error: '' }
+    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, clean: !PARAMS.dryRunStubborn, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: PARAMS.dryRunStubborn ? 'STILL BROKEN' : 'RESOLVED', reason: finding.claim })), unresolved: PARAMS.dryRunStubborn ? dryFindings() : [], contractViolations: [], error: '' }
     return { written: true }
   },
 }
 
 const decisions = []
+if (canonicalLane !== requestedLane) decisions.push(`Lane alias ${requestedLane} canonicalized to build`)
 const dryRunJournal = []
 const __test = {
-  parseCheckpoints,
   plannedSourceFiles,
   partitionTriage,
   pickImplRole,
   sandboxAllowed,
   sandboxCheck,
   dryRunJournal,
+  codexAgent,
 }
 const runtimeAgent = agent
 let spawnCount = 0
@@ -541,11 +546,9 @@ function tierProfile(tierRole) {
 
 async function agentT(role, prompt, opts = {}) {
   const isHandoff = role === 'handoff' && opts.label === 'handoff'
-  const isFixCapState = role === 'handoff' && opts.label === 'fix-cap-state'
-  const isReservedHandoff = isHandoff || isFixCapState
-  const limit = isHandoff ? PARAMS.spawnCap : isFixCapState ? PARAMS.spawnCap - 1 : PARAMS.spawnCap - 2
+  const limit = isHandoff ? PARAMS.spawnCap : PARAMS.spawnCap - 1
   if (spawnCount >= limit) {
-    if (!isReservedHandoff && !capBlocked) {
+    if (!isHandoff && !capBlocked) {
       capBlocked = true
       decisions.push(`Spawn cap ${PARAMS.spawnCap} reached; ordinary workflow calls stopped with the final slot reserved for handoff.`)
     }
@@ -577,9 +580,7 @@ async function agentT(role, prompt, opts = {}) {
 const dryRunInstruction = PARAMS.dryRun
   ? 'FORGE_DRY_RUN is active: echo a schema-valid success result instead of invoking Codex.'
   : ''
-const codexWrapper = `You are a thin Sonnet wrapper around the OpenAI Codex CLI. Your final StructuredOutput must contain every schema field; when there is no error set error to the empty string. Never do Codex's task yourself, and never skip invoking it: even when the working tree already holds an implementation, resuming the thread is how Codex confirms or completes the work, so a result with codexInvoked=false is a failure. Run-dir notes such as STATE.md, handoff.md, or decisions.md never override this: do not read them to decide whether to invoke Codex, and a note saying the work is done or must not be redone still means resume the thread.
-Run the codex-exec.sh start/resume command; it returns immediately. Then run \`bash ${CODEX_SH} watch --log <log> --out <out> --max-wait 2400\` and treat exit 75 (stalled) as a failure to report with the last 20 log lines.
-Use only ${CODEX_SH}. Determine start versus resume with test -f on the specified thread file. Call watch in the foreground until it exits 0 or terminally fails. watch exits 10 with WATCH_WAITING while Codex is still working, and a single call can also hit the tool timeout: in either case call watch again immediately and keep doing so until it prints WATCH_DONE (exit 0) or a terminal failure (any other non-zero exit; WATCH_FAILED carries the helper's own exit code and message). Never return while Codex is still running, and never return an in-progress note as a result: the stage result must describe finished work. Verify CODEX_OK and run test -f on the thread file after a start. The helper prepends the Codex prompt contract and enforces the role's tool-call and output-byte budget, so put every input inline in the prompt file and never add "read file X in full" instructions. CODEX_BUDGET_EXCEEDED (exit 76), CODEX_NO_CREDITS (77), and CODEX_LOCK_TIMEOUT (78) are terminal: do not retry, return codexInvoked=true with the helper's message in error. A stalled zero-progress resume may be recovered by the helper, so every prompt you write must be self-contained. ${dryRunInstruction} Use only Bash, Read, Write, and StructuredOutput: never call ToolSearch, never load Monitor or any other deferred tool, and never end a turn with an acknowledgment such as "Tool loaded" or a status note; watch mode is the only wait you need, and your turn ends only with a complete StructuredOutput that describes a finished Codex run.`
+const codexWrapper = `Read ~/.claude/skills/forge/references/codex-wrapper.md and follow it exactly. ${dryRunInstruction}`
 
 // Normalize wrapper errors and retry a real error once before assertCodex throws. A Codex process
 // still holding the helper lock surfaces as CODEX_LOCK_TIMEOUT and throws after that retry.
@@ -588,15 +589,17 @@ async function codexAgent(prompt, opts) {
   let result = await agentT('codexWrap', prompt, opts)
   if (result) result.error = normalizedCodexError(result.error)
   if (result && result.codexInvoked === true && result.error) {
+    const terminalError = /^(?:CODEX_DIFF_INVALID|CODEX_BUDGET_EXCEEDED|CODEX_NO_CREDITS)\b/.test(result.error)
+    if (terminalError) return result
     await decide(`${opts.label} wrapper returned an error (${result.error.slice(0, 200)}); retrying once.`)
-    result = await agentT('codexWrap', prompt, { ...opts, label: `${opts.label}-error-retry` })
+    result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-error-retry` })
     if (result) result.error = normalizedCodexError(result.error)
     return result
   }
   if (result === null || result.codexInvoked === true) return result
   if (result.threadMode === 'start' && result.threadExists === true) return result
   await decide(`${opts.label} wrapper returned without invoking Codex (${String(result.error || 'no error text').slice(0, 200)}); retrying once.`)
-  result = await agentT('codexWrap', prompt, { ...opts, label: `${opts.label}-retry` })
+  result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-retry` })
   if (result) result.error = normalizedCodexError(result.error)
   return result
 }
@@ -633,96 +636,13 @@ function assertImplementation(result, where) {
   return true
 }
 
-function parseCheckpoints(planText, argsCheckpoints) {
-  const phases = [...String(planText || '').matchAll(/^#{2,3}\s*Phase\s+([A-Za-z]*\d+)\b[^\n]*$/gmi)]
-    .map(match => ({ label: match[1], index: match.index }))
-  const fallback = () => [{
-    from: phases.length ? phases[0].label : null,
-    to: phases.length ? phases[phases.length - 1].label : null,
-    reason: '', final: true,
-  }]
-  let entries
-  if (Array.isArray(argsCheckpoints)) {
-    if (!argsCheckpoints.length) return fallback()
-    entries = argsCheckpoints.map(item => ({ phases: String(item && item.phases || ''), reason: String(item && item.reason || '') }))
-  } else {
-    const heading = /^#{2,}\s*Checkpoints\s*$/im.exec(String(planText || ''))
-    if (!heading) return fallback()
-    const afterHeading = String(planText).slice(heading.index + heading[0].length).replace(/^\r?\n/, '')
-    const nextHeading = afterHeading.search(/^#{2,}\s+/m)
-    const body = (nextHeading >= 0 ? afterHeading.slice(0, nextHeading) : afterHeading).trim()
-    const lines = body.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-      .filter(line => !/^\|\s*After\s*\|\s*Reason\s*\|$/i.test(line))
-      .filter(line => !/^\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|$/.test(line))
-    entries = lines.map(line => {
-      const bullet = /^-\s*Phases?\s+([A-Za-z]*\d+(?:\s*-\s*[A-Za-z]*\d+)?)\s*:\s*(.+)$/i.exec(line)
-      if (bullet) return { phases: bullet[1].replace(/\s/g, ''), reason: bullet[2].trim() }
-      const row = /^\|\s*(?:Phase\s+)?([A-Za-z]*\d+)(?:\s*-\s*(?:Phase\s+)?([A-Za-z]*\d+))?\s*\|\s*(.+?)\s*\|$/i.exec(line)
-      return row && { phases: row[2] ? `${row[1]}-${row[2]}` : row[1], reason: row[3].trim() }
-    })
-  }
-  const invalid = () => {
-    decide('Checkpoint plan format invalid; falling back to a single implementation segment.')
-    return fallback()
-  }
-  if (!phases.length || !entries.length || entries.some(entry => !entry)) return invalid()
-  const labels = phases.map(item => item.label)
-  const found = new Set(labels)
-  if (found.size !== labels.length) return invalid()
-  const segments = []
-  let expectedIndex = 0
-  for (const entry of entries) {
-    const range = /^([A-Za-z]*\d+)(?:-([A-Za-z]*\d+))?$/.exec(entry.phases.trim())
-    if (!range || !entry.reason.trim()) return invalid()
-    const from = range[1]
-    const to = range[2] || range[1]
-    const fromIndex = labels.indexOf(from)
-    const toIndex = labels.indexOf(to)
-    if (fromIndex !== expectedIndex || toIndex < fromIndex) return invalid()
-    segments.push({ from, to, reason: entry.reason.trim(), final: false })
-    expectedIndex = toIndex + 1
-  }
-  if (expectedIndex < labels.length) {
-    segments.push({ from: labels[expectedIndex], to: labels[labels.length - 1], reason: '', final: true })
-  } else if (expectedIndex === labels.length) {
-    segments[segments.length - 1].final = true
-  } else {
-    return invalid()
-  }
-  return segments
-}
-
-function planPhases(planText, segment) {
-  if (!segment || segment.from === null || segment.to === null) return String(planText || '')
-  const headings = [...String(planText || '').matchAll(/^#{2,3}\s*Phase\s+([A-Za-z]*\d+)\b[^\n]*$/gmi)]
-  const first = headings.findIndex(match => match[1] === segment.from)
-  const last = headings.findIndex(match => match[1] === segment.to)
-  const after = last < 0 ? -1 : last + 1
-  if (first < 0) return ''
-  return String(planText).slice(headings[first].index, after < 0 || after >= headings.length ? undefined : headings[after].index).trim()
-}
-
-function planCriteria(planText) {
-  if (PARAMS.criteria.length) return JSON.stringify(PARAMS.criteria)
-  const heading = /^#{2,}\s*Acceptance Criteria\s*$/im.exec(String(planText || ''))
-  if (!heading) return '(none declared)'
-  const rest = String(planText).slice(heading.index + heading[0].length).replace(/^\r?\n/, '')
-  const nextHeading = rest.search(/^#{2,}\s+/m)
-  return (nextHeading >= 0 ? rest.slice(0, nextHeading) : rest).trim()
-}
-
-function readPlan() {
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py read-plan --plan-file ${shellQuote(PLAN)}`,
-  { label: 'read-plan', phase: 'Implement', schema: PLAN_TEXT_SCHEMA })
-}
-
 async function loadForgeConfig() {
-  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, and repos. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
+  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, repos, and ghEnvUnset. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
     { label: 'read-config', phase: 'Implement', schema: FORGE_CONFIG_SCHEMA })
   const defaults = {
     roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false },
-    thresholds: { quickReviewThreshold: 8, fixCap: 3 }, lenses: DEFAULT_LENSES,
-    ticketUrl: '', repos: { frontend: '', backend: '' },
+    thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES,
+    ticketUrl: '', repos: { frontend: '', backend: '' }, ghEnvUnset: {},
   }
   FORGE_CONFIG = {
     ...defaults, ...(result || {}),
@@ -730,8 +650,6 @@ async function loadForgeConfig() {
     lenses: { ...defaults.lenses, ...((result && result.lenses) || {}) },
     repos: { ...defaults.repos, ...((result && result.repos) || {}) },
   }
-  PARAMS.fixCap = Number.isInteger(FORGE_CONFIG.thresholds.fixCap) && FORGE_CONFIG.thresholds.fixCap >= 1
-    ? FORGE_CONFIG.thresholds.fixCap : 3
 }
 
 function shellQuote(value) {
@@ -743,10 +661,6 @@ function baselineContext() {
     { label: 'baseline', phase: 'Implement', schema: ACK_SCHEMA })
 }
 
-function segmentThread(index) {
-  return index === 0 ? CODEX_IMPL_THREAD : `${PARAMS.runDir}/codex-impl-cp${index + 1}.thread`
-}
-
 function fullTestPromptInstruction() {
   return `With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for ${PARAMS.projectDir}, and name its exact tests command in the Codex prompt under FULL TEST COMMAND. Tell Codex to run that full test command before returning; the gate re-runs it, and Codex's run is the first line of defense. Codex must include the test summary line in summary and never report tests as intentionally skipped.`
 }
@@ -755,39 +669,26 @@ function runBeforeReturningInstruction() {
   return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
-function implement(segment, index, total, pendingCheckpointLines = [], previousResult = null) {
+function implement() {
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const findings = pendingCheckpointLines.length ? JSON.stringify(pendingCheckpointLines) : '[]'
-    return agentT('implementer', `Implement this confirmed Forge plan segment in ${PARAMS.projectDir}. Never commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped. Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN SEGMENT\n${planPhases(PARAMS.planText, segment)}\n\nCHECKPOINT FINDINGS\n${findings}`,
-      { label: index === 0 ? 'implement' : `implement-cp${index + 1}`, phase: 'Implement', schema: IMPL_RESULT, agentType: 'implementer' })
+    return agentT('implementer', `Implement this confirmed Forge plan in ${PARAMS.projectDir}. Never commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped. Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN\n${PARAMS.planText}`,
+      { label: 'implement', phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' })
   }
-  const indexedPaths = total > 1 || Boolean(segment.reason)
-  const promptPath = indexedPaths ? `${PARAMS.runDir}/implement-prompt-${index}.md` : `${PARAMS.runDir}/implement-prompt.md`
-  const logPath = indexedPaths ? `${PARAMS.runDir}/codex-implement-${index}.jsonl` : `${PARAMS.runDir}/codex-implement.jsonl`
-  const outPath = indexedPaths ? `${PARAMS.runDir}/codex-implement-${index}-final.md` : `${PARAMS.runDir}/codex-implement-final.md`
-  const scope = total > 1
-    ? `\nAdd this block to the Codex prompt verbatim:\nPHASES IN SCOPE NOW: Phase ${segment.from} .. Phase ${segment.to} (segment ${index + 1} of ${total}). Implement only these phases. Do not start later phases. When done, report filesChanged for this segment only.`
-    : ''
-  const persistFindings = pendingCheckpointLines.length
-    ? `Before invoking Codex, append each missing exact line from ${JSON.stringify(pendingCheckpointLines)} to ${PARAMS.runDir}/checkpoint-findings.md, creating it if needed and never truncating or duplicating existing lines.\n`
-    : ''
-  const threadFile = segmentThread(index)
-  const previous = index > 0
-    ? `Include only this previous segment summary verbatim in the Codex prompt: ${JSON.stringify((previousResult && previousResult.summary) || '')}. Name ${PARAMS.runDir}/gate-cp${index}.diff, ${PARAMS.runDir}/gate-cp${index}-retry.diff, and ${PARAMS.runDir}/gate-cp${index}-retry2.diff as optional paths Codex may inspect with ranged sed -n reads. Do not read or inline those diffs while building the prompt.\n`
-    : ''
-  const mode = index === 0 ? `test -f ${threadFile} && MODE=resume || MODE=start` : 'MODE=start'
+  const promptPath = `${PARAMS.runDir}/implement-prompt.md`
+  const logPath = `${PARAMS.runDir}/codex-implement.jsonl`
+  const outPath = `${PARAMS.runDir}/codex-implement-final.md`
   return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
-Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading.${scope} ${previous}Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. ${runBeforeReturningInstruction()} Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
-${persistFindings}Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${promptPath} --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
-  { label: index === 0 ? 'implement' : `implement-cp${index + 1}`, phase: 'Implement', schema: CODEX_RESULT })
+Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. ${runBeforeReturningInstruction()} Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
+Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
+  { label: 'implement', phase: 'Implement', schema: CODEX_RESULT })
 }
 
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = []) {
   const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
-  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>" }], commands: [] }\`.`,
+  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -797,8 +698,8 @@ function gateFindings(gate) {
       .filter(match => !match[1].includes('://'))
     const location = locations[locations.length - 1]
     return {
-      file: location ? location[1] : '',
-      line: location ? Number(location[2]) : 0,
+      file: failure.file || (location ? location[1] : ''),
+      line: failure.line || (location ? Number(location[2]) : 0),
       severity: 'HIGH',
       claim: `${failure.tool}: ${failure.summary}`,
       fix_hint: 'Resolve this gate failure only.',
@@ -811,50 +712,43 @@ function gateFindings(gate) {
 async function gateWithFixes(label, files, threadFile, context, phaseLabel) {
   let gate = await localGate(label, phaseLabel, files)
   const touchedFiles = []
-  for (let round = 1; round <= 2 && (!gate || !gate.passed); round++) {
-    const fixLabel = round === 1 ? `fix-${label}` : `fix-${label}-2`
-    const retryLabel = round === 1 ? `${label}-retry` : `${label}-retry2`
-    const fix = await fixAgent(
-      gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] }),
-      context,
-      fixLabel,
-      threadFile,
-      phaseLabel,
-    )
-    if (!fix) return { gate, touchedFiles, blocked: true, capReached: false }
+  if (!gate || !gate.passed) {
+    const findings = gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
+    const fix = await fixAgent(findings, context, `fix-${label}`, threadFile, phaseLabel)
+    if (!fix) return { gate, touchedFiles, blocked: true, needsJudge: false }
     touchedFiles.push(...(fix.touchedFiles || []))
-    files = [...new Set([...files, ...(fix.touchedFiles || [])])]
-    gate = await localGate(retryLabel, phaseLabel, files)
+    files = [...new Set([...files, ...touchedFiles])]
+    gate = await localGate(`${label}-retry`, phaseLabel, files)
   }
-  return { gate, touchedFiles, blocked: false, capReached: !gate || !gate.passed }
-}
-
-async function recordFixCap(gate, threadFile, branch, findings = []) {
-  const gateFailures = (gate && gate.failures) || []
-  const failures = [...new Set([
-    ...gateFailures.map(item => `${item.tool}: ${String(item.summary).slice(0, 200)}`),
-    ...findings.map(item => {
-      const claim = String(item.claim).slice(0, 200)
-      return item.file ? `${item.file}:${item.line || 0} ${claim}` : claim
-    }),
-  ])]
-  const diffPath = (gate && gate.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
-  await decide(`Fix cap reached; failures: ${failures.join(' | ') || 'no failure detail'}; gate diff: ${diffPath}.`)
-  if (PARAMS.auto) {
-    await agentT('handoff', `Rewrite ${PARAMS.runDir}/STATE.md from ~/.claude/references/state-template.md. Add a "Fix cap reached" block with this failure list: ${JSON.stringify(failures)}; gate diffPath=${diffPath}; fix thread=${threadFile}; branch=${branch || '(unknown branch)'}. Preserve the template's other required state and pointer fields. Return written=true.`,
-    { label: 'fix-cap-state', phase: 'Handoff', schema: ACK_SCHEMA })
-    return 'READY_FOR_HUMAN'
+  if (!gate || !gate.passed) {
+    const findings = gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
+    const judge = await agentT('judge', `Judge this repeated gate failure. Dismiss only a false finding, respec with exact fix instructions, or mark fixed if the code already contains the fix. Set cannotDecide=true if current evidence is insufficient. Findings: ${JSON.stringify(findings.map(item => ({ id: findingKey(item), finding: item })))}\n\nPUBLIC API CONTRACT\n${context.contract || '(none declared)'}`,
+      { label: `judge-${label}`, phase: phaseLabel, schema: JUDGE_SCHEMA, agentType: 'judge' })
+    if (!judge || judge.cannotDecide) return { gate, touchedFiles, blocked: true, needsJudge: true }
+    const respecified = findings.flatMap(finding => {
+      const decision = (judge.decisions || []).find(item => item.id === findingKey(finding))
+      if (!decision || decision.verdict !== 'respec') return []
+      return [{ ...finding, fix_hint: decision.instruction || finding.fix_hint }]
+    })
+    if (respecified.length) {
+      const fix = await fixAgent(respecified, context, `fix-${label}-2`, `${threadFile}-2`, phaseLabel)
+      if (!fix) return { gate, touchedFiles, blocked: true, needsJudge: false }
+      touchedFiles.push(...(fix.touchedFiles || []))
+      files = [...new Set([...files, ...touchedFiles])]
+    }
+    gate = await localGate(`${label}-retry2`, phaseLabel, files)
   }
-  return 'BLOCKED'
+  return { gate, touchedFiles, blocked: !gate || !gate.passed, needsJudge: false }
 }
 
 function stopped(state) {
   return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN'
 }
 
-function changedFiles(checkpointLines = [], allDirty = false) {
+function changedFiles(allDirty = false) {
   const mode = allDirty ? ' --all-dirty' : ''
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate --checkpoint-json ${shellQuote(JSON.stringify(checkpointLines))}${mode}`,
+  const base = PARAMS.lane === 'review' ? ` --base ${shellQuote(args.base || 'main')}` : ''
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
   { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
 }
 
@@ -875,82 +769,21 @@ function contextFailed(context) {
   return !context || context.commandSucceeded !== true
 }
 
-// Reviewers get the whole diff inline; a diff past this size is cut and the reviewer told so,
-// since an unbounded prompt is what lets a session grow past its budget.
-const DIFF_CAP = 160000
-
-function boundedDiff(context) {
-  const diff = String(context.diff || '')
-  if (diff.length <= DIFF_CAP) return diff
-  decide(`Review diff truncated from ${diff.length} to ${DIFF_CAP} characters; reviewers were told which part is missing.`)
-  return `${diff.slice(0, DIFF_CAP)}\n[DIFF TRUNCATED at ${DIFF_CAP} of ${diff.length} characters; changed files: ${JSON.stringify(context.files || [])}. Read the rest only with ranged sed on the listed files.]`
+function diffSection(context, codex = false) {
+  return codex
+    ? `DIFF: inlined by codex-exec.sh --inline-diff ${context.diffPath}`
+    : `Diff file: ${context.diffPath} (${context.diffLines} lines). Read it with the Read tool in ranges of at most 2000 lines; never paste it.`
 }
 
-function segmentDiffContext(context) {
-  const diff = String(context.diff || '')
-  if (diff) {
-    const excluded = context.diffExcluded && context.diffExcluded.length
-      ? JSON.stringify(context.diffExcluded)
-      : 'none'
-    const truncated = context.diffTruncated
-      ? `\n[DIFF TRUNCATED: first ${diff.length} characters shown of ${context.diffBytes || 0} bytes; the rest is at ${context.diffPath}, read it with ranged sed]`
-      : ''
-    return `DIFF (working tree vs HEAD; files: ${JSON.stringify(context.files || [])}; excluded generated files: ${excluded})\n${diff}${truncated}`
-  }
-  return context.diffPath
-    ? `The segment diff is at ${context.diffPath} (${context.diffBytes || 0} bytes); read it with ranged sed`
-    : ''
-}
-
-function knownFindingsContext(context) {
-  const findings = String(context.checkpointFindings || '').trim()
-  return findings
-    ? `Known from checkpoint reviews (verify fixed or still open; do not re-report as new)\n${findings}`
-    : ''
-}
-
-function spotReview(segment, index, total, planText, gate) {
-  const context = {
-    files: gate.files || [], diff: gate.diff || '', diffTruncated: !!gate.diffTruncated,
-    diffExcluded: gate.diffExcluded || [], diffPath: gate.diffPath || '', diffBytes: gate.diffBytes || 0,
-    checkpointFindings: '',
-  }
-  return agentT('spotReviewer', `Review only checkpoint ${index + 1} of ${total}. You are read-only. Use ranged reads only to confirm a file:line, run no git commands, and use at most 30 tool calls. Do not inspect other review findings.
-
-PROJECT DIR
-${PARAMS.projectDir}
-Every path in the diff and in your findings is relative to this directory. Confirm a file:line only with an absolute path under it (sed -n 'A,Bp' ${PARAMS.projectDir}/<path>); never resolve a path against your own working directory.
-
-PHASES IN SCOPE
-${planPhases(planText, segment)}
-
-CHECKPOINT REASON
-${segment.reason}
-
-ACCEPTANCE CRITERIA
-${planCriteria(planText)}
-
-${segmentDiffContext(context)}
-
-Check only:
-1. Does the code match the plan's contract for these phases (names, shapes, endpoints, flags)?
-2. Any test weakened, skipped, deleted, or asserting a mock? Any plan-required test missing?
-3. Obvious correctness defects in the diff.
-
-Nothing else: no style, no docs, and no speculative refactors. Return exactly the review schema.`,
-  { label: `spot-review-cp${index + 1}`, phase: 'Review', schema: REVIEW_SCHEMA, agentType: 'spot-reviewer' })
-}
-
-function reviewerPrompt(identity, focus, context) {
-  return `${identity === 'Codex general' ? '' : `${context.reviewerContract}\n\n`}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The diff below is complete unless marked truncated; read repository files only to confirm a specific file:line it touches, with ranged reads.
+function reviewerPrompt(identity, focus, context, codex = false) {
+  return `${identity === 'Codex general' ? '' : `${context.reviewerContract}\n\n`}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
 Use disputes only for a concrete concern at a file:line that you examined and explicitly reject, with the evidence in reason. Return exactly the review schema.
 
 PROJECT DIR
 ${PARAMS.projectDir}
 Every path in the diff and in your findings is relative to this directory. Confirm a file:line only with an absolute path under it (sed -n 'A,Bp' ${PARAMS.projectDir}/<path>); never resolve a path against your own working directory.
 
-DIFF
-${boundedDiff(context)}
+${diffSection(context, codex)}
 
 PLAN SUMMARY
 ${planSummary(context)}
@@ -965,13 +798,13 @@ REVIEW CHECKLIST
 ${context.checklist}
 
 FLAG VIOLATIONS OF THESE CODE STANDARDS
-${context.standards}${knownFindingsContext(context) ? `\n\n${knownFindingsContext(context)}` : ''}`
+${context.standards}`
 }
 
 async function codexReview(context) {
-  const review = reviewerPrompt('Codex general', 'Assess every checklist item and acceptance criterion.', context)
+  const review = reviewerPrompt('Codex general', 'Assess every checklist item and acceptance criterion.', context, true)
   const result = await codexAgent(`You orchestrate the CODEX general review. ${codexWrapper}
-Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
+Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
   { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA })
@@ -1069,7 +902,7 @@ function partitionTriage(findings, verdicts, auto = false) {
 
 function triageFindings(findings, context, label = 'triage') {
   if (!findings.length) return Promise.resolve({ verdicts: [] })
-  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding. Findings: ${JSON.stringify(findings)}\n\nBOUNDED DIFF\n${boundedDiff(context)}`,
+  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding. Findings: ${JSON.stringify(findings)}\n\n${diffSection(context)}`,
     { label, phase: 'Review', schema: TRIAGE_SCHEMA, agentType: 'triage' })
 }
 
@@ -1109,12 +942,12 @@ async function applyRulings(findings, contradictions) {
 }
 
 async function reviewPanel(context) {
+  if (!context.diffValid) return { status: 'BLOCKED', reason: 'review diff invalid' }
   const selected = configuredLenses().filter(lens => (context.files || []).some(file => lens.paths.test(file)))
   const reviewProvider = (configuredRole('review') || {}).provider || 'codex'
   const specs = []
   if (reviewProvider === 'codex') specs.push({ key: 'codex', lens: false, run: () => codexReview(context) })
-  const sourceFileCount = (context.files || []).filter(isSourcePath).length
-  if (reviewProvider === 'claude' || PARAMS.lane === 'dev' || sourceFileCount > quickReviewThreshold()) specs.push({ key: 'claude', lens: false, run: () => claudeReview(context) })
+  specs.push({ key: 'claude', lens: false, run: () => claudeReview(context) })
   for (const lens of selected) specs.push({ key: lens.key, lens: true, run: () => lensReview(lens, context) })
   // A reviewer that never returns (a hung model call) must not hang the run: after
   // REVIEW_TIMEOUT_MS it is treated as FAIL and the panel proceeds without it.
@@ -1171,19 +1004,17 @@ function unresolvedAfterVerification(items, verify) {
 async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
   const round = Number(label.match(/(\d+)$/)?.[1] || 1)
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  const findingFileCount = new Set(items.map(item => item.file).filter(isSourcePath)).size
+  const implementationRole = findingFileCount <= quickReviewThreshold() ? 'quick-impl' : 'impl'
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
     const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(items)}. Verify each against current code first. Do not commit or ship. ${runBeforeReturningInstruction()} Include the test summary line in summary and never report tests as intentionally skipped.`,
-      { label, phase: fixPhase, schema: IMPL_RESULT, agentType: 'implementer' })
+      { label, phase: fixPhase, schema: IMPL_RESULT, agentType: 'claude-implementer' })
     if (!result || result.error) return null
     return { fixed: items.map(item => item.claim), couldNotFix: [], touchedFiles: result.filesChanged, diff: '', notes: result.summary }
   }
-  const mode = threadFile === CODEX_FIX_THREAD && label === 'fix-1'
-    ? 'MODE=start'
-    : `test -f ${threadFile} && MODE=resume || MODE=start`
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
 Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run ${mode}, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
   if (!assertCodex(result, label)) return null
   return result.fix
@@ -1201,7 +1032,7 @@ FINDINGS: ${JSON.stringify(items)}
 PUBLIC API CONTRACT:
 ${(context && context.contract) || '(none declared)'}
 FIX DIFF (capped at 12000 characters): ${diff}
-Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start. This stage must resume the review thread, so if MODE is start, return an invocation error instead of running. Otherwise invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/verify-${round}-prompt.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-verify-${round}.jsonl --out ${PARAMS.runDir}/codex-verify-${round}-final.md. Translate without changing the verdicts.`,
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${PARAMS.runDir}/codex-verify-${round}.thread --prompt-file ${PARAMS.runDir}/verify-${round}-prompt.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-verify-${round}.jsonl --out ${PARAMS.runDir}/codex-verify-${round}-final.md. Translate without changing the verdicts.`,
   { label: `verify-${round}`, phase: 'Fix', schema: VERIFY_SCHEMA })
 }
 
@@ -1220,67 +1051,86 @@ async function converge(panel, context) {
   const touched = []
   if (!unresolved.length) {
     await decide('Fix stage skipped because the review panel returned no confirmed findings.')
-    return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, capReached: false, gatePassed: true, gate: null, gateRan: false }
+    return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, gatePassed: true, gate: null, gateRan: false }
   }
-  let countedRounds = 0
-  let attempt = 0
-  let zeroFileRounds = 0
   let gate = null
   let verificationFailed = false
-  while (unresolved.length && countedRounds < PARAMS.fixCap && zeroFileRounds < 2) {
-    attempt += 1
-    const round = attempt
+  let judgedWithoutProgress = 0
+  let needsJudge = false
+  for (let round = 1; unresolved.length && round <= 8; round++) {
+    const beforeCount = unresolved.length
+    const priorGatePassed = gate ? Boolean(gate.passed) : true
     const findingsToVerify = unresolved
-    const fix = await fixAgent(unresolved, context, `fix-${round}`, CODEX_FIX_THREAD)
+    const fix = await fixAgent(unresolved, context, `fix-${round}`, `${PARAMS.runDir}/codex-fix-${round}.thread`)
     if (!fix) {
       verificationFailed = true
       break
     }
     const roundTouched = fix.touchedFiles || []
     touched.push(...roundTouched)
-    if (roundTouched.length) {
-      fixesApplied = true
-      countedRounds += 1
-      zeroFileRounds = 0
-    } else {
-      zeroFileRounds += 1
+    fixesApplied = fixesApplied || roundTouched.length > 0
+    const verify = await verifyFixes(findingsToVerify, fix, round, context)
+    if (!assertVerification(verify, `verify-${round}`)) {
+      verificationFailed = true
+      break
     }
+    unresolved = unresolvedAfterVerification(findingsToVerify, verify)
     gate = await localGate(`gate-fix-${round}`, 'Fix', [...new Set(touched)], ['tests'])
-    let verify = null
-    if (roundTouched.length) {
-      verify = await verifyFixes(findingsToVerify, fix, round, context)
-      if (!assertVerification(verify, `verify-${round}`)) {
-        verificationFailed = true
-        break
-      }
-      unresolved = unresolvedAfterVerification(findingsToVerify, verify)
-    }
     if (gate && gate.passed) {
       unresolved = unresolved.filter(finding => finding.source !== 'gate' || finding.tool !== 'tests')
     } else {
-      unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+      unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })]
     }
     const deduped = new Map(unresolved.map(finding => [findingKey(finding), finding]))
     unresolved = [...deduped.values()]
     rounds.push({ round, fix, gate, verify })
     await writeStatus({
-      rounds: { fix: countedRounds },
+      rounds: { fix: round },
       open_findings: unresolved.map(finding => ({ file: finding.file, line: finding.line, severity: finding.severity, summary: finding.claim })),
     }, 'Fix')
-  }
-  if (zeroFileRounds >= 2) await decide('Fix loop stopped after two consecutive rounds touched zero files.')
-  if (fixesApplied) {
-    gate = await localGate('gate-final', 'Fix', [...new Set(touched)])
-    if (gate && gate.passed) {
-      unresolved = unresolved.filter(finding => finding.source !== 'gate')
-    } else {
-      unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null' }] })]
+    const progressed = unresolved.length < beforeCount || (!priorGatePassed && Boolean(gate && gate.passed))
+    if (progressed || !unresolved.length) {
+      judgedWithoutProgress = 0
+      continue
     }
+    const judge = await agentT('judge', `Judge these unresolved findings after a fix, verification, and tests-only gate made no progress. Read current file:line evidence with ranged reads. For each finding id, dismiss it, respec it with exact instructions for one more implementation round, or mark it fixed so it goes directly through verification. Do not widen scope. If evidence cannot decide, set cannotDecide=true.\n\nFINDINGS\n${JSON.stringify(unresolved.map(item => ({ id: findingKey(item), finding: item })))}\n\nPUBLIC API CONTRACT\n${context.contract || '(none declared)'}`,
+      { label: `judge-${round}`, phase: 'Fix', schema: JUDGE_SCHEMA, agentType: 'judge' })
+    if (!judge || judge.cannotDecide) {
+      needsJudge = true
+      break
+    }
+    judgedWithoutProgress += 1
+    const decisionsById = new Map((judge.decisions || []).map(item => [item.id, item]))
+    const fixed = []
+    unresolved = unresolved.flatMap(finding => {
+      const decision = decisionsById.get(findingKey(finding))
+      if (!decision) return [finding]
+      if (decision.verdict === 'dismiss') return []
+      if (decision.verdict === 'fixed') {
+        fixed.push(finding)
+        return []
+      }
+      return [{ ...finding, fix_hint: decision.instruction || finding.fix_hint }]
+    })
+    if (fixed.length) {
+      const judgedVerify = await verifyFixes(fixed, { diff: '', touchedFiles: [] }, `${round}-judge`, context)
+      if (!assertVerification(judgedVerify, `verify-${round}-judge`)) {
+        verificationFailed = true
+        break
+      }
+      unresolved.push(...unresolvedAfterVerification(fixed, judgedVerify))
+    }
+    if (judgedWithoutProgress >= 2 && unresolved.length) break
   }
-  const capReached = unresolved.length > 0 && countedRounds >= PARAMS.fixCap
+  gate = await localGate('gate-final', 'Fix', [...new Set(touched)])
+  if (gate && gate.passed) {
+    unresolved = unresolved.filter(finding => finding.source !== 'gate')
+  } else {
+    unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })]
+  }
   const blocked = verificationFailed || unresolved.length > 0 || !gate || !gate.passed
   return {
-    unresolved, fixesApplied, rounds, touchedFiles: [...new Set(touched)], blocked, capReached,
+    unresolved, fixesApplied, rounds, touchedFiles: [...new Set(touched)], blocked, needsJudge,
     gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate),
   }
 }
@@ -1288,29 +1138,25 @@ async function converge(panel, context) {
 // The working tree can carry unrelated local work, including tracked secret-bearing env
 // files; the shipper stages only the run's own files, never "whatever git status shows".
 function stagingRules(files, context = {}) {
-  const vouched = new Set(PARAMS.stageAlso)
-  const preexisting = new Set(context.preexisting || [])
-  const staged = [...new Set([...(files || []), ...(context.files || []), ...PARAMS.stageAlso])]
-    .filter(path => vouched.has(path) || !preexisting.has(path))
+  const staged = [...new Set(context.files || [])]
     .filter(path => !String(path).split('/').includes('.envs') && !/(^|\/)\.env(?:\.|$)|\.env$/i.test(String(path)))
-  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. A listed path that does not exist is skipped and reported.` : 'No run-owned files are eligible for staging.'
+  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. Run 'git add -- <path>' for every listed path even when it is absent from the working tree because an absent tracked path is a deletion; skip and report a path only when it is both absent and untracked ('git ls-files --error-unmatch <path>' fails).` : 'No run-owned files are eligible for staging.'
   return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file, or any file outside that list even if 'git status' shows it modified or untracked.`
 }
 
 function ghEnvironmentInstruction() {
-  const names = PARAMS.ghEnvUnset.map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+  const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
+  const configured = (FORGE_CONFIG && FORGE_CONFIG.ghEnvUnset && FORGE_CONFIG.ghEnvUnset[basename]) || []
+  const names = (PARAMS.ghEnvUnset || configured).map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
   if (!names.length) return ''
   const prefix = names.map(name => `-u ${name}`).join(' ')
   return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
 }
 
 function ship(existing = null, files = [], context = {}) {
-  const dependency = PARAMS.dependsOnGate
-    ? `Before creating a branch or pushing, poll ${PARAMS.dependsOnGate} every 60 seconds for up to 30 minutes. Continue only after it exists and its JSON field passed is true. Otherwise return {branch:"",prUrl:"",prNumber:0,repo:${JSON.stringify(PARAMS.repo)},skipped:true,reason:"waited on ${PARAMS.dependsOnGate}; API gate never passed"} without creating a branch, committing, pushing, or editing a PR. `
-    : ''
   const prompt = existing
-    ? `${dependency}${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
-    : `${dependency}${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; omit a testing-results section. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1410,9 +1256,6 @@ function sandboxRefresh(sandbox, shipResult, context) {
 }
 
 async function handoff(state, context) {
-  const preserveFixCap = state.status === 'READY_FOR_HUMAN'
-    ? `Read the existing ${PARAMS.runDir}/STATE.md first and preserve its "Fix cap reached" block verbatim in the rewritten file.`
-    : ''
   const handoffState = {
     ...state,
     qaDraft: qaDraftSummary(state.qaDraft),
@@ -1427,170 +1270,34 @@ Write these sections exactly: What changed and why; Gate results; Sandbox + smok
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
 Run data: ${JSON.stringify(handoffState)}
-Then rewrite ${PARAMS.runDir}/STATE.md whole (never append) from ~/.claude/references/state-template.md with the run's current state, next steps, blockers, pointers (plan, decisions, STATUS.json, PR, branch, sandbox), and do-not-redo facts. ${preserveFixCap}
+Then rewrite ${PARAMS.runDir}/STATE.md whole (never append) from ~/.claude/references/state-template.md with the run's current state, next steps, blockers, pointers (plan, decisions, STATUS.json, PR, branch, sandbox), and do-not-redo facts.
 Return the handoff path.`,
   { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
 }
 
-function mergeImplementResults(results) {
-  const first = results[0]
-  return {
-    codexInvoked: results.every(result => result.codexInvoked === true),
-    threadMode: first.threadMode,
-    threadExists: results.every(result => result.threadExists === true),
-    filesChanged: [...new Set(results.flatMap(result => result.filesChanged || []))],
-    testsWritten: results.reduce((total, result) => total + (result.testsWritten || 0), 0),
-    summary: results.map(result => result.summary).filter(Boolean).join('\n'),
-    error: results.map(result => result.error).filter(Boolean).join('; '),
-  }
-}
-
-async function runCheckpointSegments(state, firstResult, segments) {
-  const results = [firstResult]
-  for (let index = 0; index < segments.length; index++) {
-    const segment = segments[index]
-    const result = results[index]
-    const implementLabel = index === 0 ? 'implement' : `implement-cp${index + 1}`
-    try {
-      if (!assertImplementation(result, implementLabel)) throw new Error('implementation agent returned null')
-    } catch (error) {
-      state.status = 'BLOCKED'
-      await decide(`Checkpoint ${index + 1} implementation failed; later segments were stopped: ${error.message}`)
-      if (!segment.final) await decide(`[cp${index + 1}] gate fail, spot review skipped (0 findings, 0 fixed)`)
-      break
-    }
-    if (segment.final) continue
-
-    const checkpoint = index + 1
-    const segmentFiles = [...new Set(result.filesChanged || [])]
-    phase('Gate')
-    let gateRun = null
-    try {
-      gateRun = await gateWithFixes(`gate-cp${checkpoint}`, segmentFiles, segmentThread(index), { standards: '' }, 'Gate')
-    } catch (error) {
-      await decide(`Checkpoint ${checkpoint} gate fix failed: ${error.message}`)
-    }
-    let gate = gateRun && gateRun.gate
-    if (gateRun) result.filesChanged = [...new Set([...(result.filesChanged || []), ...(gateRun.touchedFiles || [])])]
-    if (!gate || !gate.passed) {
-      state.status = gateRun && gateRun.capReached
-        ? await recordFixCap(gate, segmentThread(index), '', gateFindings(gate || { failures: [] }))
-        : 'BLOCKED'
-      await decide(`[cp${checkpoint}] gate fail, spot review skipped (0 findings, 0 fixed)`)
-      await decide(`Checkpoint ${checkpoint} local gate did not pass; later segments were stopped.`)
-      break
-    }
-
-    phase('Review')
-    const review = await spotReview(segment, index, segments.length, PARAMS.planText, gate)
-    if (!review) {
-      await decide(`Checkpoint ${checkpoint} spot review returned null; continuing without blocking.`)
-      await decide(`[cp${checkpoint}] gate pass, spot review null (0 findings, 0 fixed)`)
-    } else {
-      const findings = review.findings || []
-      const ruled = await applyRulings(findings, [])
-      const triageContext = {
-        files: gate.files || [], diff: gate.diff || '', diffPath: gate.diffPath || '',
-        diffBytes: gate.diffBytes || 0, diffTruncated: Boolean(gate.diffTruncated),
-      }
-      const triage = await triageFindings(ruled.confirmed, triageContext, `triage-cp${checkpoint}`)
-      let partitioned
-      if (triage) {
-        partitioned = partitionTriage(ruled.confirmed, triage.verdicts, PARAMS.auto)
-      } else {
-        await decide(`Checkpoint ${checkpoint} triage agent returned no result; retaining the pre-triage confirmed findings.`)
-        partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
-      }
-      for (const item of partitioned.dropped) {
-        await decide(`Checkpoint ${checkpoint} triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
-      }
-      if (partitioned.disputes.length) {
-        state.needsJudge = true
-        state.review = { findings, unresolvedDisputes: partitioned.disputes }
-        await decide(`Checkpoint ${checkpoint} triage left ${partitioned.disputes.length} uncertain finding(s) for judgment.`)
-        break
-      }
-      const confirmed = [...ruled.applied, ...partitioned.fix]
-      const blocking = confirmed.filter(finding => ['CRITICAL', 'HIGH'].includes(finding.severity))
-      const deferred = confirmed.filter(finding => ['MEDIUM', 'LOW'].includes(finding.severity))
-      const deferredLines = deferred.map(finding => `[cp${checkpoint}] ${finding.severity} ${finding.file}:${finding.line} ${finding.claim}`)
-      state.checkpointFindings.push(...deferredLines)
-      let fixed = 0
-      if (blocking.length) {
-        let fix = null
-        try {
-          fix = await fixAgent(blocking, { standards: '' }, `fix-spot-cp${checkpoint}`, segmentThread(index), 'Review')
-        } catch (error) {
-          await decide(`Checkpoint ${checkpoint} spot-review fix failed: ${error.message}`)
-        }
-        if (!fix) {
-          state.status = 'BLOCKED'
-          await decide(`Checkpoint ${checkpoint} spot-review fix returned null; later segments were stopped before re-gating.`)
-          await decide(`[cp${checkpoint}] gate fail, spot review ${review.verdict} (${findings.length} findings, 0 fixed)`)
-          break
-        }
-        fixed = (fix.fixed || []).length
-        result.filesChanged = [...new Set([...(result.filesChanged || []), ...(fix.touchedFiles || [])])]
-        if ((fix.touchedFiles || []).length === 0) {
-          await decide(`Checkpoint ${checkpoint} spot-review fix touched no files (findings stale or rebutted); re-gate skipped.`)
-        } else {
-          phase('Gate')
-          gate = await localGate(`gate-cp${checkpoint}-fix`, 'Gate', result.filesChanged)
-          if (!gate || !gate.passed) {
-            state.status = 'BLOCKED'
-            await decide(`Checkpoint ${checkpoint} re-gate failed after the spot-review fix; later segments were stopped.`)
-          }
-        }
-      }
-      await decide(`[cp${checkpoint}] gate ${state.status === 'BLOCKED' ? 'fail' : 'pass'}, spot review ${review.verdict} (${findings.length} findings, ${fixed} fixed)`)
-      if (state.status === 'BLOCKED') break
-    }
-
-    phase('Implement')
-    const pendingLines = state.checkpointFindings.filter(line => line.startsWith(`[cp${checkpoint}] `))
-    const next = await implement(segments[index + 1], index + 1, segments.length, pendingLines, result)
-    results.push(next)
-  }
-  state.implement = results.some(Boolean) ? mergeImplementResults(results.filter(Boolean)) : null
-  if (!state.implement) state.status = 'BLOCKED'
-  if (capBlocked && state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
-  return state
-}
-
 async function fullLane() {
   phase('Implement')
-  if (PARAMS.lane === 'dev' && PARAMS.planText === null) {
-    const plan = await readPlan()
-    PARAMS.planText = plan ? plan.planText : ''
-  } else {
-    PARAMS.planText = PARAMS.planText || ''
-  }
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
-  const checkpointArgs = PARAMS.lane === 'dev' ? PARAMS.checkpoints : []
-  const segments = parseCheckpoints(PARAMS.planText, checkpointArgs)
-  const initial = { status: 'DONE', implement: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null, checkpointFindings: [] }
+  const initial = { status: 'DONE', implement: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
   const rows = await pipeline(
     [initial],
     async state => {
       phase('Implement')
-      const first = await implement(segments[0], 0, segments.length)
-      if (segments.length > 1 || (segments[0] && segments[0].reason)) return runCheckpointSegments(state, first, segments)
-      state.implement = first
-      if (!assertImplementation(first, 'implement')) state.status = 'BLOCKED'
+      state.implement = await implement()
+      if (!assertImplementation(state.implement, 'implement')) state.status = 'BLOCKED'
       if (capBlocked && state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
       return state
     },
     async state => {
       phase('Gate')
       if (stopped(state)) return state
-      const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], segmentThread(segments.length - 1), { standards: '' }, 'Gate')
+      const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
       if (!state.gate || !state.gate.passed) {
-        state.status = gateRun.capReached
-          ? await recordFixCap(state.gate, segmentThread(segments.length - 1), '', gateFindings(state.gate || { failures: [] }))
-          : 'BLOCKED'
+        state.status = 'BLOCKED'
+        if (gateRun.needsJudge) state.needsJudge = true
         await decide('Pre-ship local gate did not pass; later stages were stopped.')
       }
       return state
@@ -1602,7 +1309,7 @@ async function fullLane() {
         await decide('Ship, sandbox, and smoke stages skipped because args.noShip is true.')
         return state
       }
-      state.context = state.context || await changedFiles(state.checkpointFindings)
+      state.context = state.context || await changedFiles()
       if (contextFailed(state.context)) {
         state.status = 'BLOCKED'
         await decide(`Changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`)
@@ -1618,7 +1325,7 @@ async function fullLane() {
     async state => {
       phase('Sandbox')
       if (stopped(state) || !state.ship) return state
-      state.context = await changedFiles(state.checkpointFindings)
+      state.context = await changedFiles()
       if (contextFailed(state.context)) {
         state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [], criteria: PARAMS.criteria })
         if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
@@ -1657,9 +1364,13 @@ async function fullLane() {
     async state => {
       phase('Review')
       if (stopped(state)) return state
-      state.context = state.context || await changedFiles(state.checkpointFindings)
-      if (PARAMS.lane === 'quick' && (configuredRole('review') || {}).provider !== 'claude' && (state.context.files || []).filter(isSourcePath).length <= quickReviewThreshold()) await decide('Quick lane omitted the Claude general reviewer because the changed source-file count stayed within the review threshold.')
+      state.context = state.context || await changedFiles()
       state.review = await reviewPanel(state.context)
+      if (state.review.status === 'BLOCKED') {
+        state.status = 'BLOCKED'
+        await decide(state.review.reason)
+        return state
+      }
       if ((configuredRole('review') || {}).provider !== 'claude' && state.review.failures.some(failure => failure.key === 'codex')) {
         // Cross-model review is the contract; never continue Claude-only.
         state.status = 'BLOCKED'
@@ -1673,12 +1384,11 @@ async function fullLane() {
       if (state.needsJudge || stopped(state)) return state
       phase('Fix')
       state.convergence = await converge(state.review, state.context)
-      if (state.convergence.capReached) {
-        state.status = await recordFixCap(state.convergence.gate, CODEX_FIX_THREAD, (state.ship && state.ship.branch) || '', state.convergence.unresolved)
-      } else if (state.convergence.blocked) {
+      if (state.convergence.needsJudge) state.needsJudge = true
+      if (state.convergence.blocked) {
         state.status = 'BLOCKED'
       }
-      if (!state.convergence.capReached && state.convergence.gateRan && !state.convergence.gatePassed) {
+      if (state.convergence.gateRan && !state.convergence.gatePassed) {
         state.status = 'BLOCKED'
         const firstFailure = state.convergence.gate && (state.convergence.gate.failures || [])[0]
         const fallback = state.convergence.gate ? 'no failure detail' : 'agent returned null'
@@ -1691,6 +1401,12 @@ async function fullLane() {
         await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} finding(s) remained unresolved after verification.`)
       }
       if (!state.convergence.blocked && state.convergence.fixesApplied && state.convergence.gatePassed && state.ship) {
+        state.context = await changedFiles()
+        if (contextFailed(state.context) || !state.context.diffValid) {
+          state.status = 'BLOCKED'
+          await decide(`Changed-file collection failed before ship sync: ${(state.context && state.context.error) || 'review diff invalid'}`)
+          return state
+        }
         const synced = await ship(state.ship, [
           ...((state.implement && state.implement.filesChanged) || []),
           ...((state.convergence && state.convergence.touchedFiles) || []),
@@ -1735,19 +1451,20 @@ async function fullLane() {
     },
   )
   const finalState = rows.filter(Boolean)[0]
-  if (!finalState) throw new Error('dev lane produced no final state (a stage threw before the pipeline returned)')
+  if (!finalState) throw new Error('build lane produced no final state (a stage threw before the pipeline returned)')
   return finalState
 }
 
 async function reviewLane() {
   await decide('Review lane skipped Implement, standalone Gate, Ship, Sandbox, and Smoke stages.')
   phase('Review')
-  const context = await changedFiles([], true)
+  const context = await changedFiles(true)
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
     return { status: 'BLOCKED', context: context || { criteria: PARAMS.criteria }, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
   }
   const review = await reviewPanel(context)
+  if (review.status === 'BLOCKED') return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
   if ((configuredRole('review') || {}).provider !== 'claude' && review.failures.some(failure => failure.key === 'codex')) {
     await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the review lane is BLOCKED instead of continuing Claude-only.')
     return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
@@ -1755,9 +1472,8 @@ async function reviewLane() {
   if (review.unresolvedDisputes.length) return { needsJudge: true, context, review }
   phase('Fix')
   const convergence = await converge(review, context)
-  const status = convergence.capReached
-    ? await recordFixCap(convergence.gate, CODEX_FIX_THREAD, '', convergence.unresolved)
-    : convergence.blocked || capBlocked ? 'BLOCKED' : 'DONE'
+  if (convergence.needsJudge) return { needsJudge: true, context, review, convergence }
+  const status = convergence.blocked || capBlocked ? 'BLOCKED' : 'DONE'
   return { status, context, review, convergence, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
 }
 
@@ -1783,4 +1499,5 @@ return {
   qaDraft: qaDraftSummary(state.qaDraft),
   sandboxId: (state.sandbox && state.sandbox.sandboxId) || '',
   decisions,
+  dryRunJournal: PARAMS.dryRun ? dryRunJournal.map(entry => entry.label) : undefined,
 }

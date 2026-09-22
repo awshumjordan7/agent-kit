@@ -1,6 +1,6 @@
 # forge … auto — unattended runs
 
-`forge quick auto`, `forge dev auto`, or `forge auto` after an investigation.
+`forge build auto` or `forge auto` after an investigation.
 Same lane, no stops. The user is away; the run makes its best call and leaves a trail.
 
 ## What is skipped
@@ -13,10 +13,8 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 ## What is never skipped
 
 - The local gate and the sandbox gate.
-- Lane limits. A quick run that turns out big **stops** with the triage and one line of
-  reason. It never widens itself into a dev run.
-- The three-round counted fix cap. Two consecutive zero-file rounds also stop the run as `READY_FOR_HUMAN`,
-  and writes the failure list and resume pointers to `STATE.md`.
+- Scope limits. A run that needs a materially different plan stops with the evidence and reason.
+- Progress-based convergence. Two judged rounds without progress stop with the failure list and resume pointers in `STATE.md`; eight total rounds is the safety ceiling.
 - Bot-review triage stops for the user. Auto never addresses bot findings by itself.
 
 ## The trail — `decisions.md`
@@ -44,7 +42,7 @@ session picks up from its weakest entry rather than from scratch; the handoff re
 - Per-agent timeouts bound wall-clock; the Workflow runtime has no clock of its own.
 - Isolated failures: a lens or smoke agent that dies becomes a `FAIL` row in the handoff, not an aborted run.
 - Workflow resume: re-running after a crash skips completed stages.
-- Resume is same-session only. A successor session must first copy `<oldSession>/workflows/<runId>.json` and `<oldSession>/subagents/workflows/<runId>/` from `~/.claude/projects/<project>/` into its own session directory. A cached agent result whose `error` is non-empty replays as a failure; delete its `started` and `result` lines from `journal.jsonl` (back the file up first) so only that agent re-runs.
+- A successor session runs `workflow_carry.py <runId> --from <old-session-dir> --to <new-session-dir>` before resuming. A cached agent result whose `error` is non-empty replays as a failure; remove only that failed entry after preserving the journal.
 
 ## How it ends
 

@@ -72,6 +72,17 @@ See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook
 URLs, and permission changes there.
 
+## Forge lanes
+
+| Lane | Purpose |
+|---|---|
+| `build` (default) | Investigate, plan, implement, gate, ship, independently review, converge, and hand off. |
+| `review` | Review and fix an existing working tree or branch diff. |
+
+`quick` and `dev` are temporary aliases for `build`. Every build plan receives one configured plan review.
+
+For layered releases, merge and tag agent-kit first, then bump the overlay's `requires_agent_kit` pin and run `python3 install.py update`. See [docs/release-order.md](docs/release-order.md).
+
 ## Tune
 
 `python3 install.py tune` reads local transcripts and proposes a profile diff. It reports evidence and confidence,

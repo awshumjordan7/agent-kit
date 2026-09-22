@@ -1,0 +1,2 @@
+bash -n: OK
+node --check: OK

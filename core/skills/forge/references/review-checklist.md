@@ -9,4 +9,4 @@
 - Test quality vs coverage — Require behavior-pinning tests for the planned risks without permutation grids, framework tests, or redundant coverage.
 - Correctness traps — Look specifically for wrong assumptions, null handling, off-by-one behavior, races, and code that does not actually satisfy the plan or criteria.
 - Silent failures — Flag swallowed errors, success-shaped fallbacks, authorization failures converted to 500s, and mocks or defaults that disable the behavior a test claims to exercise.
-- Evidence discipline — Every finding cites a file:line from the inline diff or excerpts; a repository read only confirms such a line. No findings from exploring code the change does not touch.
+- Evidence discipline — Every finding cites a file:line from the diff file or excerpts; a repository read only confirms such a line. No findings from exploring code the change does not touch.

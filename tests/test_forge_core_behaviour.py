@@ -20,33 +20,9 @@ def _harness(repo_root, action, payload):
     return json.loads(completed.stdout)
 
 
-def test_labelled_and_numeric_phases_parse_in_document_order(repo_root):
+def test_quick_impl_requires_specified_small_plan(repo_root):
     plan = """## Phases
-### Phase A1 — first
-### Phase 2 — second
-### Phase B3 — third
-## Checkpoints
-| After | Reason |
-|---|---|
-| Phase A1 | inspect first |
-"""
-
-    result = _harness(repo_root, "parse", {"plan": plan})
-
-    assert result == [
-        {"from": "A1", "to": "A1", "reason": "inspect first", "final": False},
-        {"from": "2", "to": "B3", "reason": "", "final": True},
-    ]
-    assert _harness(
-        repo_root,
-        "parse",
-        {"plan": plan.replace("| Phase A1 | inspect first |", "| Phase A1 typo | inspect first |")},
-    ) == [{"from": "A1", "to": "B3", "reason": "", "final": True}]
-
-
-def test_quick_impl_requires_every_quick_condition(repo_root):
-    plan = """## Phases
-`PARAMS.fixCap` and `args.dryRun`
+`args.dryRun`
 ### Phase 1
 #### Files
 `src/app.py`
@@ -74,7 +50,7 @@ def test_quick_impl_requires_every_quick_condition(repo_root):
             "role",
             {"lane": "dev", "fullySpecified": True, "plan": plan, "threshold": 8},
         )
-        == "impl"
+        == "quick-impl"
     )
 
 
@@ -118,26 +94,46 @@ def test_sandbox_checks_use_configured_repo_roots(repo_root):
         {"repos": {"frontend": "web-app", "backend": "api-server"}},
     )
 
-    assert result["backend"].startswith(
-        "cd /app/api-server && { [ -f /app/env.sh ]"
-    )
+    assert result["backend"].startswith("cd /app/api-server && { [ -f /app/env.sh ]")
     assert result["frontend"].startswith("cd /app/web-app &&")
 
 
-def test_dry_run_records_triage_tests_only_gates_and_full_final_gate(repo_root):
+def test_dry_run_resolves_findings_in_first_round(repo_root):
     journal = _harness(repo_root, "dry", {})
     labels = [entry["label"] for entry in journal]
 
-    assert "triage" in labels
-    assert "gate-fix-1" in labels
-    assert "gate-final" in labels
+    assert all(
+        label in labels for label in ("triage", "fix-1", "verify-1", "gate-fix-1", "gate-final")
+    )
     assert "--only tests" in next(
         entry["prompt"] for entry in journal if entry["label"] == "gate-fix-1"
     )
-    assert labels.count("fix-2") == 1
-    assert labels.count("fix-3") == 1
-    assert "verify-2" not in labels
-    assert "verify-3" not in labels
+    assert not any(label.startswith("judge-") for label in labels)
+
+
+def test_ship_stages_deleted_paths_and_only_skips_untracked_missing_paths(repo_root):
+    journal = _harness(repo_root, "dry", {})
+    ship = next(entry for entry in journal if entry["label"] == "ship")
+
+    assert "git add --" in ship["prompt"]
+    assert "deletion" in ship["prompt"]
+    assert "does not exist is skipped" not in ship["prompt"]
+
+
+def test_codex_budget_error_is_not_retried(repo_root):
+    result = _harness(repo_root, "codex-budget", {})
+
+    assert result["error"].startswith("CODEX_BUDGET_EXCEEDED")
+
+
+def test_dry_run_stubborn_findings_stop_after_two_judgments(repo_root):
+    journal = _harness(repo_root, "dry", {"dryRunStubborn": True})
+    labels = [entry["label"] for entry in journal]
+
+    assert all(label in labels for label in ("judge-1", "fix-2", "judge-2"))
+    red_journal = _harness(repo_root, "dry", {"dryRunFailGate": "gate-fix-1"})
+    red_labels = [entry["label"] for entry in red_journal]
+    assert "ship-sync" not in red_labels[red_labels.index("gate-fix-1") + 1 :]
 
 
 # The Workflow runtime evaluates everything after the meta export as a script,

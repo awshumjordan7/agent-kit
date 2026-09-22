@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -33,7 +34,7 @@ def test_forge_config_codex_off_uses_claude_and_disables_stages(repo_root, monke
         assert rendered["roles"][role]["provider"] == "claude"
         assert rendered["roles"][role]["model"] == "opus"
     assert rendered["stages"] == {"sandbox": False, "ff_review": False, "qa_login": False}
-    assert rendered["thresholds"] == {"quickReviewThreshold": 8, "fixCap": 3}
+    assert rendered["thresholds"] == {"quickReviewThreshold": 8}
     assert rendered["ticketUrl"] == ""
     assert rendered["repos"] == {"frontend": "", "backend": ""}
     assert set(rendered["lenses"]) == {"security", "design"}
@@ -95,6 +96,7 @@ def test_codex_exec_resolves_model_and_effort_from_top_level_roles(repo_root, tm
         check=False,
         capture_output=True,
         text=True,
+        env={key: value for key, value in os.environ.items() if key != "FORGE_CODEX_EXEC_SKILL_DIR"},
     )
 
     assert result.returncode == 0, result.stderr
