@@ -47,8 +47,7 @@
         },
         "defaultRole": "review",
         "stallTimeoutSeconds": 300,
-        "lockWaitSeconds": 1800,
-        "creditCooldownMinutes": 60
+        "lockWaitSeconds": 1800
       },
       "gate": {
         "~/Projects/personal/agent-kit": {
