@@ -134,6 +134,80 @@ def test_setup_failure_fails_the_stage(repo_root, tmp_path):
     assert result["failures"][0]["tool"] == "tests"
 
 
+def test_pytest_failure_reports_file_and_line(repo_root, tmp_path):
+    repo = _repo(tmp_path)
+    test_file = repo / "tests/test_example.py"
+    test_file.parent.mkdir()
+    test_file.write_text("pass\n", encoding="utf-8")
+    config = _config(
+        repo,
+        tests="printf 'tests/test_example.py:17: failure\\n' >&2; exit 1",
+    )
+
+    result = _gate(
+        repo_root,
+        repo,
+        tmp_path,
+        config,
+        "--only",
+        "tests",
+        "--files",
+        "tests/test_example.py",
+    )
+
+    assert result["failures"][0]["file"] == "tests/test_example.py"
+    assert result["failures"][0]["line"] == 17
+
+
+def test_pytest_failure_falls_back_to_traceback_line(repo_root, tmp_path):
+    repo = _repo(tmp_path)
+    test_file = repo / "tests/test_example.py"
+    test_file.parent.mkdir()
+    test_file.write_text("pass\n", encoding="utf-8")
+    config = _config(
+        repo,
+        tests="printf '%s\\n' 'tests/test_example.py:23: AssertionError' >&2; i=1; while [ \"$i\" -le 30 ]; do printf 'FAILED tests/test_example.py::test_example_%s\\n' \"$i\" >&2; i=$((i + 1)); done; exit 1",
+    )
+
+    result = _gate(
+        repo_root,
+        repo,
+        tmp_path,
+        config,
+        "--only",
+        "tests",
+        "--files",
+        "tests/test_example.py",
+    )
+
+    assert result["failures"][0]["line"] == 23
+
+
+def test_pytest_failure_ignores_earlier_warning_location(repo_root, tmp_path):
+    repo = _repo(tmp_path)
+    test_file = repo / "tests/test_example.py"
+    test_file.parent.mkdir()
+    test_file.write_text("pass\n", encoding="utf-8")
+    config = _config(
+        repo,
+        tests="printf '%s\\n' '/tmp/site-packages/plugin.py:12: DeprecationWarning: old' 'tests/test_example.py:42: AssertionError' 'FAILED tests/test_example.py::test_example' >&2; exit 1",
+    )
+
+    result = _gate(
+        repo_root,
+        repo,
+        tmp_path,
+        config,
+        "--only",
+        "tests",
+        "--files",
+        "tests/test_example.py",
+    )
+
+    assert result["failures"][0]["file"] == "tests/test_example.py"
+    assert result["failures"][0]["line"] == 42
+
+
 def test_rule_commands_are_grouped_separately(repo_root, tmp_path):
     repo = _repo(tmp_path)
     for relative in ("src/a.py", "lib/b.py", "tests/a.py", "tests/b.py"):

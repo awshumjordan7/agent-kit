@@ -21,8 +21,9 @@ surfaces as a notification, never as a silent hang.
 - Plan review prompts inline the plan, recon, code standards, and an excerpt pack cut from every
   `file:line` the recon cites (capped, default 60 KB). The main session adds numbered checks, each
   a claim with a `file:line`. The configured reviewer verifies; it does not explore.
-- Code review prompts (the Workflow's `reviewerPrompt`) inline the diff, capped at 160k
-  characters with an explicit truncation note.
+- Code review writes the uncapped diff to the run directory. `codex-exec.sh --inline-diff`
+  validates and inlines up to 160,000 characters for Codex; Claude reviewers read the file in
+  ranges of at most 2,000 lines.
 - Sessions run one at a time (`.state/session.lock`); `--parallel` only when the user asks.
 - The "out of credits" error kills the session at once and writes `.state/credits-exhausted`;
   starts within `creditCooldownMinutes` refuse. Delete the marker after a refill.
@@ -78,9 +79,8 @@ the flagship at high effort is a few dollars, mostly cached input. The implement
 cheap model. Compare each run's `CODEX_OK` line against these before starting the next repo of
 a multi-repo feature.
 
-The Opus checkpoint spot review (`spotReviewer` role, effort high) runs 1-2 times per dev-lane
-run with checkpoints declared, each scoped to one segment's diff — cheaper per call than a
-full-diff Fable review and outside Codex's budget entirely. Reference pricing at the time of writing (per 1M tokens, input / cached /
+The Fable general reviewer runs in parallel with the Codex reviewer and reads the diff file in
+bounded ranges. Reference pricing at the time of writing (per 1M tokens, input / cached /
 output): gpt-6-astra 10 / 1 / 50; gpt-5.6-luna 0.20 / 0.02 / 1.20; requests above 272K input
 tokens bill at 2x input.
 
@@ -121,7 +121,7 @@ tokens bill at 2x input.
 
 ## quick-impl on Luna (from 2026-09-20)
 
-`roles.quick-impl` uses gpt-5.6-luna at high effort. Quick-lane changes are fully specified
+`roles.quick-impl` uses gpt-5.6-luna at high effort. Build-lane changes are fully specified
 edits whose plan names at most `quickReviewThreshold` source files (default 8). Otherwise Forge uses `impl`.
 Tests, Markdown, and JSON files do not count toward that threshold, so the exploration that made Luna expensive
 before 2026-09-15 no longer applies.

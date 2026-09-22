@@ -14,8 +14,6 @@
     SUMMARY_HTML      -> summary (2-5 short paragraphs: the problem, the fix, why this way)
     ROOT_CAUSE_HTML   -> rootCause (quick lane; "not applicable" for dev)
     PHASES_HTML       -> one <details> block per item in phases[] (n, title, files[], tests[], notes)
-    CHECKPOINTS_HTML  -> one row per item in checkpoints[] (phases, reason); the worker omits the
-                         whole "Checkpoints" section when checkpoints[] is empty
     FILES_HTML        -> one row per item in files[] (path, change)
     TESTS_HTML        -> one <li> per string in tests[]
     CRITERIA_HTML     -> one <li> per string in criteria[], phrased as observable behavior
@@ -35,9 +33,6 @@
     <tr><th>Notes</th><td>{{notes}}</td></tr>
     </table></details>
 
-  Checkpoints row markup, one per item in checkpoints[]:
-    <tr><td>{{phases}}</td><td>{{reason}}</td></tr>
-
   Files row markup, one per item in files[]:
     <tr><td>{{path}}</td><td>{{change}}</td></tr>
 
@@ -49,7 +44,7 @@
   Links row markup, one per item in links[]:
     <li><a href="{{url}}">{{label}}</a></li>
 -->
-<title>{{TICKET}} {{TITLE}}</title>
+<title>{{TITLE}}</title>
 <style>
   :root { --ground:#F2F4F7; --surface:#FFFFFF; --surface-2:#E9EDF2; --ink:#1C2128; --ink-2:#4B5563; --muted:#6B7480; --line:#D6DCE4; --steel:#2F5D8A; --ember:#C8501E; --ember-soft:#FBE7DC; --code:#EEF1F5; --link:#1A56DB; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ground:#14171C; --surface:#1C2129; --surface-2:#232A34; --ink:#E6E9EE; --ink-2:#B6BEC9; --muted:#8E98A5; --line:#2C333D; --steel:#7FAEE0; --ember:#F07A3E; --ember-soft:#3A2419; --code:#10131A; --link:#8AB4F8; } }
@@ -79,11 +74,13 @@
   details[open] summary { margin-bottom:8px; }
   .go { border-left:3px solid var(--ember); background:var(--ember-soft); padding:14px 18px; max-width:66ch; }
   .pill { display:inline-block; font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; padding:2px 8px; border-radius:2px; background:var(--surface-2); color:var(--ink-2); }
+  .ticket:empty { display:none; }
 </style>
 <div class="page">
   <header>
     <span class="eyebrow">Forge plan · {{LANE}} lane</span>
-    <h1>{{TICKET}} - {{TITLE}}</h1>
+    <span class="pill ticket">{{TICKET}}</span>
+    <h1>{{TITLE}}</h1>
     <div class="meta">
       <span>{{REPO}}</span>
       <span>{{DATE}}</span>
@@ -112,11 +109,6 @@
   <section>
     <h2>Phases</h2>
     {{PHASES_HTML}}
-  </section>
-
-  <section>
-    <h2>Checkpoints</h2>
-    <div class="table-wrap"><table><thead><tr><th>Phases</th><th>Reason</th></tr></thead><tbody>{{CHECKPOINTS_HTML}}</tbody></table></div>
   </section>
 
   <section>

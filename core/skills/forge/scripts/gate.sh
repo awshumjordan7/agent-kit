@@ -841,6 +841,7 @@ python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" 
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -870,6 +871,25 @@ with open(commands_path, "rb") as handle:
 
 failures = []
 warnings = []
+
+
+def failure_location(tool, log_text):
+    if tool == "tests":
+        failed = re.search(r"^FAILED\s+([^:\s]+)::", log_text, re.MULTILINE)
+        if failed:
+            file = failed.group(1)
+            traceback = re.search(rf"^{re.escape(file)}:(\d+):", log_text, re.MULTILINE)
+            return file, int(traceback.group(1)) if traceback else None
+    location = re.search(
+        r"(?:^|\s)([A-Za-z0-9_./-]+\.[A-Za-z0-9]+):(\d+)(?::\d+)?(?::|\s|$)",
+        log_text,
+        re.MULTILINE,
+    )
+    if location:
+        return location.group(1), int(location.group(2))
+    return None, None
+
+
 with open(results_path, encoding="utf-8") as handle:
     for row in handle:
         tool, status, timeout_seconds, log_path = row.rstrip("\n").split("\t", 3)
@@ -885,18 +905,23 @@ with open(results_path, encoding="utf-8") as handle:
             continue
         if status == "142":
             summary = f"timed out after {timeout_seconds} s"
+            log_text = summary
         else:
             try:
                 with open(log_path, encoding="utf-8", errors="replace") as log:
-                    lines = log.readlines()[-25:]
+                    log_text = log.read()
+                lines = log_text.splitlines(keepends=True)[-25:]
                 while lines and lines[0].strip() in {"", "|"}:
                     lines.pop(0)
                 summary = "".join(lines).strip()
             except OSError as exc:
+                log_text = f"command exited {status}; log unavailable: {exc}"
                 summary = f"command exited {status}; log unavailable: {exc}"
             if not summary:
                 summary = f"command exited {status}"
-        failures.append({"tool": tool, "summary": summary[-2048:]})
+        summary = summary[-2048:]
+        file, line = failure_location(tool, log_text)
+        failures.append({"tool": tool, "summary": summary, "file": file, "line": line})
 
 all_stages = ["lint", "typecheck", "migrations", "tests", "semgrep", "parity"]
 requested_stages = set(filter(None, only_stages_raw.split(",")))

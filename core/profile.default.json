@@ -20,25 +20,24 @@
     "agents": {
       "worker": {"model": "sonnet", "maxTurns": 90, "effort": null},
       "shipper": {"model": "sonnet", "maxTurns": 30, "effort": null},
-      "spot-reviewer": {"model": "opus", "maxTurns": 40, "effort": null},
-      "implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
+      "claude-implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
     },
     "forge": {
       "roles": {
         "impl": {"provider": "claude", "model": "opus", "effort": "high"},
         "quick-impl": {"provider": "claude", "model": "opus", "effort": "high"},
         "review": {"provider": "claude", "model": "opus", "effort": "high"},
-        "plan-review": {"provider": "claude", "model": "opus", "effort": "high"},
-        "spot-review": {"provider": "claude", "model": "opus", "effort": "high"}
+        "plan-review": {"provider": "claude", "model": "opus", "effort": "high"}
       },
       "stages": {"sandbox": false, "ff_review": false, "qa_login": false},
-      "thresholds": {"quickReviewThreshold": 8, "fixCap": 3},
+      "thresholds": {"quickReviewThreshold": 8},
       "lenses": {
         "security": "(auth|permission|identity|rbac|token|session)",
         "design": "\\.tsx?$"
       },
       "ticketUrl": "",
       "repos": {"frontend": "", "backend": ""},
+      "ghEnvUnset": {},
       "codex": {
         "roles": {
           "impl": {"model": "gpt-5.6-sol", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
@@ -91,13 +90,11 @@
     "agents.worker.maxTurns": {"evidence": "6% of runs reached the cap", "confidence": "high"},
     "agents.shipper.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
     "agents.reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
-    "agents.spot-reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
     "agents.scout.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
     "agents.locator.model": {"evidence": "7 of 7 runs used Haiku", "confidence": "high"},
     "agents.worker.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
     "agents.shipper.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
     "agents.reviewer.model": {"evidence": "13 of 13 runs inherited the session model", "confidence": "high"},
-    "agents.spot-reviewer.model": {"evidence": "Role definition with no counter-evidence", "confidence": "medium"},
     "auto_update": {"evidence": "Automatic replacement during a live session is opt-in", "confidence": "n/a"}
   }
 }

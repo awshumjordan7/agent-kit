@@ -1,0 +1,4 @@
+ tests/golden/expected/CLAUDE.md                    |  3 +-
+ tests/golden/expected/MANIFEST.sha256              | 46 +++++++++++-----------
+ .../golden/expected/skills/forge/forge.config.json |  5 ++-
+ 3 files changed, 28 insertions(+), 26 deletions(-)

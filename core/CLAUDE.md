@@ -181,9 +181,8 @@ When spawning sub-agents for multi-step workflows:
 | Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
 | Local gate (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed |
 | Browser QA | Sonnet | Keeps browser output and credentials out of the main session |
-| Checkpoint spot review (between plan phases) | Opus (`spot-reviewer`) | Independent of Codex, cheaper than Fable |
 
 Use Codex CLI (`codex exec`) for Codex tasks -- it has full MCP access (engineering-MCP, semgrep, context7). Model per role comes from `~/.claude/skills/forge/forge.config.json`; never hard-code a model name elsewhere.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the
 session model (Fable) when `model` is omitted — never let that happen. Prefer the custom `scout`, `worker`,
-`shipper` agent, which pins Sonnet. Opus is a fallback for exhausted Fable limits and the defined `spot-reviewer` role, not a default. The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.
+`shipper` agent, which pins Sonnet. Opus is a fallback for exhausted Fable limits, not a default. The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.

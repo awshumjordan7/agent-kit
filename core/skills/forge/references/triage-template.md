@@ -1,7 +1,7 @@
 # Triage — <one-line bug title>
 
-Written by the main session after `diagnose-before-fix`. Every field is required; write
-`none` rather than leaving one blank. This file is read by the ticket step, the plan,
+Written after diagnosing before fixing: read the code path and capture live evidence before
+naming a cause. Every field is required; write `none` rather than leaving one blank. This file is read by the ticket step, the plan,
 the implementer, and the reviewers — it is the single brief for the whole run.
 
 ## Symptom

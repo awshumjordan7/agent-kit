@@ -15,7 +15,7 @@ If that fails: use grep and move on. Forge never fails because CGC is missing or
 
     cgc update <repo path>
 
-Seconds on platform-api. Run it once per run, before any query — the index is a snapshot
+Seconds on a large Python API repository. Run it once per run, before any query — the index is a snapshot
 from the last time someone ran it. No `cgc watch`, no git hooks.
 
 ## The four commands
@@ -24,7 +24,7 @@ from the last time someone ran it. No `cgc watch`, no git hooks.
 |---|---|---|
 | Who calls X? | `cgc analyze callers <bare_name>` | **bare names only** — `is_available_in_country`, not `Product.is_available_in_country` |
 | What does X call? | `cgc analyze calls <bare_name>` | |
-| Which classes override `save`? | `cgc analyze overrides save` | exact on platform-api (13/13) |
+| Which classes override `save`? | `cgc analyze overrides save` | exact in the measured repository (13/13) |
 | What's complex here? | `cgc analyze complexity --file <path>` or repo-wide | no grep equivalent |
 
 `cgc query "<Cypher>"` is the escape hatch for anything else.
@@ -40,10 +40,10 @@ from the last time someone ran it. No `cgc watch`, no git hooks.
 - The embedded DB (`redis-server` + `falkor_worker`) stays running after any command; that's the
   storage, not a watcher.
 
-## Repo setup (already done for platform-api)
+## Repository setup
 
 A `.cgcignore` at the repo root scopes indexing to Python — it excludes stale worktrees,
 `reports/`, `.workflow/`, and all HTML/CSS/JS (a 3.7 MB coverage HTML crashed the indexer
 before this). Migrations are included on purpose. The file is kept out of git via
 `.git/info/exclude`. For a new repo: copy the ignore file, exclude it the same way, run
-`cgc index <repo>` once (~20 s on platform-api).
+`cgc index <repo>` once (~20 s in the measured repository).

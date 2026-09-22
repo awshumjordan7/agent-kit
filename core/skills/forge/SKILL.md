@@ -1,79 +1,66 @@
 ---
 name: forge
-description: Turn a confirmed bug or feature plan into an implemented, gated, reviewed pull request with an optional QA stage.
+description: Turn a confirmed bug or feature plan into an implemented, gated, independently reviewed pull request with optional QA stages.
 ---
 
 # Forge
 
-Forge defaults to the `quick` lane and has four lanes:
+Forge has two lanes:
 
-- `quick`: a clear, fully specified change that is not an overhaul or a contract/data-model change.
-- `dev`: overhauls, architecture/data-model/API-contract changes, or work that starts from a spec or plan. A
-  clear ask skips spec writing but keeps the Codex plan review.
-- `review`: review and bounded fixes for existing changes.
-- `implement`: implement an existing phased plan without shipping.
+- `build` (default): investigate, plan, implement, gate, ship, optionally exercise a sandbox, review, converge, and hand off.
+- `review`: review and bounded fixes for existing changes. Pass a base ref when committed branch changes must be included.
 
-Add `auto` only when the user requested unattended execution.
+`quick` and `dev` remain accepted aliases for `build` for one release. Add `auto` only when the user explicitly requested unattended execution.
 
-## Workflow
+## Procedure
 
-1. Investigate with scoped scouts. Write `triage.md` for quick work or `recon.md` for dev work.
-2. Write `plan.md` with a summary, public contracts, phases, tests, acceptance criteria, and checkpoints.
-3. Review the plan once in dev. Read `roles["plan-review"].provider` from `forge.config.json`:
-   - `codex`: run `codex-exec.sh --role plan-review` with the built prompt.
-   - `claude`: spawn a `reviewer` with the same prompt and configured model and effort.
+1. Investigate before fixing: read the code path and capture live evidence before naming a cause. Write `triage.md` for a narrow, well-understood ask or `recon.md` when broader reuse and caller mapping are needed.
+2. Write `plan.md` with a summary, public API contract, phases, exact files, test strategy, acceptance criteria, risks, and run settings. Preserve evidence rules from `build-lane.md`.
+3. Review every build plan once. Run `scripts/build-plan-review-prompt.sh`, which accepts either `recon.md` or `triage.md`, and write any extra file-and-line claims to `plan-review-checks.md`. Use `roles.plan-review` from `forge.config.json`: invoke `codex-exec.sh --role plan-review` for Codex or the configured Claude reviewer with the same prompt. Fold critical findings into the plan and record rejected findings with reasons.
 4. Get explicit user confirmation unless `auto` was requested.
-5. Read the rendered forge config, then pass it to the Workflow. Set `fullySpecified=true` only when the caller
-   supplied every material implementation choice:
+5. Load the rendered Forge config and start the Workflow. For multi-repository work, pass the repository-specific `planPath`. Set `fullySpecified=true` only when the caller supplied every material implementation choice; file count alone never makes work fully specified.
 
 ```text
 Workflow({
   scriptPath: "~/.claude/skills/forge/references/forge-core.js",
   args: {
     lane, auto, runDir, projectDir, repo, ticket, criteria,
-    planText, planPath,
-    fullySpecified, stageAlso,
-    forgeConfig: { roles, stages, thresholds, lenses, ticketUrl, repos }
+    planText, planPath, fullySpecified, stageAlso, ghEnvUnset,
+    forgeConfig: { roles, stages, thresholds, lenses, ticketUrl, repos, ghEnvUnset }
   }
 })
 ```
 
-When `forgeConfig` is absent, Forge uses a Haiku read agent to load the same file. The Workflow itself never reads files directly.
+`planText` is required. When `forgeConfig` is absent, a small reader agent loads it; orchestration code never reads files directly.
 
-6. Publish the handoff with gate results, review findings, unresolved work, and manual QA items.
+6. Publish the handoff with gate evidence, review findings, unresolved work, decision records, and one manual QA item per acceptance criterion. Keep `decisions.md` append-only and rewrite `STATE.md` from the template. Preserve the Workflow id and session directory so `workflow_carry.py` can transfer it during a session handoff.
 
 ## Providers
 
-The top-level `roles` block controls provider, model, and effort:
+Top-level `roles` selects provider, model, and effort:
 
-- `impl` and `quick-impl`: implementation and their fix rounds.
-- `review`: final review and fix verification.
-- `plan-review`: the pre-implementation plan review.
-- `spot-review`: checkpoint review.
+- `impl` and `quick-impl`: implementation;
+- `review`: final review and verification;
+- `plan-review`: pre-implementation review.
 
-When an implementation role uses `claude`, Forge calls the `implementer` agent. When it uses `codex`, Forge calls `codex-exec.sh`. A Codex review runs beside the Claude reviewer in the dev lane. A Claude review skips the Codex reviewer.
-
-Budgets remain under `codex.roles`; `codex-exec.sh` resolves model and effort from top-level `roles` first and falls back to `codex.roles`.
+Codex is the default implementation path. A role configured with `provider: claude` uses the `claude-implementer` agent. The Fable reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
 
 ## Optional stages
 
-Core ships all optional stages off. When an overlay enables a stage, follow its matching reference:
+Core ships optional stages disabled. An overlay may supply and enable:
 
 - `stages.sandbox` → `references/stages/sandbox.md`
 - `stages.ff_review` → `references/stages/ff_review.md`
 - `stages.qa_login` → `references/stages/qa_login.md`
-
-Core does not ship those stage references.
+- ticket handling → `references/stages/ticket.md`
 
 ## Guardrails
 
 - The user confirms the plan before implementation.
-- Every implementation segment has a local gate and checkpoint review.
-- A Fable triage pass verifies findings at their current file and line before every fix.
-- Fixes are capped at three counted rounds. Zero-file rounds do not count, but two consecutive zero-file rounds stop.
-- Fix-round gates run tests only; one full gate runs after the loop when a fix touched files.
-- Codex prompts carry bounded inline context and use the configured tool budgets.
-- The main session never writes code, runs test suites, commits, or pushes.
-- Shipper stages explicit paths only and never force-pushes without approval.
+- A local gate must pass before shipping; a failed final gate never ships.
+- Every review finding is triaged against current code before a fixer runs.
+- Each fix uses a fresh implementation thread, then a fresh verification thread and a tests-only gate.
+- Progress means fewer unresolved findings or a red-to-green gate. When a round makes no progress, the judge dismisses false findings, writes an exact instruction for one more round, or verifies an already-applied fix. Two judged rounds without progress stop for handoff; eight rounds is the safety ceiling.
+- Review diffs are files. Codex receives the validated file through `--inline-diff`; Claude reviewers use the Read tool in ranges of at most 2,000 lines.
+- Shippers stage exactly the changed-file context and never force-push without approval.
 - Live-dependent capabilities remain implemented-unverified until a live harness proves them.
-- `decisions.md` is append-only. `STATE.md` is rewritten for handoff.

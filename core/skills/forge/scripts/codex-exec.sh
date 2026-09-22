@@ -86,7 +86,7 @@ LOCK_DIR="$STATE_DIR/session.lock"
 USAGE_LOG="$STATE_DIR/usage.log"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 
-THREAD_FILE="" PROMPT_FILE="" LOG="" OUT=""
+THREAD_FILE="" PROMPT_FILE="" LOG="" OUT="" INLINE_DIFF=""
 FRESH=false
 SANDBOX="read-only"
 CD_DIR="$PWD"
@@ -102,6 +102,27 @@ FOREGROUND=false
 MAX_WAIT=270
 POLL_INTERVAL=15
 WRITABLE_DIRS=()
+RESULT_WRITTEN=false
+
+write_result() {
+    local status=$1 code=$2 message=$3 stats
+    [ -n "$LOG" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    if type log_stats >/dev/null 2>&1; then
+        stats="$(log_stats "$LOG")"
+    else
+        stats='{"calls":0,"bytes":0,"usage":{}}'
+    fi
+    jq -n \
+        --arg status "$status" --argjson code "$code" --arg message "$message" \
+        --arg thread "$([ -s "$THREAD_FILE" ] && head -1 "$THREAD_FILE" || true)" \
+        --arg role "$ROLE" --arg model "$MODEL" --argjson stats "$stats" \
+        '{status:$status,code:$code,message:$message,thread:$thread,
+          tool_calls:($stats.calls // 0),tool_output_kb:(($stats.bytes // 0) / 1024 | floor),
+          tokens_in:($stats.usage.input_tokens // 0),tokens_out:($stats.usage.output_tokens // 0),
+          role:$role,model:$model}' >"$LOG.result.json"
+    RESULT_WRITTEN=true
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -109,6 +130,7 @@ while [ $# -gt 0 ]; do
         --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
         --log)         LOG="$2"; shift 2 ;;
         --out)         OUT="$2"; shift 2 ;;
+        --inline-diff) INLINE_DIFF="$2"; shift 2 ;;
         --sandbox)     SANDBOX="$2"; shift 2 ;;
         --role)        ROLE="$2"; shift 2 ;;
         --model)       MODEL="$2"; shift 2 ;;
@@ -139,6 +161,9 @@ terminal_cleanup() {
     if [[ "$MODE" = "start" || "$MODE" = "resume" ]] && [ "$rc" -ne 0 ] && [ -n "$LOG" ] && [ ! -f "$LOG.failed" ]; then
         mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
         { echo "$rc"; echo "codex-exec.sh exited with code $rc"; } >"$LOG.failed" 2>/dev/null || true
+    fi
+    if [[ "$MODE" = "start" || "$MODE" = "resume" ]] && [ "$FOREGROUND" = "true" ] && [ "$RESULT_WRITTEN" != "true" ]; then
+        write_result failed "$rc" "codex-exec.sh exited with code $rc" 2>/dev/null || true
     fi
 }
 trap terminal_cleanup EXIT
@@ -222,8 +247,9 @@ if [ "$MODE" = "watch" ]; then
     last_sig=$(log_sig "$LOG")
     stalled_for=0
     while :; do
-        if [ -s "$OUT" ]; then
+        if [ -s "$OUT" ] && [ -s "$LOG.result.json" ]; then
             echo "WATCH_DONE out=$OUT"
+            echo "WATCH_RESULT $LOG.result.json"
             [ ! -f "$LOG.status" ] || cat "$LOG.status"
             exit 0
         fi
@@ -327,6 +353,7 @@ fi
 # happily answers ("What would you like to work on?") while this script reports OK.
 THREAD_FILE=$(abspath "$THREAD_FILE"); PROMPT_FILE=$(abspath "$PROMPT_FILE")
 LOG=$(abspath "$LOG"); OUT=$(abspath "$OUT")
+[ -z "$INLINE_DIFF" ] || INLINE_DIFF=$(abspath "$INLINE_DIFF")
 mkdir -p "$(dirname "$LOG")"
 rm -f "$LOG.failed"
 if [ ! -f "$PROMPT_FILE" ]; then
@@ -343,10 +370,20 @@ fi
 fail() {
     local code=$1; shift
     { echo "$code"; echo "$*"; } >"$LOG.failed"
+    write_result failed "$code" "$*"
     echo "$*" >&2
     exit "$code"
 }
 mkdir -p "$STATE_DIR"
+
+if [ -n "$INLINE_DIFF" ] && [ ! -f "$INLINE_DIFF" ]; then
+    fail 65 "CODEX_DIFF_INVALID: diff file not found: $INLINE_DIFF"
+fi
+if [ -n "$INLINE_DIFF" ] && [ ! -s "$INLINE_DIFF" ]; then
+    fail 65 "CODEX_DIFF_INVALID: diff must be non-empty: $INLINE_DIFF"
+elif [ -n "$INLINE_DIFF" ] && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --git" ]; then
+    fail 65 "CODEX_DIFF_INVALID: non-empty diff must begin with diff --git: $INLINE_DIFF"
+fi
 
 if [ -f "$CREDIT_MARKER" ] && [ "$IGNORE_CREDIT_MARKER" != "true" ]; then
     marker_age_min=$(( ( $(date +%s) - $(mtime "$CREDIT_MARKER") ) / 60 ))
@@ -384,6 +421,20 @@ compose_prompt() {
         echo
     fi
     cat "$PROMPT_FILE"
+    if [ -n "$INLINE_DIFF" ]; then
+        python3 - "$INLINE_DIFF" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+diff = path.read_text(encoding="utf-8", errors="replace")
+line_count = len(diff.splitlines())
+print(f"\n## DIFF ({path}, {line_count} lines)")
+print(diff[:160000], end="" if diff.endswith("\n") or len(diff) >= 160000 else "\n")
+if len(diff) > 160000:
+    print(f"\n[cut at 160000 of {len(diff)} characters]")
+PY
+    fi
 }
 SENT_PROMPT="$PROMPT_FILE.sent"
 compose_prompt >"$SENT_PROMPT"
@@ -470,11 +521,11 @@ run_codex() {
         export SSL_CERT_FILE=/etc/ssl/cert.pem
     fi
     if [ "$1" = "start" ]; then
-        codex exec --sandbox "$SANDBOX" "${ARGS[@]}" "$(cat "$SENT_PROMPT")" \
-            </dev/null >"$LOG" 2>"$LOG.stderr" &
+        codex exec --sandbox "$SANDBOX" "${ARGS[@]}" <"$SENT_PROMPT" \
+            >"$LOG" 2>"$LOG.stderr" &
     else
-        codex exec resume "$(cat "$THREAD_FILE")" -c sandbox_mode="$SANDBOX" "${ARGS[@]}" "$(cat "$SENT_PROMPT")" \
-            </dev/null >"$LOG" 2>"$LOG.stderr" &
+        codex exec resume "$(cat "$THREAD_FILE")" -c sandbox_mode="$SANDBOX" "${ARGS[@]}" <"$SENT_PROMPT" \
+            >"$LOG" 2>"$LOG.stderr" &
     fi
     local pid=$!
     local last_size=0 stalled_for=0 size stats calls bytes thread_id
@@ -598,6 +649,7 @@ fi
 stats="$(record_usage ok)"
 ok_line="CODEX_OK thread=$(cat "$THREAD_FILE") role=$ROLE model=$MODEL effort=$EFFORT sandbox=$SANDBOX $(usage_line "$stats") budget=${MAX_TOOL_CALLS}calls/${MAX_TOOL_OUTPUT_KB}kb"
 printf '%s\n' "$ok_line" >"$LOG.status"
+write_result ok 0 "$ok_line"
 echo "$ok_line"
 echo "--- final message ---"
 cat "$OUT"
