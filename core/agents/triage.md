@@ -2,7 +2,7 @@
 name: triage
 description: Read-only verification of review findings at their current file and line before fixes begin.
 model: opus
-effort: xhigh
+effort: high
 tools: Bash, Grep, Read
 disallowedTools: Agent, Edit, Write
 maxTurns: 40

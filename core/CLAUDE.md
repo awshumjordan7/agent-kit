@@ -179,7 +179,7 @@ When spawning sub-agents for multi-step workflows:
 | Task Type | Model | Why |
 |-----------|-------|-----|
 | Discussion, planning, architecture, judging | Opus 5.5 at xhigh (the main session) | Judgment and trade-off analysis; already holds the context |
-| Code implementation | Opus 5.5 at xhigh (`impl` role, `claude-implementer` agent) | Strongest Claude implementer; stays in the Claude session |
+| Code implementation | Opus 5.5 at high (`impl`); medium for small, fully specified work (`quick-impl`, which also runs most fix rounds) | The plan already made the design decisions |
 | Code review (Claude side) | Opus 5.5 at xhigh, fresh sub-agent | Independent of the planner; catches different issues than Codex |
 | Code review (Codex side) | Codex CLI, gpt-6-astra at high (`review` role) | Adversarial independence; the only Codex use |
 | Research, scouting, file reads | Sonnet (`scout`, `Explore`) | Fan-out reads; only the conclusion comes back |

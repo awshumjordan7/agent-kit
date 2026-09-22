@@ -34,9 +34,9 @@ const TIERS = {
     readConfig: { model: 'haiku', effort: 'low' },
   },
   opus: {
-    implementer: { model: 'opus', effort: 'xhigh' },
+    implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'opus', effort: 'xhigh' },
-    triage: { model: 'opus', effort: 'xhigh' },
+    triage: { model: 'opus', effort: 'high' },
     judge: { model: 'opus', effort: 'xhigh' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },

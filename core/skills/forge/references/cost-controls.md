@@ -35,7 +35,7 @@ surfaces as a notification, never as a silent hang.
 `gate` role (runs `scripts/gate.sh`): Haiku, low effort, 3-7 spawns per run; cost is test wall-clock time, not tokens.
 
 ## Routing (2026-09-22)
-`roles.impl`, `roles.quick-impl`, and `roles.plan-review` run on Claude Opus 5.5 at xhigh effort. `roles.review` runs on Codex gpt-6-astra at high effort, the only Codex use. On 2026-09-16 one astra plan review used about 20% of the 5-hour limit; astra is priced roughly 50x the 5.6 models. Watch per-review usage in `.state/usage.log` and move review back to gpt-5.6-sol if the limit bites.
+`roles.impl` runs on Claude Opus 5.5 at high effort, `roles.quick-impl` (small, fully specified work and most fix rounds) at medium, and `roles.plan-review` at xhigh. The Claude reviewer, pre-ship checkpoint, and judge run at xhigh; triage at high. `roles.review` runs on Codex gpt-6-astra at high effort, the only Codex use. On 2026-09-16 one astra plan review used about 20% of the 5-hour limit; astra is priced roughly 50x the 5.6 models. Watch per-review usage in `.state/usage.log` and move review back to gpt-5.6-sol if the limit bites.
 
 ## Sol implementer trial (from 2026-09-15)
 
@@ -122,6 +122,8 @@ tokens bill at 2x input.
 - Re-test Codex sub-agents on a cheaper model when the model-selection regression is closed.
 
 ## quick-impl on Luna (from 2026-09-20)
+
+Ended 2026-09-22: implementation moved to Claude; the instructions below are history.
 
 `roles.quick-impl` uses gpt-5.6-luna at high effort. Build-lane changes are fully specified
 edits whose plan names at most `quickReviewThreshold` source files (default 8). Otherwise Forge uses `impl`.

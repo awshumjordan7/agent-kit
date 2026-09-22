@@ -257,10 +257,12 @@ def load_profile(path: Path) -> dict[str, Any]:
         repo_root = (Path.cwd() / repo_root).resolve()
     defaults, _ = load_recommended_profile(repo_root)
     supplied_roles = profile.get("forge", {}).get("roles")
+    modules = deep_merge(defaults.get("modules", {}), profile.get("modules", {}))
+    if modules.get("codex", False) and supplied_roles is None:
+        roles = defaults.setdefault("forge", {}).setdefault("roles", {})
+        defaults["forge"]["roles"] = deep_merge(roles, CODEX_ROLE_DEFAULTS)
     defaults = _apply_layer_data(defaults, profile, repo_root)
     profile = deep_merge(defaults, profile)
-    if profile["modules"].get("codex", False) and supplied_roles is None:
-        profile["forge"]["roles"] = deep_merge(profile["forge"]["roles"], CODEX_ROLE_DEFAULTS)
     validate_profile(profile)
     _expand_profile_paths(profile)
     return profile
