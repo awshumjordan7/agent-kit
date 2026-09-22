@@ -479,7 +479,12 @@ if [ "$FOREGROUND" != "true" ]; then
 fi
 
 # ---------- session lock ----------
-release_lock() { rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null || true; }
+release_lock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+# A stale lock that cannot be removed would otherwise send acquire_lock into a tight loop.
+lock_gone_or_fail() {
+    [ -e "$LOCK_DIR" ] || return 0
+    fail 78 "CODEX_LOCK_STUCK: could not remove stale lock $LOCK_DIR; remove it by hand"
+}
 acquire_lock() {
     [ "$PARALLEL" = "true" ] && return 0
     local waited=0 announced=false owner
@@ -487,11 +492,11 @@ acquire_lock() {
         owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
         if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
             echo "warn: removing stale codex lock held by dead pid $owner" >&2
-            release_lock; continue
+            release_lock; lock_gone_or_fail; continue
         fi
         if [ -z "$owner" ] && [ $(( $(date +%s) - $(mtime "$LOCK_DIR") )) -gt 60 ]; then
             echo "warn: removing stale codex lock with no owner" >&2
-            release_lock; continue
+            release_lock; lock_gone_or_fail; continue
         fi
         if [ "$waited" -ge "$LOCK_WAIT" ]; then
             fail 78 "CODEX_LOCK_TIMEOUT: another codex session (pid $owner) held $LOCK_DIR for ${LOCK_WAIT}s. Sessions run one at a time by default; pass --parallel only when the user asked for it."
