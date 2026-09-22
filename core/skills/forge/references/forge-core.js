@@ -9,7 +9,7 @@ export const meta = {
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
     { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
-    { title: 'Fix', detail: 'One Codex fix round, gate, verify' },
+    { title: 'Fix', detail: 'One fix round and one scoped Fable verification' },
     { title: 'Handoff', detail: 'Run status, evidence, decisions, and manual QA' },
   ],
 }
@@ -180,6 +180,7 @@ const FORGE_CONFIG_SCHEMA = {
     ticketUrl: { type: 'string' },
     repos: { type: 'object' },
     ghEnvUnset: { type: 'object' },
+    gate: { type: 'object' },
   },
   required: ['roles', 'stages', 'thresholds', 'lenses', 'ticketUrl', 'repos'],
 }
@@ -200,8 +201,15 @@ const FIX_SCHEMA = {
     couldNotFix: { type: 'array', items: { type: 'string' } },
     touchedFiles: { type: 'array', items: { type: 'string' } },
     diff: { type: 'string' }, notes: { type: 'string' },
+    results: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { id: { type: 'string' }, reason: { type: 'string' } },
+        required: ['id', 'reason'],
+      },
+    },
   },
-  required: ['fixed', 'couldNotFix', 'touchedFiles', 'diff', 'notes'],
+  required: ['fixed', 'couldNotFix', 'touchedFiles', 'diff', 'notes', 'results'],
 }
 const CODEX_FIX_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -213,35 +221,22 @@ const CODEX_FIX_SCHEMA = {
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'fix'],
 }
-const VERIFY_SCHEMA = {
+const SCOPED_VERIFY_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start'] },
-    threadExists: { type: 'boolean' }, clean: { type: 'boolean' },
     results: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
         properties: {
-          file: { type: 'string' }, line: { type: 'integer' },
-          status: { type: 'string', enum: ['RESOLVED', 'STILL BROKEN', 'REBUTTAL ACCEPTED'] },
+          id: { type: 'string' },
+          status: { type: 'string', enum: ['RESOLVED', 'UNRESOLVED'] },
           reason: { type: 'string' },
         },
-        required: ['file', 'line', 'status', 'reason'],
+        required: ['id', 'status', 'reason'],
       },
     },
-    unresolved: { type: 'array', items: FINDING },
-    contractViolations: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        properties: { file: { type: 'string' }, line: { type: 'integer' }, claim: { type: 'string' } },
-        required: ['file', 'line', 'claim'],
-      },
-    },
-    error: { type: ['string', 'null'] },
-    handoffs: { type: 'integer', minimum: 0, default: 0 },
-    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
   },
-  required: ['codexInvoked', 'threadMode', 'threadExists', 'clean', 'results', 'unresolved', 'contractViolations'],
+  required: ['results'],
 }
 const TRIAGE_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -323,6 +318,15 @@ const GATE_SCHEMA = {
     },
   },
   required: ['passed', 'failures', 'commands'],
+}
+const REAL_RUN_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    configured: { type: 'boolean' }, passed: { type: 'boolean' },
+    exitCode: { type: 'integer' }, timedOut: { type: 'boolean' },
+    command: { type: 'string' }, logPath: { type: 'string' }, summary: { type: 'string' },
+  },
+  required: ['configured', 'passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary'],
 }
 const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -467,8 +471,12 @@ function dryFindings() {
 }
 
 const STUBS = {
-  implementer: () => ({ filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null }),
-  reviewer: () => ({ verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }),
+  implementer: opts => opts.schema === FIX_SCHEMA
+    ? { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: 'dry-run fix diff', notes: 'dry-run fix', results: dryFindings().map(finding => ({ id: findingKey(finding), reason: 'dry-run fix explanation' })) }
+    : { filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null },
+  reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
+    ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
+    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
   triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   judge: () => ({ decisions: dryFindings().map(finding => ({ id: findingKey(finding), verdict: 'respec', instruction: finding.fix_hint, reason: 'dry-run respec' })), cannotDecide: false }),
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
@@ -493,21 +501,22 @@ const STUBS = {
   },
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
+    : opts.schema === REAL_RUN_SCHEMA
+    ? { configured: true, passed: true, exitCode: 0, timedOut: false, command: 'dry-run real run', logPath: `${PARAMS.runDir}/realrun.log`, summary: 'real run passed' }
     : opts.schema === FORGE_CONFIG_SCHEMA
-    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }
+    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : {
       files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary',
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
       contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
     },
-  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' } }),
+  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
     if (opts.schema === CODEX_RESULT) return { codexInvoked: true, threadMode: 'start', threadExists: true, filesChanged: ['auth/api/client.py'], testsWritten: 0, summary: 'dry-run Codex', error: '', handoffs: 0 }
     if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
-    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: opts.label === 'fix-1' ? 'start' : 'resume', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: opts.label === 'fix-1' && PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: '', notes: 'dry-run fix' }, error: '', handoffs: 0 }
-    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, clean: !PARAMS.dryRunStubborn, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: PARAMS.dryRunStubborn ? 'STILL BROKEN' : 'RESOLVED', reason: finding.claim })), unresolved: PARAMS.dryRunStubborn ? dryFindings() : [], contractViolations: [], error: '', handoffs: 0 }
+    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: 'dry-run fix diff', notes: 'dry-run fix', results: dryFindings().map(finding => ({ id: findingKey(finding), reason: 'dry-run fix explanation' })) }, error: '', handoffs: 0 }
     return { written: true }
   },
 }
@@ -563,16 +572,18 @@ async function agentT(role, prompt, opts = {}) {
     }
     return null
   }
-  const profile = tierProfile(role)
+  const forceFable = opts.forceFable === true
+  const profile = forceFable ? TIERS.fable[role] : tierProfile(role)
   if (!profile) throw new Error(`unknown tier role: ${role}`)
   spawnCount++
-  const callOpts = { ...opts, model: profile.model, effort: profile.effort }
+  const { forceFable: _forceFable, ...agentOpts } = opts
+  const callOpts = { ...agentOpts, model: profile.model, effort: profile.effort }
   if (PARAMS.dryRun) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
     return STUBS[role](opts)
   }
   let result = await runtimeAgent(prompt, callOpts)
-  if (result === null && profile.model === 'fable') {
+  if (result === null && profile.model === 'fable' && !forceFable) {
     if (spawnCount >= PARAMS.spawnCap - 2) {
       capBlocked = true
       await decide(`${role} returned null on Fable; the Opus fallback was not started because the spawn cap was reached.`)
@@ -658,19 +669,60 @@ function assertImplementation(result, where) {
 }
 
 async function loadForgeConfig() {
-  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, repos, and ghEnvUnset. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
+  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, repos, ghEnvUnset, and gate. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
     { label: 'read-config', phase: 'Implement', schema: FORGE_CONFIG_SCHEMA })
   const defaults = {
     roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false },
     thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES,
-    ticketUrl: '', repos: { frontend: '', backend: '' }, ghEnvUnset: {},
+    ticketUrl: '', repos: { frontend: '', backend: '' }, ghEnvUnset: {}, gate: {},
   }
   FORGE_CONFIG = {
     ...defaults, ...(result || {}),
     thresholds: { ...defaults.thresholds, ...((result && result.thresholds) || {}) },
     lenses: { ...defaults.lenses, ...((result && result.lenses) || {}) },
     repos: { ...defaults.repos, ...((result && result.repos) || {}) },
+    gate: { ...defaults.gate, ...((result && result.gate) || {}) },
   }
+}
+
+function configuredGateEntry() {
+  const entries = (FORGE_CONFIG && FORGE_CONFIG.gate) || {}
+  const project = String(PARAMS.projectDir).replace(/\/$/, '')
+  for (const [path, entry] of Object.entries(entries)) {
+    const configured = String(path).replace(/\/$/, '')
+    if (project === configured || (configured.startsWith('~/') && project.endsWith(configured.slice(1)))) return entry || {}
+  }
+  const projectName = project.split('/').pop() || ''
+  for (const [path, entry] of Object.entries(entries)) {
+    const configuredName = String(path).replace(/\/$/, '').split('/').pop() || ''
+    if (configuredName && projectName.startsWith(`${configuredName}-`)) return entry || {}
+  }
+  return {}
+}
+
+function configuredGateMode() {
+  const mode = configuredGateEntry().mode || 'full'
+  if (!['full', 'none'].includes(mode)) throw new Error(`unsupported gate mode: ${mode}`)
+  return mode
+}
+
+function planRealRun() {
+  let inRunSettings = false
+  for (const line of String(PARAMS.planText || '').split('\n')) {
+    if (/^##\s+Run Settings\s*$/i.test(line.trim())) { inRunSettings = true; continue }
+    if (/^##\s+/.test(line)) inRunSettings = false
+    if (!inRunSettings) continue
+    const match = line.match(/^\s*real_run\s*:\s*(.+?)\s*$/i)
+    if (match) return match[1].replace(/^`|`$/g, '').trim()
+  }
+  return ''
+}
+
+function configuredRealRun() {
+  const override = planRealRun()
+  if (override) return override
+  const command = configuredGateEntry().realRun
+  return typeof command === 'string' ? command.trim() : ''
 }
 
 function shellQuote(value) {
@@ -683,17 +735,24 @@ function baselineContext() {
 }
 
 function fullTestPromptInstruction() {
+  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, Semgrep, or parity commands.'
   return `With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for ${PARAMS.projectDir}, and name its exact tests command in the Codex prompt under FULL TEST COMMAND. Tell Codex to run that full test command before returning; the gate re-runs it, and Codex's run is the first line of defense. Codex must include the test summary line in summary and never report tests as intentionally skipped.`
 }
 
+function claudeTestPromptInstruction() {
+  if (configuredGateMode() === 'none') return fullTestPromptInstruction()
+  return 'With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped.'
+}
+
 function runBeforeReturningInstruction() {
+  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; Forge runs the configured real-run command after implementation.'
   return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
 function implement() {
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    return agentT('implementer', `Implement this confirmed Forge plan in ${PARAMS.projectDir}. Never commit or ship. With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped. Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN\n${PARAMS.planText}`,
+    return agentT('implementer', `Implement this confirmed Forge plan in ${PARAMS.projectDir}. Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN\n${PARAMS.planText}`,
       { label: 'implement', phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' })
   }
   const promptPath = `${PARAMS.runDir}/implement-prompt.md`
@@ -703,6 +762,15 @@ function implement() {
 Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. ${runBeforeReturningInstruction()} Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
 Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
   { label: 'implement', phase: 'Implement', schema: CODEX_RESULT })
+}
+
+function realRun() {
+  const command = configuredRealRun()
+  if (!command) {
+    return Promise.resolve({ configured: false, passed: true, exitCode: 0, timedOut: false, command: '', logPath: `${PARAMS.runDir}/realrun.log`, summary: 'real run: not configured' })
+  }
+  return agentT('changedFiles', `Start exactly this command with the Bash tool using run_in_background=true and timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py real-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)}\`. Poll the background task with TaskOutput calls using timeout=30000 until it completes. Return its stdout JSON unchanged. The background command has its own 900-second cap and must be allowed to finish; do not rerun it.`,
+    { label: 'real-run', phase: 'Gate', schema: REAL_RUN_SCHEMA })
 }
 
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = []) {
@@ -845,6 +913,7 @@ ${review}`,
 }
 
 const REVIEW_TIMEOUT_MS = 25 * 60 * 1000
+const MAX_FIX_ROUNDS = 1
 
 function withTimeout(promise, ms, label) {
   if (typeof setTimeout !== 'function') return promise
@@ -994,165 +1063,80 @@ async function reviewPanel(context) {
   return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed: [...ruled.applied, ...partitioned.fix], failures, returned: present.length }
 }
 
-function unresolvedAfterVerification(items, verify) {
-  const unresolved = []
-  const malformed = !Array.isArray(verify.results) || verify.results.length === 0
-  for (const finding of items) {
-    if (malformed) { unresolved.push(finding); continue }
-    const matches = verify.results.filter(result => result.file === finding.file && result.line === finding.line)
-    if (matches.length === 0 || matches.some(match => match.status === 'STILL BROKEN')) unresolved.push(finding)
-  }
-  const seen = new Set(unresolved.map(findingKey))
-  for (const finding of verify.unresolved || []) {
-    const key = findingKey(finding)
-    if (!seen.has(key)) {
-      seen.add(key)
-      const original = items.find(item => findingKey(item) === key)
-      unresolved.push(original && original.source ? { ...finding, source: original.source } : finding)
-    }
-  }
-  for (const violation of verify.contractViolations || []) {
-    const finding = { ...violation, severity: 'HIGH', fix_hint: 'Match the public API contract.' }
-    const key = findingKey(finding)
-    if (!seen.has(key)) {
-      seen.add(key)
-      unresolved.push(finding)
-    }
-  }
-  return unresolved
-}
-
 async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
   const round = Number(label.match(/(\d+)$/)?.[1] || 1)
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
   const findingFileCount = new Set(items.map(item => item.file).filter(isSourcePath)).size
   const implementationRole = findingFileCount <= quickReviewThreshold() ? 'quick-impl' : 'impl'
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(items)}. Verify each against current code first. Do not commit or ship. ${runBeforeReturningInstruction()} Include the test summary line in summary and never report tests as intentionally skipped.`,
-      { label, phase: fixPhase, schema: IMPL_RESULT, agentType: 'claude-implementer' })
-    if (!result || result.error) return null
-    return { fixed: items.map(item => item.claim), couldNotFix: [], touchedFiles: result.filesChanged, diff: '', notes: result.summary }
+    const identified = items.map(item => ({ id: findingKey(item), finding: item }))
+    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(identified)}. Verify each against current code first. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per finding with the same id and a concise reason explaining what you changed or why you could not fix it. Include the fix diff in diff.`,
+      { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
+    return result || null
   }
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
+Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per finding with the same id and a concise reason explaining what changed or why it could not be fixed. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
 Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
   if (!assertCodex(result, label)) return null
   return result.fix
 }
 
-function verifyFixes(items, fixResult, round, context = {}) {
+function verifyFixes(items, fixResult) {
+  const explanations = Array.isArray(fixResult.results) ? fixResult.results : []
   const diff = String(fixResult.diff || '').slice(0, 12000)
-  if ((configuredRole('review') || {}).provider === 'claude') {
-    return agentT('reviewer', `Verify only these findings after the fix: ${JSON.stringify(items)}. Inspect the current code and mark each result RESOLVED, STILL BROKEN, or REBUTTAL ACCEPTED. Check every fix against this public API contract and return deviations in contractViolations: ${(context && context.contract) || '(none declared)'}. Raise no other new findings.`,
-      { label: `verify-${round}`, phase: 'Fix', schema: VERIFY_SCHEMA, agentType: 'reviewer' })
-  }
-  return codexAgent(`You orchestrate FIX VERIFICATION ROUND ${round}. ${codexWrapper}
-Write ${PARAMS.runDir}/verify-${round}-prompt.md as a self-contained Codex prompt with the confirmed findings below, the public API contract, and the fix diff. Ask the reviewer to mark every finding, including findings raised by the Fable reviewer, RESOLVED, STILL BROKEN, or REBUTTAL ACCEPTED. Verify only these findings plus contract compliance; test execution belongs to the gate. Return contract deviations only in contractViolations and raise no other new findings. Verify against the code and any harness evidence in ${PARAMS.runDir} (STATUS.json, selfcheck*.json); a finding is RESOLVED only if you can point at the changed code, not because the fixer said so.
-FINDINGS: ${JSON.stringify(items)}
-PUBLIC API CONTRACT:
-${(context && context.contract) || '(none declared)'}
-FIX DIFF (capped at 12000 characters): ${diff}
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${PARAMS.runDir}/codex-verify-${round}.thread --prompt-file ${PARAMS.runDir}/verify-${round}-prompt.md --state-file ${PARAMS.runDir}/codex-state-verify-${round}.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-verify-${round}.jsonl --out ${PARAMS.runDir}/codex-verify-${round}-final.md. Translate without changing the verdicts.`,
-  { label: `verify-${round}`, phase: 'Fix', schema: VERIFY_SCHEMA })
+  return withTimeout(agentT('reviewer', `Verify only the original findings below after one fix round. Return exactly one result for each original id with status RESOLVED or UNRESOLVED and a one-line reason. Do not add findings or assess anything outside this list.
+
+ORIGINAL FINDINGS
+${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}
+
+IMPLEMENTER EXPLANATIONS
+${JSON.stringify(explanations)}
+
+FIX DIFF
+${diff}`,
+  { label: 'verify-review', phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer', forceFable: true }), REVIEW_TIMEOUT_MS, 'verify-review')
 }
 
-function assertVerification(result, where) {
-  if ((configuredRole('review') || {}).provider === 'claude') {
-    if (!result || result.error) throw new Error(`Claude verification failed at ${where}`)
-    return true
+async function unresolvedAfterVerification(items, verify) {
+  if (!verify || !Array.isArray(verify.results)) {
+    await decide('verify-review returned no usable result; every original finding remains unresolved.')
+    return items
   }
-  return assertCodex(result, where)
+  const originals = new Map(items.map(item => [findingKey(item), item]))
+  const accepted = new Map()
+  for (const result of verify.results) {
+    const key = result.id
+    if (!originals.has(key) || accepted.has(key)) {
+      await decide(`verify-review dropped extra item ${String(result.id).slice(0, 200)}: ${String(result.reason || '').slice(0, 200)}`)
+      continue
+    }
+    accepted.set(key, result)
+  }
+  return items.flatMap(item => {
+    const result = accepted.get(findingKey(item))
+    if (result && result.status === 'RESOLVED') return []
+    return [{ ...item, verificationReason: result ? result.reason : 'verify-review omitted this original finding' }]
+  })
 }
 
 async function converge(panel, context) {
-  let unresolved = panel.confirmed || []
-  let fixesApplied = false
-  const rounds = []
-  const touched = []
-  if (!unresolved.length) {
+  const originalFindings = panel.confirmed || []
+  if (!originalFindings.length) {
     await decide('Fix stage skipped because the review panel returned no confirmed findings.')
-    return { unresolved, fixesApplied, rounds, touchedFiles: touched, blocked: false, gatePassed: true, gate: null, gateRan: false }
+    return { unresolved: [], fixesApplied: false, rounds: [], touchedFiles: [], blocked: false, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
   }
-  let gate = null
-  let verificationFailed = false
-  let judgedWithoutProgress = 0
-  let needsJudge = false
-  for (let round = 1; unresolved.length && round <= 8; round++) {
-    const beforeCount = unresolved.length
-    const priorGatePassed = gate ? Boolean(gate.passed) : true
-    const findingsToVerify = unresolved
-    const fix = await fixAgent(unresolved, context, `fix-${round}`, `${PARAMS.runDir}/codex-fix-${round}.thread`)
-    if (!fix) {
-      verificationFailed = true
-      break
-    }
-    const roundTouched = fix.touchedFiles || []
-    touched.push(...roundTouched)
-    fixesApplied = fixesApplied || roundTouched.length > 0
-    const verify = await verifyFixes(findingsToVerify, fix, round, context)
-    if (!assertVerification(verify, `verify-${round}`)) {
-      verificationFailed = true
-      break
-    }
-    unresolved = unresolvedAfterVerification(findingsToVerify, verify)
-    gate = await localGate(`gate-fix-${round}`, 'Fix', [...new Set(touched)], ['tests'])
-    if (gate && gate.passed) {
-      unresolved = unresolved.filter(finding => finding.source !== 'gate' || finding.tool !== 'tests')
-    } else {
-      unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })]
-    }
-    const deduped = new Map(unresolved.map(finding => [findingKey(finding), finding]))
-    unresolved = [...deduped.values()]
-    rounds.push({ round, fix, gate, verify })
-    await writeStatus({
-      rounds: { fix: round },
-      open_findings: unresolved.map(finding => ({ file: finding.file, line: finding.line, severity: finding.severity, summary: finding.claim })),
-    }, 'Fix')
-    const progressed = unresolved.length < beforeCount || (!priorGatePassed && Boolean(gate && gate.passed))
-    if (progressed || !unresolved.length) {
-      judgedWithoutProgress = 0
-      continue
-    }
-    const judge = await agentT('judge', `Judge these unresolved findings after a fix, verification, and tests-only gate made no progress. Read current file:line evidence with ranged reads. For each finding id, dismiss it, respec it with exact instructions for one more implementation round, or mark it fixed so it goes directly through verification. Do not widen scope. If evidence cannot decide, set cannotDecide=true.\n\nFINDINGS\n${JSON.stringify(unresolved.map(item => ({ id: findingKey(item), finding: item })))}\n\nPUBLIC API CONTRACT\n${context.contract || '(none declared)'}`,
-      { label: `judge-${round}`, phase: 'Fix', schema: JUDGE_SCHEMA, agentType: 'judge' })
-    if (!judge || judge.cannotDecide) {
-      needsJudge = true
-      break
-    }
-    judgedWithoutProgress += 1
-    const decisionsById = new Map((judge.decisions || []).map(item => [item.id, item]))
-    const fixed = []
-    unresolved = unresolved.flatMap(finding => {
-      const decision = decisionsById.get(findingKey(finding))
-      if (!decision) return [finding]
-      if (decision.verdict === 'dismiss') return []
-      if (decision.verdict === 'fixed') {
-        fixed.push(finding)
-        return []
-      }
-      return [{ ...finding, fix_hint: decision.instruction || finding.fix_hint }]
-    })
-    if (fixed.length) {
-      const judgedVerify = await verifyFixes(fixed, { diff: '', touchedFiles: [] }, `${round}-judge`, context)
-      if (!assertVerification(judgedVerify, `verify-${round}-judge`)) {
-        verificationFailed = true
-        break
-      }
-      unresolved.push(...unresolvedAfterVerification(fixed, judgedVerify))
-    }
-    if (judgedWithoutProgress >= 2 && unresolved.length) break
+  const fix = await fixAgent(originalFindings, context, `fix-${MAX_FIX_ROUNDS}`, `${PARAMS.runDir}/codex-fix-${MAX_FIX_ROUNDS}.thread`)
+  if (!fix) {
+    return { unresolved: originalFindings, fixesApplied: false, rounds: [], touchedFiles: [], blocked: true, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
   }
-  gate = await localGate('gate-final', 'Fix', [...new Set(touched)])
-  if (gate && gate.passed) {
-    unresolved = unresolved.filter(finding => finding.source !== 'gate')
-  } else {
-    unresolved = [...unresolved, ...gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })]
-  }
-  const blocked = verificationFailed || unresolved.length > 0 || !gate || !gate.passed
+  const verify = await verifyFixes(originalFindings, fix)
+  const unresolved = await unresolvedAfterVerification(originalFindings, verify)
+  const touched = [...new Set(fix.touchedFiles || [])]
   return {
-    unresolved, fixesApplied, rounds, touchedFiles: [...new Set(touched)], blocked, needsJudge,
-    gatePassed: Boolean(gate && gate.passed), gate, gateRan: Boolean(gate),
+    unresolved, fixesApplied: touched.length > 0, rounds: [{ round: MAX_FIX_ROUNDS, fix, verify }],
+    touchedFiles: touched, blocked: unresolved.length > 0, needsJudge: false,
+    gatePassed: true, gate: null, gateRan: false,
   }
 }
 
@@ -1175,9 +1159,12 @@ function ghEnvironmentInstruction() {
 }
 
 function ship(existing = null, files = [], context = {}) {
+  const gateNotice = configuredGateMode() === 'none'
+    ? 'The PR body must include the exact line `gates: none (personal repo)`.'
+    : ''
   const prompt = existing
-    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; omit a testing-results section. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1277,6 +1264,13 @@ function sandboxRefresh(sandbox, shipResult, context) {
 }
 
 async function handoff(state, context) {
+  const noGates = configuredGateMode() === 'none'
+  const firstLine = noGates && state.realRun && !state.realRun.configured
+    ? 'The first line must be exactly `real run: not configured`.'
+    : ''
+  const gateNotice = noGates
+    ? `State exactly \`gates: none (personal repo)\`. Cite ${(state.realRun && state.realRun.logPath) || `${PARAMS.runDir}/realrun.log`} for a configured real run, including its failure in Status when it did not pass.`
+    : ''
   const handoffState = {
     ...state,
     qaDraft: qaDraftSummary(state.qaDraft),
@@ -1287,6 +1281,7 @@ async function handoff(state, context) {
   }
   await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
   return agentT('handoff', `You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
+${firstLine} ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
@@ -1300,7 +1295,7 @@ async function fullLane() {
   phase('Implement')
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
-  const initial = { status: 'DONE', implement: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
+  const initial = { status: 'DONE', implement: null, realRun: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
   const rows = await pipeline(
     [initial],
     async state => {
@@ -1313,6 +1308,16 @@ async function fullLane() {
     async state => {
       phase('Gate')
       if (stopped(state)) return state
+      if (configuredGateMode() === 'none') {
+        state.realRun = await realRun()
+        if (!state.realRun || !state.realRun.passed) {
+          state.status = 'BLOCKED'
+          await decide(`Real run failed; see ${(state.realRun && state.realRun.logPath) || `${PARAMS.runDir}/realrun.log`}.`)
+        } else if (!state.realRun.configured) {
+          await decide('real run: not configured')
+        }
+        return state
+      }
       const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
@@ -1409,19 +1414,11 @@ async function fullLane() {
       if (state.convergence.blocked) {
         state.status = 'BLOCKED'
       }
-      if (state.convergence.gateRan && !state.convergence.gatePassed) {
-        state.status = 'BLOCKED'
-        const firstFailure = state.convergence.gate && (state.convergence.gate.failures || [])[0]
-        const fallback = state.convergence.gate ? 'no failure detail' : 'agent returned null'
-        const summary = String((firstFailure && firstFailure.summary) || fallback).slice(0, 200)
+      if (state.convergence.blocked) {
         const branch = (state.ship && state.ship.branch) || '(unknown branch)'
-        await decide(`Fix-round gate failed (${summary}); fixes left uncommitted on ${branch}; ship-sync and sandbox-refresh skipped.`)
+        await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} original finding(s) remained unresolved after verify-review.`)
       }
-      if (state.convergence.blocked && state.convergence.gatePassed) {
-        const branch = (state.ship && state.ship.branch) || '(unknown branch)'
-        await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} finding(s) remained unresolved after verification.`)
-      }
-      if (!state.convergence.blocked && state.convergence.fixesApplied && state.convergence.gatePassed && state.ship) {
+      if (!state.convergence.blocked && state.convergence.fixesApplied && state.ship) {
         state.context = await changedFiles()
         if (contextFailed(state.context) || !state.context.diffValid) {
           state.status = 'BLOCKED'

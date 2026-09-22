@@ -17,6 +17,8 @@ Use this skill only after implementation and validation are complete and the use
 ## 2. Branch and commit
 
 - Create a short kebab-case branch when the current branch is the base branch.
+- Before staging or committing, run `bash -n` on every changed `*.sh` file and run `uvx ruff@0.15.10 check --fix --select F,E9 <changed .py files>` when Python files changed. These are the only shipper checks.
+- A syntax-check failure blocks the commit. Report the command and its output. Stage any Python file changed by Ruff only when it is in the approved file list.
 - Stage only the approved files. Review the staged diff before committing.
 - Use an imperative commit subject. Let repository hooks run.
 - If a hook changes files, review and stage only those related changes, then retry once.

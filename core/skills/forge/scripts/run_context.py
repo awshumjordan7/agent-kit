@@ -77,6 +77,42 @@ def baseline(run_dir: Path, repo: Path) -> dict:
     return {"written": True}
 
 
+def real_run(run_dir: Path, repo: Path, command: str) -> dict:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / "realrun.log"
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo,
+            shell=True,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=900,
+        )
+        output = completed.stdout or ""
+        exit_code = completed.returncode
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        exit_code = 124
+        timed_out = True
+    tail = "\n".join(output.splitlines()[-200:])
+    log_path.write_text(tail + ("\n" if tail else ""), encoding="utf-8")
+    return {
+        "configured": True,
+        "passed": exit_code == 0,
+        "exitCode": exit_code,
+        "timedOut": timed_out,
+        "command": command,
+        "logPath": str(log_path),
+        "summary": "real run passed" if exit_code == 0 else f"real run failed with exit {exit_code}",
+    }
+
+
 def _section(text: str, heading: str) -> str:
     lines = text.splitlines()
     start = next(
@@ -257,6 +293,10 @@ def main() -> None:
     diff_parser.add_argument("--label", required=True)
     diff_parser.add_argument("--base")
     diff_parser.add_argument("--files", nargs="*")
+    real_run_parser = subparsers.add_parser("real-run")
+    real_run_parser.add_argument("--run-dir", type=Path, required=True)
+    real_run_parser.add_argument("--repo", type=Path, required=True)
+    real_run_parser.add_argument("--command", required=True)
     args = parser.parse_args()
     if args.command == "baseline":
         result = baseline(args.run_dir, args.repo)
@@ -276,6 +316,8 @@ def main() -> None:
         )
         sys.stdout.write(str(diff_path) + "\n")
         return
+    elif args.command == "real-run":
+        result = real_run(args.run_dir, args.repo, args.command)
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
 
 

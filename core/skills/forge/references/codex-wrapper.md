@@ -19,3 +19,11 @@ Continue from the state file; do not redo work it marks done; do not re-read fil
 Invoke the same command with `start --fresh`, the new `--prompt-file`, and the `--log` and `--out` paths suffixed with `-h<n>`. Never use `resume` for a handoff. Watch that run to completion and repeat while it exits 79 and `n < max_handoffs`. Return the last run's result and set `handoffs` to `n` in the stage result. Also set `handoffDetails` by reading each run's `*.handoff.md` Reason section and copying its context and call counts as `{contextTokens, toolCalls}` in handoff order. If run `max_handoffs` also exits 79, set `error` to `CODEX_HANDOFF_EXHAUSTED <status line>` and return it as a terminal result. Preserve `handoffs: 0` when no handoff occurs.
 
 Codes 65 (`CODEX_DIFF_INVALID`), 76 (`CODEX_BUDGET_EXCEEDED`), 77 (`CODEX_NO_CREDITS`), and 78 (`CODEX_LOCK_TIMEOUT`) are terminal. Report their result-file message and do not retry them. Exit 79 is handled only by the fresh handoff loop above. A wrapper retry requested by the workflow must run the supplied command again; never answer from a previous cached result.
+
+## Forge policy
+
+Forge resolves `gate.mode` per repository, defaulting to `full`. Personal repositories use `none`, have no tests, and must not receive test, lint, typecheck, migration, Semgrep, or parity work in Codex prompts. They spawn no gate agent; the review diff comes from plain `git diff`.
+
+For `mode: none`, Forge runs `gate.realRun` once after implementation with a 900-second cap, or the plan's `real_run` override under `## Run Settings`. A non-zero result blocks and writes its output tail to `realrun.log`; a missing command is non-blocking and is reported as `real run: not configured`.
+
+After the one allowed fix round, one fresh Fable reviewer checks only the original post-triage findings against the implementer's per-finding explanations and the fix diff. It returns `RESOLVED` or `UNRESOLVED` for each original item, may add no findings, and sends unresolved items directly to handoff. There is no second fix, post-fix gate, status agent, or verification judge.
