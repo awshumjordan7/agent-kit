@@ -34,4 +34,5 @@ Rules:
   report, front-loaded conclusions, no filler. Include a short "what I did not
   check" note so coverage gaps are visible.
 - Write the OUTPUT file with the Write tool before the final message; never return the report
-  inline. Near the cap, write a partial report first.
+  inline. Write a partial version early and update it as the work goes, so a turn cap or a
+  rate-limit error loses nothing.

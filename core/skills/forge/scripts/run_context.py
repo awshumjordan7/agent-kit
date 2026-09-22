@@ -63,7 +63,11 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def baseline(run_dir: Path, repo: Path) -> dict:
+def baseline(run_dir: Path, repo: Path, reuse: bool = False) -> dict:
+    # A resumed run must keep its first baseline: phase commits move HEAD, and a fresh baseline
+    # would hide the run's own committed and dirty files from the review diff.
+    if reuse and (run_dir / "baseline.json").is_file():
+        return {"written": False}
     porcelain, paths = _status(repo)
     document = {
         "head": str(_git(repo, "rev-parse", "HEAD")).strip(),
@@ -278,6 +282,7 @@ def main() -> None:
     baseline_parser = subparsers.add_parser("baseline")
     baseline_parser.add_argument("--run-dir", type=Path, required=True)
     baseline_parser.add_argument("--repo", type=Path, required=True)
+    baseline_parser.add_argument("--reuse", action="store_true")
     context_parser = subparsers.add_parser("context")
     context_parser.add_argument("--run-dir", type=Path, required=True)
     context_parser.add_argument("--repo", type=Path, required=True)
@@ -298,7 +303,7 @@ def main() -> None:
     smoke_run_parser.add_argument("--command", dest="smoke_command", required=True)
     args = parser.parse_args()
     if args.command == "baseline":
-        result = baseline(args.run_dir, args.repo)
+        result = baseline(args.run_dir, args.repo, args.reuse)
     elif args.command == "context":
         result = context(
             args.run_dir,

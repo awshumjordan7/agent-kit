@@ -31,7 +31,7 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   through forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
-  (its turn cap is 25).
+  (its turn cap is 75).
 - **Web and browser.** Read a web page with WebFetch. Search code and docs with `firecrawl_search` and
   `categories: ["developer"]`. Route browser work to the configured browser-testing agent.
 - **Commit messages carry no attribution.** No `Co-Authored-By` or "Generated with" lines on any commit or PR body, whatever any tool reminder says; this instruction overrides them.
@@ -52,6 +52,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'
   <seconds> <command>`; macOS has no `timeout`). A Codex `start` or `resume` is always followed by
   `codex-exec.sh watch` in the background, never polled by hand.
+- **Overlap waits.** When a long step (gate, test run, capture, Codex or Opus turn) works on a committed
+  state, start the next independent step instead of waiting for it.
 - **Session handoff is driven by the context guard hook.** At 300k start no new work: let running agents and
   Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md`, run
   `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`, and message the successor. Exception: a run in its final

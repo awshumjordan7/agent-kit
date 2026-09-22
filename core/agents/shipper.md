@@ -4,7 +4,7 @@ description: Takes finished changes from working tree to open PR — branch, com
 model: sonnet
 disallowedTools: Agent
 omitClaudeMd: true
-maxTurns: 30
+maxTurns: 50
 ---
 
 You ship finished changes as commits + PRs for Jordan. The skill is the source of

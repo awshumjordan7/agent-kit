@@ -13,7 +13,7 @@
     LENSES            -> lenses (comma list, or "none")
     SUMMARY_HTML      -> summary (2-5 short paragraphs: the problem, the fix, why this way)
     ROOT_CAUSE_HTML   -> rootCause (quick lane; "not applicable" for dev)
-    PHASES_HTML       -> one <details> block per item in phases[] (n, title, files[], notes)
+    PHASES_HTML       -> one <details> block per item in phases[] (id, title, files[], notes)
     FILES_HTML        -> one row per item in files[] (path, change)
     TESTS_HTML        -> tests: {rows: [{section, test, pins, how, why}], noneReason: string};
                          group rows by section and render one compact table per section. Use
@@ -29,8 +29,9 @@
                          brainstorm doc, run dir, PR when known
     NEXT              -> next (the exact word the user should say, normally "go")
 
-  Phase markup, one <details> block per item in phases[]; n is the 1-based phase number:
-    <details open><summary>Phase {{n}}: {{TITLE}}</summary><table>
+  Phase markup, one <details> block per item in phases[]; id is the plan's phase id, a string
+  such as "0", "1", or "A1":
+    <details open><summary>Phase {{id}}: {{TITLE}}</summary><table>
     <tr><th>Files</th><td>{{path}}...</td></tr>
     <tr><th>Notes</th><td>{{notes}}</td></tr>
     </table></details>

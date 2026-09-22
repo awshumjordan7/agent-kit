@@ -30,6 +30,8 @@ Rules:
   rediscover them.
 - Command output over ~2 KB goes to a file in the run dir; return the path,
   pass/fail, and failing test names only.
+- When the brief names an output file, write a partial version early and update it as the
+  work goes, so a turn cap or a rate-limit error loses nothing.
 - Any command that may run longer than 60 seconds gets a hard timeout:
   `perl -e 'alarm shift @ARGV; exec @ARGV' <seconds> <command>`.
 - A global permission rule denies every command containing `rm -rf`. To empty or

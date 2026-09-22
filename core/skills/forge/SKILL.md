@@ -16,6 +16,19 @@ Forge has two lanes:
 
 1. Investigate before fixing: read the code path and capture live evidence before naming a cause. Write `triage.md` for a narrow, well-understood ask or `recon.md` when broader reuse and caller mapping are needed.
 2. Write `plan.md` with a summary, public API contract, phases, exact files, acceptance criteria, risks, run settings, and one `## Tests` section. That section is the only place tests are defined: use one Markdown table with columns `Section`, `Test`, `Pins`, `How`, and `Why`, and one row per test. `Section` names the plan phase or component, `Test` names the file and test, `Pins` states the behavior proved in one sentence, `How` states setup, action, and assertion in one sentence, and `Why` names the risk or acceptance criterion protected. If the plan has no tests, write `## Tests` followed by the single line `None: <reason>`. Preserve evidence rules from `build-lane.md`.
+
+   Phases live under `## Phases` as `### Phase <id>: <title>` headings, run in plan order. `<id>` matches `[A-Za-z]*[0-9]+` (`0`, `1`, `A1`, `B2`). Any other `###` heading directly under `## Phases` stops the run with an error naming it.
+
+   ```markdown
+   ## Phases
+
+   ### Phase 1: Parse the new config key
+   Read `envFiles` and validate it.
+
+   ### Phase 2: Copy the files before setup
+   ```
+
+   A plan with two or more phases runs the phase loop described in `build-lane.md`; a plan with no `## Phases` or one phase runs as a single pass. The loop raises `spawnCap` by 5 per phase (implement, a possible Codex wrapper retry, commit, `phases.json` write, gate) plus 4 per run (`phases.json` read, branch switch, resume file scan, final `phases.json` write).
 3. Review every build plan once. Run `scripts/build-plan-review-prompt.sh`, which accepts either `recon.md` or `triage.md`, and write any extra file-and-line claims to `plan-review-checks.md`. Use `roles.plan-review` from `forge.config.json`: invoke `codex-exec.sh --role plan-review` for Codex or the configured Claude reviewer with the same prompt. Fold critical findings into the plan and record rejected findings with reasons.
 4. Get explicit user confirmation of the plan unless `auto` was requested. In every mode, present the test table on its own, before or after the plan summary, and ask for an explicit yes on the tests as a separate answer from plan approval. For a no-tests plan, present `None: <reason>` in place of the table and get the same separate approval. A plan whose tests are not approved does not start; an `auto` run can proceed unattended only after that approval.
 5. Load the rendered Forge config and start the Workflow. For multi-repository work, pass the repository-specific `planPath`. Set `fullySpecified=true` only when the caller supplied every material implementation choice; file count alone never makes work fully specified.
@@ -61,7 +74,7 @@ Core ships optional stages disabled. An overlay may supply and enable:
 - The user confirms the plan before implementation.
 - The user separately approves the plan's test table, or its `None: <reason>`, before implementation.
 - Gate behavior is repository-specific: `gate.mode` defaults to `full`; `none` spawns no gate agent and runs no tests, lint, typecheck, migrations, Semgrep, or parity commands. Personal repositories use `none` and have no tests.
-- In `full` mode, the local gate must pass before shipping.
+- In `full` mode, the local gate must pass before shipping. In a multi-phase run, every phase gate and the final gate over all run files must pass before the pre-ship checkpoint.
 - Every build run pauses at a pre-ship checkpoint: a fresh reviewer summarizes the change and recommends ship, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without a sandbox stage stops the run before shipping.
 - Every review finding is triaged against current code before a fixer runs.
 - Forge allows one fix round on a fresh implementation thread. One fresh Claude reviewer then verifies only the original post-triage findings from both reviewers using the implementer's per-finding explanations and the fix diff; it cannot add findings. Unresolved items go directly to the handoff, with no post-fix gate, status agent, judge, or second fix round.

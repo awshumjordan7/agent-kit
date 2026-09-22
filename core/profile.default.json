@@ -19,7 +19,7 @@
     "answers": {},
     "agents": {
       "worker": {"model": "sonnet", "maxTurns": 150, "effort": null},
-      "shipper": {"model": "sonnet", "maxTurns": 30, "effort": null},
+      "shipper": {"model": "sonnet", "maxTurns": 50, "effort": null},
       "claude-implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
     },
     "forge": {
@@ -85,7 +85,7 @@
     "agents.scout.maxTurns": {"evidence": "126 of 314 runs reached 25 turns; p90 was 45", "confidence": "medium"},
     "agents.locator.maxTurns": {"evidence": "3 of 7 runs reached 15 turns", "confidence": "low"},
     "agents.worker.maxTurns": {"evidence": "6% of runs reached the former 90-turn cap", "confidence": "high"},
-    "agents.shipper.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
+    "agents.shipper.maxTurns": {"evidence": "4 of 4 releases on 2026-09-22 reached the former 30-turn cap", "confidence": "high"},
     "agents.reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
     "agents.scout.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
     "agents.locator.model": {"evidence": "7 of 7 runs used Haiku", "confidence": "high"},

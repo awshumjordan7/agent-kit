@@ -14,6 +14,18 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 
 `quick-impl` is selected only when `fullySpecified` is true and the plan names no more source files than `quickReviewThreshold`; otherwise Forge uses `impl`. Tests and documentation do not count as source files.
 
+## Phase loop
+
+A plan with two or more `### Phase <id>: <title>` headings under `## Phases` runs one phase at a time:
+
+1. Before the first phase, Forge switches to a new branch when the checkout is on the base branch, as ship-pr does.
+2. Each phase gets its own implementer turn (`implement-phase-<id>`, `implementation-summary-phase-<id>.md`) with the full plan as context and the instruction to implement only that phase.
+3. The phase's files are committed as `Phase <id>: <title>` through `gate.sh --no-stages --commit`, and the SHA is recorded in `<runDir>/phases.json`.
+4. In gate mode `full`, the phase gate (`gate-phase-<id>`) runs on that SHA with `gate.sh --sha` in `<runDir>/gate-checkout` while the next phase is implemented. Gates run one at a time. The final phase's gate covers every run file.
+5. A failed gate is collected at the next phase boundary, never while an implementer is editing. The usual gate fix round runs in the primary worktree, each fix is committed as `Fix Phase <id> gate`, and that SHA is re-gated. The final gate, and any fix it needs, finishes before the pre-ship checkpoint.
+
+Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the checkpoint. A resumed run keeps `baseline.json`, re-gates the pending SHAs in `phases.json`, and starts at the first uncommitted phase. The handoff removes the gate checkout.
+
 Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke.
 
 ## Evidence rules
@@ -39,7 +51,7 @@ Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer sum
 
 ## Multi-repository work
 
-Use a separate run directory and repository-specific `planPath` for each repository. Start dependent work only when its required contract captures exist. Each repository has its own gate mode and ship decision; never make one repository's shipper poll another run's artifact.
+Use a separate run directory and repository-specific `planPath` for each repository. Start the dependent repository's run as soon as the upstream phase commit and its captures exist, not when the upstream run ends. Each repository has its own gate mode and ship decision; never make one repository's shipper poll another run's artifact.
 
 ## What the user receives
 
