@@ -90,6 +90,37 @@ def test_only_tests_reports_other_stages_as_skipped(repo_root, tmp_path):
     assert result["skipped"] == ["lint", "typecheck", "migrations", "semgrep", "parity"]
 
 
+def test_gate_diff_includes_tracked_change_outside_file_hints(repo_root, tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "base.txt").write_text("changed\n", encoding="utf-8")
+    test_file = repo / "tests/test_example.py"
+    test_file.parent.mkdir()
+    test_file.write_text("pass\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_pytest = bin_dir / "pytest"
+    fake_pytest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+
+    result = _gate(
+        repo_root,
+        repo,
+        tmp_path,
+        _config(repo, tests="pytest <paths>"),
+        "--only",
+        "tests",
+        "--files",
+        "tests/test_example.py",
+        env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    diff = Path(result["diffPath"]).read_text(encoding="utf-8")
+    assert result["passed"]
+    assert "diff --git a/base.txt b/base.txt" in diff
+    assert "-base" in diff
+    assert "+changed" in diff
+
+
 def test_env_and_setup_apply_to_test_command(repo_root, tmp_path):
     repo = _repo(tmp_path)
     source = repo / "src/example.py"

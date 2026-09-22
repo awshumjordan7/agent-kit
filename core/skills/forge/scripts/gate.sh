@@ -290,10 +290,42 @@ PY
   ((status_result == 0)) || exit 2
 fi
 
+python3 - "$repo" "$files_file" <<'PY'
+import sys
+from pathlib import Path
+
+repo, files_path = sys.argv[1:]
+repo_root = Path(repo).resolve()
+with open(files_path, "rb") as handle:
+    paths = [item for item in handle.read().split(b"\0") if item]
+kept = []
+for raw_path in paths:
+    path = raw_path.decode("utf-8", "surrogateescape")
+    candidate = Path(path)
+    if not path or candidate.is_absolute() or ".." in candidate.parts:
+        continue
+    try:
+        (repo_root / candidate).resolve().relative_to(repo_root)
+    except (OSError, RuntimeError, ValueError):
+        continue
+    kept.append(raw_path)
+with open(files_path, "wb") as handle:
+    for path in dict.fromkeys(kept):
+        handle.write(path + b"\0")
+PY
+filter_status=$?
+((filter_status == 0)) || exit 2
+
 files=()
 while IFS= read -r -d '' file; do
   files+=("$file")
 done <"$files_file"
+
+diff_command=(python3 "$script_dir/run_context.py" diff --run-dir "$run_dir" --repo "$repo" --label "$label")
+if ((${#files[@]})); then
+  diff_command+=(--files "${files[@]}")
+fi
+"${diff_command[@]}" >/dev/null || die 'gate.sh: cannot build diff'
 
 config_value() {
   python3 - "$entry_file" "$1" "${2-}" <<'PY'
@@ -936,44 +968,19 @@ result = {
 }
 if files_given:
     result["files"] = files
-    kept = []
     excluded = []
     for path in files:
-        target = excluded if any(fnmatch.fnmatch(path, pattern) for pattern in diff_exclude) else kept
-        target.append(path)
+        if any(fnmatch.fnmatch(path, pattern) for pattern in diff_exclude):
+            excluded.append(path)
     result["diffExcluded"] = excluded
-    diff_parts = []
-    if kept:
-        tracked = subprocess.run(
-            ["git", "-C", repo, "diff", "--no-ext-diff", "HEAD", "--", *kept],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        diff_parts.append(tracked.stdout)
-        for path in kept:
-            tracked_path = subprocess.run(
-                ["git", "-C", repo, "ls-files", "--error-unmatch", "--", path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            if tracked_path.returncode != 0 and os.path.isfile(os.path.join(repo, path)):
-                addition = subprocess.run(
-                    ["git", "-C", repo, "diff", "--no-index", "--no-ext-diff", "/dev/null", path],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                diff_parts.append(addition.stdout)
-    diff = b"".join(diff_parts)
-    with open(diff_path, "wb") as handle:
-        handle.write(diff)
-    result["diffPath"] = diff_path
-    result["diffBytes"] = len(diff)
-    diff_text = diff.decode("utf-8", errors="replace")
-    result["diff"] = diff_text[:DIFF_INLINE_CAP]
-    result["diffTruncated"] = len(diff_text) > DIFF_INLINE_CAP
+
+with open(diff_path, "rb") as handle:
+    diff = handle.read()
+result["diffPath"] = diff_path
+result["diffBytes"] = len(diff)
+diff_text = diff.decode("utf-8", errors="replace")
+result["diff"] = diff_text[:DIFF_INLINE_CAP]
+result["diffTruncated"] = len(diff_text) > DIFF_INLINE_CAP
 
 commit_error = ""
 if not failures and commit_message:
