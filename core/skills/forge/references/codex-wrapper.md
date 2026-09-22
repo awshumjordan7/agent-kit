@@ -24,6 +24,8 @@ Codes 65 (`CODEX_DIFF_INVALID`), 76 (`CODEX_BUDGET_EXCEEDED`), 77 (`CODEX_NO_CRE
 
 Forge resolves `gate.mode` per repository, defaulting to `full`. Personal repositories use `none`, have no tests, and must not receive test, lint, typecheck, migration, Semgrep, or parity work in Codex prompts. They spawn no gate agent; the review diff comes from plain `git diff`.
 
-For `mode: none`, Forge runs `gate.realRun` once after implementation with a 900-second cap, or the plan's `real_run` override under `## Run Settings`. A non-zero result blocks and writes its output tail to `realrun.log`; a missing command is non-blocking and is reported as `real run: not configured`.
+Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer summarizes the change and recommends shipping, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without an enabled sandbox stops before shipping. Mode `none` skips its gate and still reaches the checkpoint.
+
+Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. A resumed build restores `checkpoint.json`, skips Implement and Gate, and continues from that decision.
 
 After the one allowed fix round, one fresh Fable reviewer checks only the original post-triage findings against the implementer's per-finding explanations and the fix diff. It returns `RESOLVED` or `UNRESOLVED` for each original item, may add no findings, and sends unresolved items directly to handoff. There is no second fix, post-fix gate, status agent, or verification judge.
