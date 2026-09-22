@@ -1,7 +1,8 @@
 ---
 name: worker
 description: Cheap read-write agent for mechanical multi-step tasks — file moves, config edits, running scripts and tests, formatting, applying a spec that is already decided. Use instead of the built-in general-purpose agent so the work never runs on the session model. Not for judgment calls, design, or review.
-model: sonnet
+model: opus
+effort: medium
 disallowedTools: Agent
 maxTurns: 150
 ---

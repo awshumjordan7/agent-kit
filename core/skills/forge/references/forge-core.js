@@ -139,7 +139,7 @@ const PHASE_SPAWNS = 5
 const PHASED_RUN_SPAWNS = 4
 if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
 const GATE_CHECKOUT = `${PARAMS.runDir}/gate-checkout`
-const EMPTY_PHASES_FILE = { branch: '', phases: [], lastCommittedPhase: null, pendingGates: [] }
+const EMPTY_PHASES_FILE = { branch: '', phases: [], lastCommittedPhase: null, headSha: null, pendingGates: [] }
 
 const FINDING = {
   type: 'object', additionalProperties: false,
@@ -358,6 +358,7 @@ const PHASES_FILE_SCHEMA = {
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
     lastCommittedPhase: { type: ['string', 'null'] },
+    headSha: { type: ['string', 'null'] },
     pendingGates: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
@@ -438,6 +439,10 @@ const SMOKE_SCHEMA = {
 const ACK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { written: { type: 'boolean' } }, required: ['written'],
+}
+const THREAD_CHECK_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
 }
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -612,6 +617,8 @@ const STUBS = {
     ? { ...EMPTY_PHASES_FILE }
     : opts.schema === BRANCH_SCHEMA
     ? { branch: `${PARAMS.ticket}-dry-run` }
+    : opts.schema === THREAD_CHECK_SCHEMA
+    ? { threadExists: true }
     : {
       files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary',
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
@@ -676,7 +683,8 @@ function tierProfile(tierRole) {
 }
 
 async function agentT(role, prompt, opts = {}) {
-  const isHandoff = role === 'handoff' && opts.label === 'handoff'
+  // The gate-checkout removal runs only on exits that skip the handoff, so it may take the handoff's slot.
+  const isHandoff = (role === 'handoff' && opts.label === 'handoff') || opts.label === 'remove-gate-checkout'
   const limit = isHandoff ? PARAMS.spawnCap : PARAMS.spawnCap - 1
   if (spawnCount >= limit) {
     if (!isHandoff && !capBlocked) {
@@ -718,7 +726,7 @@ const codexWrapper = `Read ~/.claude/skills/forge/references/codex-wrapper.md an
 // Normalize wrapper errors and retry a real error once before assertCodex throws. A Codex process
 // still holding the helper lock surfaces as CODEX_LOCK_TIMEOUT and throws after that retry.
 // A null result means the spawn cap was hit and is not retried.
-async function codexAgent(prompt, opts) {
+async function codexAttempts(prompt, opts) {
   let result = await agentT('codexWrap', prompt, opts)
   if (result) result.error = normalizedCodexError(result.error)
   await recordCodexHandoffs(result, opts.label)
@@ -737,6 +745,29 @@ async function codexAgent(prompt, opts) {
   result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-retry` })
   if (result) result.error = normalizedCodexError(result.error)
   await recordCodexHandoffs(result, opts.label)
+  return result
+}
+
+// evidence names the stage's --thread-file and --log paths so a start the wrapper reports as
+// threadless can be checked against the thread file and the helper's status line.
+async function codexAgent(prompt, opts, evidence = null) {
+  const result = await codexAttempts(prompt, opts)
+  if (!evidence || !result || result.codexInvoked !== true || result.threadMode !== 'start' || result.threadExists === true || normalizedCodexError(result.error)) return result
+  const script = [
+    'import json, pathlib, sys',
+    'thread, log = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])',
+    'thread_id = thread.read_text(encoding="utf-8").strip() if thread.is_file() else ""',
+    'stem = log.name.split(".")[0]',
+    'statuses = [pathlib.Path(str(log) + ".status"), *log.parent.glob(stem + "*-h*.status")]',
+    'lines = [path.read_text(encoding="utf-8").strip() for path in statuses if path.is_file()]',
+    'print(json.dumps({"threadExists": bool(thread_id) and any(line.startswith("CODEX_OK ") and "thread=" + thread_id in line.split() for line in lines)}))',
+  ].join('; ')
+  const check = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(evidence.threadFile)} ${shellQuote(evidence.log)}`,
+    { label: `${opts.label}-thread-check`, phase: opts.phase, schema: THREAD_CHECK_SCHEMA })
+  if (check && check.threadExists === true) {
+    result.threadExists = true
+    await decide(`${opts.label} wrapper reported threadExists=false; ${evidence.threadFile} and a CODEX_OK status line for that thread were found, so the result was kept.`)
+  }
   return result
 }
 
@@ -870,7 +901,7 @@ function implement(phase = null) {
   return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
 Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. ${scopeInstruction} ${runBeforeReturningInstruction()} Do not commit, and write ${summaryPath}. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
 Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
-  { label, phase: 'Implement', schema: CODEX_RESULT })
+  { label, phase: 'Implement', schema: CODEX_RESULT }, { threadFile: CODEX_IMPL_THREAD, log: logPath })
 }
 
 function smokeRun(command) {
@@ -1070,7 +1101,7 @@ async function codexReview(context) {
 Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
-  { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA })
+  { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA }, { threadFile: CODEX_REVIEW_THREAD, log: `${PARAMS.runDir}/codex-review.jsonl` })
   // A Codex failure (out of credits, auth, stall) must surface as a named failure, not as
   // the placeholder verdict the wrapper returns alongside its `error` field.
   try {
@@ -1251,7 +1282,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
 Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per finding with the same id and a concise reason explaining what changed or why it could not be fixed. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
 Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
-  { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
+  { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA }, { threadFile, log: `${PARAMS.runDir}/codex-${label}.jsonl` })
   if (!assertCodex(result, label)) return null
   return result.fix
 }
@@ -1500,7 +1531,8 @@ function writePhases(run, extraPending = []) {
     branch: run.branch,
     phases: run.rows,
     lastCommittedPhase: run.lastCommittedPhase,
-    pendingGates: [...extraPending, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
+    headSha: run.headSha,
+    pendingGates: [...extraPending, ...run.unresolved, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
   }
   const script = 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(json.loads(sys.argv[2]), indent=2) + "\\n", encoding="utf-8"); print(json.dumps({"written": True}))'
   return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)} ${shellQuote(JSON.stringify(document))}`,
@@ -1573,7 +1605,10 @@ async function collectPhaseGate(run, entry, allowFix) {
     return
   }
   row.gate = 'failed'
-  if (!allowFix) return
+  if (!allowFix) {
+    run.unresolved.push({ id: entry.id, sha: entry.sha, label: entry.label })
+    return
+  }
   let sha = entry.sha
   let fixes = 0
   const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contract: PARAMS.planText }, 'Gate', {
@@ -1600,6 +1635,7 @@ async function collectPhaseGate(run, entry, allowFix) {
   row.gate = gateRun.blocked ? 'failed' : 'passed'
   if (gateRun.blocked) {
     run.blocked = true
+    run.unresolved.push({ id: entry.id, sha, label: entry.label })
     if (gateRun.needsJudge) run.needsJudge = true
     await decide(`Phase ${entry.id} gate did not pass after the fix round; later phases were stopped.`)
   }
@@ -1611,13 +1647,16 @@ async function collectSettledGates(run) {
 
 // Each phase is implemented and committed in the primary worktree; its gate runs on the
 // committed SHA in the gate checkout while the next phase is implemented. Gate failures are
-// fixed only at phase boundaries, never while an implementer is editing.
+// fixed only at phase boundaries, never while an implementer is editing. The final gate runs on
+// HEAD over every run file only after all earlier gates and their fix commits have settled.
 async function phasedImplement(state) {
   const gated = configuredGateMode() !== 'none'
   const saved = PHASES_SAVED
+  const lastPhase = PHASES[PHASES.length - 1]
+  const finalLabel = `gate-phase-${lastPhase.id}`
   const run = {
     branch: saved.branch || '', rows: PHASES.map(item => ({ id: item.id, title: item.title, sha: null, gate: null })),
-    lastCommittedPhase: null, pending: [], files: [], headSha: null, blocked: false, needsJudge: false, lastGate: null, results: [],
+    lastCommittedPhase: null, pending: [], unresolved: [], files: [], headSha: null, blocked: false, needsJudge: false, lastGate: null, results: [],
   }
   for (const row of saved.phases || []) {
     const target = run.rows.find(item => item.id === row.id)
@@ -1625,12 +1664,14 @@ async function phasedImplement(state) {
   }
   let startIndex = 0
   let resumeFiles = []
-  if (saved.lastCommittedPhase) {
-    const index = PHASES.findIndex(item => item.id === saved.lastCommittedPhase)
-    if (index < 0) throw new Error(`${PARAMS.runDir}/phases.json records committed phase ${saved.lastCommittedPhase}, which the plan does not contain`)
-    startIndex = index + 1
-    run.lastCommittedPhase = saved.lastCommittedPhase
-    run.headSha = [...run.rows.slice(0, index + 1)].reverse().map(row => row.sha).find(Boolean) || null
+  if (PHASES_RECORDED) {
+    if (saved.lastCommittedPhase) {
+      const index = PHASES.findIndex(item => item.id === saved.lastCommittedPhase)
+      if (index < 0) throw new Error(`${PARAMS.runDir}/phases.json records committed phase ${saved.lastCommittedPhase}, which the plan does not contain`)
+      startIndex = index + 1
+      run.lastCommittedPhase = saved.lastCommittedPhase
+      run.headSha = saved.headSha || [...run.rows.slice(0, index + 1)].reverse().map(row => row.sha).find(Boolean) || null
+    }
     const context = await changedFiles()
     if (contextFailed(context)) {
       state.status = 'BLOCKED'
@@ -1639,12 +1680,12 @@ async function phasedImplement(state) {
     }
     resumeFiles = context.files || []
     run.files = [...resumeFiles]
-    await decide(`Resuming the phase loop after Phase ${saved.lastCommittedPhase}; ${saved.pendingGates.length} pending gate(s) re-queued.`)
-    if (gated) {
-      for (const pending of saved.pendingGates) {
-        if (resumeFiles.length) queuePhaseGate(run, { id: pending.id, sha: pending.sha, label: pending.label, files: resumeFiles })
-      }
-    }
+    // The final gate always runs after the loop, so a saved final gate is not queued twice.
+    const requeue = gated && resumeFiles.length ? saved.pendingGates.filter(pending => pending.label !== finalLabel) : []
+    for (const pending of requeue) queuePhaseGate(run, { id: pending.id, sha: pending.sha, label: pending.label, files: resumeFiles })
+    await decide(saved.lastCommittedPhase
+      ? `Resuming the phase loop after Phase ${saved.lastCommittedPhase}; ${requeue.length} pending or failed gate(s) re-queued.`
+      : `Resuming the phase loop at Phase ${PHASES[0].id}; no phase was committed before the interruption.`)
   }
   if (!run.branch) {
     const branch = await phaseBranch(planBranchName())
@@ -1656,10 +1697,12 @@ async function phasedImplement(state) {
     run.branch = branch.branch
     await decide(`Phase commits go on branch ${run.branch}.`)
   }
+  // Written before Phase 1 so an interrupted first phase resumes with this run's baseline.
+  if (!PHASES_RECORDED) await writePhases(run)
   for (let index = startIndex; index < PHASES.length && !run.blocked; index++) {
     const phase = PHASES[index]
     const row = run.rows[index]
-    const resumed = index === startIndex && Boolean(saved.lastCommittedPhase)
+    const resumed = index === startIndex && PHASES_RECORDED
     const result = await implement({ ...phase, resumed })
     if (capBlocked || !assertImplementation(result, `implement-phase-${phase.id}`)) {
       run.blocked = true
@@ -1682,16 +1725,16 @@ async function phasedImplement(state) {
     if (gated) {
       await collectSettledGates(run)
       if (run.blocked) break
-      const last = index === PHASES.length - 1
-      const files = last ? run.files : phaseFiles
-      if ((commit.sha || last) && run.headSha && files.length) {
-        if (!commit.sha) row.gate = 'pending'
-        queuePhaseGate(run, { id: phase.id, sha: run.headSha, label: `gate-phase-${phase.id}`, files })
-      }
+      if (commit.sha && phase !== lastPhase) queuePhaseGate(run, { id: phase.id, sha: commit.sha, label: `gate-phase-${phase.id}`, files: phaseFiles })
     }
     await writePhases(run)
   }
   while (run.pending.length) await collectPhaseGate(run, run.pending[0], !run.blocked)
+  if (gated && !run.blocked && !capBlocked && run.headSha && run.files.length) {
+    run.rows[run.rows.length - 1].gate = 'pending'
+    queuePhaseGate(run, { id: lastPhase.id, sha: run.headSha, label: finalLabel, files: run.files })
+    await collectPhaseGate(run, run.pending[0], true)
+  }
   await writePhases(run)
   state.branch = run.branch
   state.phases = run.rows
@@ -1962,8 +2005,16 @@ async function reviewLane() {
 
 await loadForgeConfig()
 const PHASES_SAVED = (PHASED && !PARAMS.checkpointDecision && await readPhases()) || EMPTY_PHASES_FILE
-await baselineContext(Boolean(PARAMS.checkpointDecision || PHASES_SAVED.lastCommittedPhase))
-let state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
+// writePhases always records every phase row, so rows mean this run already started the phase loop.
+const PHASES_RECORDED = (PHASES_SAVED.phases || []).length > 0
+await baselineContext(Boolean(PARAMS.checkpointDecision || PHASES_RECORDED))
+let state
+try {
+  state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
+} catch (error) {
+  if (usesGateCheckout()) await removeGateCheckout()
+  throw error
+}
 if (state.needsJudge) {
   if (usesGateCheckout()) await removeGateCheckout()
   return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes: (state.review && state.review.unresolvedDisputes) || [], runDir: PARAMS.runDir }

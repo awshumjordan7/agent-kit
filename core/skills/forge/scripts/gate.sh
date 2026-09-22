@@ -408,16 +408,30 @@ PY
     git -C "$repo" worktree add --detach "$gate_checkout" "$sha" >>"$checkout_log" 2>&1 \
       || die "gate.sh: cannot create gate checkout at $sha; see $checkout_log"
   fi
-  python3 - "$entry_file" "$repo" "$gate_checkout" <<'PY'
+  python3 - "$entry_file" "$repo" "$gate_checkout" "$sha" <<'PY'
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-entry_path, source, target = sys.argv[1:]
+entry_path, source, target, sha = sys.argv[1:]
 with open(entry_path, encoding="utf-8") as handle:
     env_files = json.load(handle).get("envFiles", [])
 for relative in env_files:
+    # A tracked copy from the primary worktree would replace the committed version being gated.
+    tracked = subprocess.run(
+        ["git", "-C", source, "ls-files", "--error-unmatch", "--", f":(literal){relative}"],
+        capture_output=True,
+    ).returncode == 0
+    in_commit = subprocess.run(
+        ["git", "-C", source, "cat-file", "-e", f"{sha}:./{relative}"],
+        capture_output=True,
+    ).returncode == 0
+    if tracked or in_commit:
+        where = f"tracked in {source}" if tracked else f"present in commit {sha}"
+        print(f"gate.sh: envFiles entry {relative} is {where}; envFiles may list only untracked files", file=sys.stderr)
+        raise SystemExit(2)
     origin = Path(source) / relative
     if not origin.is_file():
         continue

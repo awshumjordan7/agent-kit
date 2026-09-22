@@ -10,7 +10,8 @@ rules sharing that command are grouped. Test commands may include `<create-db>`,
 only when the changed files include a Python migration.
 
 Repository entries may define `envFiles`, a list of repository-relative untracked files (for example `.env.local`)
-that are copied from the primary worktree into the gate checkout before `setup`. An absent key means none.
+that are copied from the primary worktree into the gate checkout before `setup`. An absent key means none. An entry
+that is tracked in the repository or present in the gated commit stops the gate with exit 2.
 
 `gate.sh --sha <sha> --files <paths>` gates a committed SHA in the run's detached checkout `<runDir>/gate-checkout`
 instead of `--repo` in place. The checkout is created once per run and moved between SHAs so installed dependencies

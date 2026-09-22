@@ -18,7 +18,7 @@
     },
     "answers": {},
     "agents": {
-      "worker": {"model": "sonnet", "maxTurns": 150, "effort": null},
+      "worker": {"model": "opus", "maxTurns": 150, "effort": "medium"},
       "shipper": {"model": "sonnet", "maxTurns": 50, "effort": null},
       "claude-implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
     },
@@ -42,7 +42,7 @@
         "roles": {
           "impl": {"model": "gpt-5.6-sol", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
           "quick-impl": {"model": "gpt-5.6-luna", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
-          "review": {"model": "gpt-6-astra", "effort": "high", "maxToolCalls": 90, "maxToolOutputKB": 300, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"},
+          "review": {"model": "gpt-6-sol", "effort": "xhigh", "maxToolCalls": 90, "maxToolOutputKB": 300, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"},
           "plan-review": {"model": "gpt-5.6-sol", "effort": "high", "maxToolCalls": 30, "maxToolOutputKB": 200, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"}
         },
         "defaultRole": "review",

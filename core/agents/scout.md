@@ -1,7 +1,8 @@
 ---
 name: scout
 description: Read-only research and codebase exploration — mapping features across repos, reading docs, searching logs, summarizing external references. Use for any fan-out search or "go understand X and report back" task. Returns structured reports with file:line citations; never modifies anything.
-model: sonnet
+model: opus
+effort: medium
 disallowedTools: Agent
 maxTurns: 75
 ---

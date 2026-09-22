@@ -18,13 +18,13 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 
 A plan with two or more `### Phase <id>: <title>` headings under `## Phases` runs one phase at a time:
 
-1. Before the first phase, Forge switches to a new branch when the checkout is on the base branch, as ship-pr does.
+1. Before the first phase, Forge switches to a new branch when the checkout is on the base branch, as ship-pr does, and records the run in `<runDir>/phases.json`.
 2. Each phase gets its own implementer turn (`implement-phase-<id>`, `implementation-summary-phase-<id>.md`) with the full plan as context and the instruction to implement only that phase.
 3. The phase's files are committed as `Phase <id>: <title>` through `gate.sh --no-stages --commit`, and the SHA is recorded in `<runDir>/phases.json`.
-4. In gate mode `full`, the phase gate (`gate-phase-<id>`) runs on that SHA with `gate.sh --sha` in `<runDir>/gate-checkout` while the next phase is implemented. Gates run one at a time. The final phase's gate covers every run file.
+4. In gate mode `full`, the phase gate (`gate-phase-<id>`) runs on that SHA with `gate.sh --sha` in `<runDir>/gate-checkout` while the next phase is implemented. Gates run one at a time. The last phase gets no gate of its own: after every earlier gate and its fix commits have settled, the final gate runs on HEAD over every run file.
 5. A failed gate is collected at the next phase boundary, never while an implementer is editing. The usual gate fix round runs in the primary worktree, each fix is committed as `Fix Phase <id> gate`, and that SHA is re-gated. The final gate, and any fix it needs, finishes before the pre-ship checkpoint.
 
-Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the checkpoint. A resumed run keeps `baseline.json`, re-gates the pending SHAs in `phases.json`, and starts at the first uncommitted phase. The handoff removes the gate checkout.
+Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the checkpoint. A resumed run keeps `baseline.json` whenever `phases.json` exists, re-gates the pending and failed gates saved there, starts at the first uncommitted phase, and runs the final gate. The handoff removes the gate checkout; a run that stops for a judge or throws removes it directly.
 
 Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke.
 
