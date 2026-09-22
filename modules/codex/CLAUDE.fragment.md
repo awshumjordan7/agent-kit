@@ -1,1 +1,1 @@
-Codex is available for bounded implementation and review work through the forge role configuration.
+Codex runs the forge code-review role only.

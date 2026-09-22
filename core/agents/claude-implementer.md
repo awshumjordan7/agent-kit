@@ -1,8 +1,8 @@
 ---
 name: claude-implementer
-description: Implements through the Claude provider path when a Forge role explicitly selects Claude; Codex is the default.
+description: Implements Forge plan segments when a role selects the Claude provider.
 model: opus
-effort: high
+effort: xhigh
 maxTurns: 150
 disallowedTools: Agent
 ---

@@ -4,13 +4,13 @@ export const meta = {
   name: 'forge-core',
   description: 'Forge orchestration: implement, gate, ship, sandbox, independent review, bounded fixes, and handoff',
   phases: [
-    { title: 'Implement', detail: 'Codex implementation on a persistent thread' },
+    { title: 'Implement', detail: 'Implementation by the configured provider' },
     { title: 'Gate', detail: 'Repository-native tests, lint, Semgrep, and migration checks' },
     { title: 'Checkpoint', detail: 'Fresh pre-ship recommendation and decision' },
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
     { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
-    { title: 'Fix', detail: 'One fix round and one scoped Fable verification' },
+    { title: 'Fix', detail: 'One fix round and one scoped Claude verification' },
     { title: 'Handoff', detail: 'Run status, evidence, decisions, and manual QA' },
   ],
 }
@@ -34,10 +34,10 @@ const TIERS = {
     readConfig: { model: 'haiku', effort: 'low' },
   },
   opus: {
-    implementer: { model: 'opus', effort: 'high' },
-    reviewer: { model: 'opus', effort: 'high' },
-    triage: { model: 'opus', effort: 'high' },
-    judge: { model: 'opus', effort: 'high' },
+    implementer: { model: 'opus', effort: 'xhigh' },
+    reviewer: { model: 'opus', effort: 'xhigh' },
+    triage: { model: 'opus', effort: 'xhigh' },
+    judge: { model: 'opus', effort: 'xhigh' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
@@ -69,7 +69,7 @@ const PARAMS = {
   ticket: args.ticket || 'forge',
   tickets: Array.isArray(args.tickets) && args.tickets.length ? args.tickets.map(String) : [args.ticket || 'forge'],
   criteria: Array.isArray(args.criteria) ? args.criteria : [],
-  tier: TIERS[args.tier] ? args.tier : 'fable',
+  tier: TIERS[args.tier] ? args.tier : 'opus',
   tierSandbox: args.tier_sandbox || 'sandbox',
   // Reuse a fork another run built (companion repo run): {sandboxId, loginUrl, previewUrl}.
   // Changed files are uploaded into it instead of creating a second sandbox.
@@ -604,18 +604,18 @@ async function agentT(role, prompt, opts = {}) {
     }
     return null
   }
-  const forceFable = opts.forceFable === true
-  const profile = forceFable ? TIERS.fable[role] : tierProfile(role)
+  const forceTier = opts.forceTier === true
+  const profile = forceTier ? TIERS[PARAMS.tier][role] : tierProfile(role)
   if (!profile) throw new Error(`unknown tier role: ${role}`)
   spawnCount++
-  const { forceFable: _forceFable, ...agentOpts } = opts
+  const { forceTier: _forceTier, ...agentOpts } = opts
   const callOpts = { ...agentOpts, model: profile.model, effort: profile.effort }
   if (PARAMS.dryRun) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
     return STUBS[role](opts)
   }
   let result = await runtimeAgent(prompt, callOpts)
-  if (result === null && profile.model === 'fable' && !forceFable) {
+  if (result === null && profile.model === 'fable' && !forceTier) {
     if (spawnCount >= PARAMS.spawnCap - 2) {
       capBlocked = true
       await decide(`${role} returned null on Fable; the Opus fallback was not started because the spawn cap was reached.`)
@@ -1165,7 +1165,7 @@ ${JSON.stringify(explanations)}
 
 FIX DIFF
 ${diff}`,
-  { label: 'verify-review', phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer', forceFable: true }), REVIEW_TIMEOUT_MS, 'verify-review')
+  { label: 'verify-review', phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer', forceTier: true }), REVIEW_TIMEOUT_MS, 'verify-review')
 }
 
 async function unresolvedAfterVerification(items, verify) {

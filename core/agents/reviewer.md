@@ -1,7 +1,8 @@
 ---
 name: reviewer
 description: Read-only code reviewer for a Forge diff file, plan summary, criteria, checklist, and standards. Used by the review panel and post-Workflow manual review bundles. Never sees Codex's findings.
-model: fable
+model: opus
+effort: xhigh
 disallowedTools: Agent, Edit, Write, NotebookEdit
 maxTurns: 40
 ---

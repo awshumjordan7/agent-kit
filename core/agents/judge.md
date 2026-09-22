@@ -1,8 +1,8 @@
 ---
 name: judge
 description: Resolves stalled Forge findings from current code evidence after an implementation and verification round makes no progress.
-model: fable
-effort: high
+model: opus
+effort: xhigh
 maxTurns: 40
 tools: Read, Grep, Glob, Bash, Edit
 ---

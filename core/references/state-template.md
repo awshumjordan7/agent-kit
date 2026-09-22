@@ -5,7 +5,7 @@ Read this file first. Do not read plan.md, the Codex logs, or other run-dir file
 ## Now
 <one to three lines: what is true right now, what is in flight>
 ## Next
-1. <next action, who does it (Fable / worker / Codex / steward)>
+1. <next action, who does it (main session / worker / Codex / steward)>
 ## Blockers / waiting on Jordan
 - <item or "none">
 ## Pointers

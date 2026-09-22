@@ -45,7 +45,7 @@ Top-level `roles` selects provider, model, and effort:
 - `review`: final review and verification;
 - `plan-review`: pre-implementation review.
 
-Codex is the default implementation path. A role configured with `provider: claude` uses the `claude-implementer` agent. The Fable reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
+The implementation provider comes from `roles`: `provider: claude` uses the `claude-implementer` agent, and `provider: codex` uses `codex-exec.sh`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
 
 ## Optional stages
 
@@ -64,7 +64,7 @@ Core ships optional stages disabled. An overlay may supply and enable:
 - In `full` mode, the local gate must pass before shipping.
 - Every build run pauses at a pre-ship checkpoint: a fresh reviewer summarizes the change and recommends ship, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without a sandbox stage stops the run before shipping.
 - Every review finding is triaged against current code before a fixer runs.
-- Forge allows one fix round on a fresh implementation thread. One fresh Fable reviewer then verifies only the original post-triage findings from both reviewers using the implementer's per-finding explanations and the fix diff; it cannot add findings. Unresolved items go directly to the handoff, with no post-fix gate, status agent, judge, or second fix round.
+- Forge allows one fix round on a fresh implementation thread. One fresh Claude reviewer then verifies only the original post-triage findings from both reviewers using the implementer's per-finding explanations and the fix diff; it cannot add findings. Unresolved items go directly to the handoff, with no post-fix gate, status agent, judge, or second fix round.
 - Review diffs are files. Codex receives the validated file through `--inline-diff`; Claude reviewers use the Read tool in ranges of at most 2,000 lines.
 - Shippers stage exactly the changed-file context and never force-push without approval.
 - Live-dependent capabilities remain implemented-unverified until a live harness proves them.
