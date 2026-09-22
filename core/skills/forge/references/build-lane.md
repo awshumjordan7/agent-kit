@@ -7,9 +7,9 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 | Step | Owner | Notes |
 |---|---|---|
 | Investigate | main session and scoped scouts | Diagnose before fixing: read the code path and capture live evidence before naming a cause. Map reusable patterns and affected callers. |
-| Plan | main session | State the public contract, files, tests, acceptance criteria, access rules, risks, and run settings. |
+| Plan | main session | State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. |
 | Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. |
-| Confirm | user | Skipped only in explicitly requested auto mode. |
+| Confirm | user | Plan confirmation is skipped only in explicitly requested auto mode; separate test-table approval is never skipped. |
 | Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, optional QA, parallel Codex and Fable review plus lenses, triage, at most one fix with one scoped Fable verification, handoff. |
 
 `quick-impl` is selected only when `fullySpecified` is true and the plan names no more source files than `quickReviewThreshold`; otherwise Forge uses `impl`. Tests and documentation do not count as source files.

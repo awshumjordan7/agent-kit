@@ -5,13 +5,14 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 
 ## What is skipped
 
-- The plan confirm. The plan artifact is still published, for the record.
+- The plan confirm after the tests have been separately approved. The plan artifact is still published, for the record.
 - Clarifying questions. Pick the reading closest to the ticket/spec text; log it.
 - Waiting on the user for the judge. The finding is applied (conservative default); log it.
 - Ticket approval. One ticket at most per run, and only after the JQL search finds nothing.
 
 ## What is never skipped
 
+- Test-table approval. Auto starts only after the user explicitly approves the table or its `None: <reason>`.
 - The local gate and the sandbox gate.
 - Scope limits. A run that needs a materially different plan stops with the evidence and reason.
 - Progress-based convergence. Two judged rounds without progress stop with the failure list and resume pointers in `STATE.md`; eight total rounds is the safety ceiling.

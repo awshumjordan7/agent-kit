@@ -62,16 +62,17 @@ API clients, error handling, typing, and linting. Repository-specific rules take
 
 ## Tests (READ CAREFULLY — this team's policy is deliberate and unusual)
 
-Implement the plan's **Test Strategy exactly — it is the ceiling as well as the floor.**
+Implement the plan's approved **`## Tests` table exactly — it is the ceiling as well as the floor.**
+Each table row defines one test. `None: <reason>` defines no tests.
 
-- No tests beyond the strategy: no permutation grids, no trivial-accessor tests, no
+- No tests beyond the table: no permutation grids, no trivial-accessor tests, no
   re-testing framework behavior, no "just in case" cases.
-- Extend existing test files; create a new test file only when the strategy names one.
+- Extend existing test files; create a new test file only when the table names one.
 - Keep each test minimal: explicit setup, inline data, one behavior per test.
 - Make tests deterministic (stub dates, IDs, timeouts).
 - Do NOT anchor on the density of existing tests in this repo — much of it is accumulated
   AI-generated noise the maintainer actively deletes; it is not the standard to match.
-- If the strategy seems insufficient, say so in your implementation summary. Do not add
+- If the table seems insufficient, say so in your implementation summary. Do not add
   tests unasked.
 
 Why: there are zero human complaints about coverage in this codebase, and constant human

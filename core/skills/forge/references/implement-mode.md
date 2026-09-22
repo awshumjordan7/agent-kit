@@ -9,8 +9,11 @@ in-session on the top-level model; that was the most expensive path in the skill
 
 ## Steps
 
-1. Read `plan.md`. Confirm it has numbered phases with files and a test strategy. If it
-   doesn't, stop: "this plan isn't phased — run `forge dev` on it instead."
+1. Read `plan.md`. Confirm it has numbered phases with files and a `## Tests` section containing
+   the five-column approved table, or the single line `None: <reason>`. If the phases are
+   missing, stop: "this plan isn't phased — run `forge dev` on it instead." If the tests section
+   is missing or malformed, stop: "this plan does not define its approved tests — return it for
+   confirmation."
 2. Create the run dir if absent; write `context.md` with the plan path and the repo.
 3. For each phase, in order:
    - `codex-exec.sh start|resume --role impl --sandbox workspace-write --thread-file

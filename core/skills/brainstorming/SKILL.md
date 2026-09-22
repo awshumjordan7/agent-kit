@@ -3,7 +3,7 @@ name: brainstorming
 description: >
   Structured discussion skill that produces a forge plan before implementation begins.
   Guides focused exploration, grounds the design in the actual codebase, presents 2-3
-  approaches with trade-offs, includes test strategy, and hands the agreed approach to forge.
+  approaches with trade-offs, defines the plan's tests, and hands the agreed approach to forge.
   Use whenever: "brainstorm", "discuss this feature", "let's design", "new feature",
   "I want to build", "explore approaches", "what do you think about building", "let's think
   through", "design session", or before starting a complex feature that needs upfront
@@ -49,7 +49,7 @@ Present 2-3 genuinely viable approaches — no strawman just to flatter another 
 
 1. **Summary** — one paragraph.
 2. **How it works** — enough implementation detail to judge feasibility.
-3. **Test strategy** — what to test, test types, which tests block merge.
+3. **Test considerations** — what to test, test types, which tests block merge.
 
 Then a comparison table with concrete Low/Medium/High ratings and one-line trade-offs (no
 paragraphs in cells):
@@ -62,12 +62,19 @@ paragraphs in cells):
 | Maintainability | | | |
 | Trade-offs | | | |
 
-## Phase 3: Test Strategy
+## Phase 3: Tests
 
-For each approach: what to test (core behaviors, edge cases, failure modes); test types
-(unit / integration / e2e / manual / load — be specific); blockers vs nice-to-have; and
-what's hard to test (be honest — a hard-to-test approach is a real trade-off that affects the
-decision). Test strategy is part of the design, not an afterthought.
+For each approach, consider core behaviors, edge cases, failure modes, test types
+(unit / integration / e2e / manual / load — be specific), blockers vs nice-to-have, and
+what is hard to test. Once the approach is agreed, define its tests in one `## Tests` Markdown
+table with one row per test and exactly these columns:
+
+| Section | Test | Pins | How | Why |
+|---|---|---|---|---|
+| plan phase or component | file and test name | behavior proved in one sentence | setup, action, and assertion in one sentence | risk or acceptance criterion protected |
+
+Tests not in this table are not written. If the plan has no tests, use `## Tests` followed by
+the single line `None: <reason>` instead of a table.
 
 ## Phase 4: Decision
 
@@ -80,12 +87,14 @@ this way?"); note any hybrid elements borrowed from other approaches.
 Before writing the plan, check for gaps, contradictions, unstated assumptions, and missing
 context. Fix what you find so someone reading it cold can understand the decisions.
 
-Write the agreed approach, key decisions, scope, and test strategy to `<runDir>/plan.md` in
+Write the agreed approach, key decisions, scope, and the agreed `## Tests` table (or
+`None: <reason>`) to `<runDir>/plan.md` in
 forge's plan shape:
 
 - Summary
 - Public API contract
 - Phases
+- Tests
 - Acceptance criteria
 - Run settings
 

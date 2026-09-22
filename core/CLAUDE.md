@@ -106,6 +106,9 @@ without opening the ticket.
 
 As of 2026-09-22, personal repositories configured with Forge `gate.mode: none` have no tests. Do not add or run tests, lint, typecheck, migrations, Semgrep, or parity commands in those repositories. Every build uses a fresh pre-ship checkpoint reviewer to recommend shipping, one smoke command, or a QA round; repositories in `full` mode retain their configured gates.
 
+Tests exist only when the user approves the plan's test table; a no-tests plan instead approves `None: <reason>`.
+The five-column `Section | Test | Pins | How | Why` table in `## Tests` is the only place a test is defined.
+
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?
 

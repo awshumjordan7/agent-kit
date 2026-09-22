@@ -13,9 +13,12 @@
     LENSES            -> lenses (comma list, or "none")
     SUMMARY_HTML      -> summary (2-5 short paragraphs: the problem, the fix, why this way)
     ROOT_CAUSE_HTML   -> rootCause (quick lane; "not applicable" for dev)
-    PHASES_HTML       -> one <details> block per item in phases[] (n, title, files[], tests[], notes)
+    PHASES_HTML       -> one <details> block per item in phases[] (n, title, files[], notes)
     FILES_HTML        -> one row per item in files[] (path, change)
-    TESTS_HTML        -> one <li> per string in tests[]
+    TESTS_HTML        -> tests: {rows: [{section, test, pins, how, why}], noneReason: string};
+                         group rows by section and render one compact table per section. Use
+                         rows with an empty noneReason, or empty rows with a non-empty noneReason;
+                         the latter renders one muted line: "None: {{noneReason}}".
     CRITERIA_HTML     -> one <li> per string in criteria[], phrased as observable behavior
     ACCESS_RULES_SECTION -> complete "Access rules" <section> with one <li> per string in
                             accessRules[]; an empty string when accessRules[] is empty
@@ -29,12 +32,19 @@
   Phase markup, one <details> block per item in phases[]; n is the 1-based phase number:
     <details open><summary>Phase {{n}}: {{TITLE}}</summary><table>
     <tr><th>Files</th><td>{{path}}...</td></tr>
-    <tr><th>Tests</th><td>{{test}}...</td></tr>
     <tr><th>Notes</th><td>{{notes}}</td></tr>
     </table></details>
 
   Files row markup, one per item in files[]:
     <tr><td>{{path}}</td><td>{{change}}</td></tr>
+
+  Tests markup, one group per distinct section in tests.rows, preserving input order:
+    <div class="test-group"><h3>{{section}}</h3><table class="tests-table">
+    <tbody><tr><th>Test</th><td>{{test}}</td></tr>
+    <tr><th>Pins</th><td>{{pins}}</td></tr>
+    <tr><th>How</th><td>{{how}}</td></tr>
+    <tr><th>Why</th><td>{{why}}</td></tr></tbody>...</table></div>
+  Render the no-tests case as: <p class="muted">None: {{noneReason}}</p>
 
   Plan review findings row markup, one per item in planReview.findings[]:
     <tr><td>{{severity}}</td><td>{{text}}</td><td>{{disposition}}</td></tr>
@@ -63,6 +73,12 @@
   .prose p { margin:0; }
   ul,ol { margin:0; padding-left:1.3em; display:grid; gap:6px; color:var(--ink-2); }
   .card { background:var(--surface); border:1px solid var(--line); padding:14px 18px; display:grid; gap:8px; }
+  .tests-card { gap:16px; }
+  .test-group { display:grid; gap:7px; }
+  .tests-table { table-layout:fixed; }
+  .tests-table th { width:4.5rem; }
+  .tests-table tbody + tbody tr:first-child > * { border-top:2px solid var(--line); }
+  .muted { margin:0; color:var(--muted); }
   .table-wrap { overflow-x:auto; border:1px solid var(--line); background:var(--surface); }
   table { border-collapse:collapse; width:100%; font-size:0.92rem; }
   th,td { text-align:left; vertical-align:top; padding:9px 12px; border-bottom:1px solid var(--line); }
@@ -118,7 +134,7 @@
 
   <section>
     <h2>Tests</h2>
-    <ul>{{TESTS_HTML}}</ul>
+    <div class="card tests-card">{{TESTS_HTML}}</div>
   </section>
 
   <section>

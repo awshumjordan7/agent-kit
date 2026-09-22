@@ -25,8 +25,8 @@ surfaces as a notification, never as a silent hang.
   validates and inlines up to 160,000 characters for Codex; Claude reviewers read the file in
   ranges of at most 2,000 lines.
 - Sessions run one at a time (`.state/session.lock`); `--parallel` only when the user asks.
-- The "out of credits" error kills the session at once and writes `.state/credits-exhausted`;
-  starts within `creditCooldownMinutes` refuse. Delete the marker after a refill.
+- The "out of credits" error kills that session at once with `CODEX_NO_CREDITS`; after billing
+  is fixed, a later start can retry normally.
 - Every run prints `CODEX_OK … tool_calls= tool_output_kb= tokens_in= tokens_cached= tokens_out=`
   and appends a line to `.state/usage.log`. `codex-exec.sh stats --log <events.jsonl>` and
   `scripts/codex-log-stats.py <events.jsonl>` report the same for any log after the fact.

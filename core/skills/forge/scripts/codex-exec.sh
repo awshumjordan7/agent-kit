@@ -11,7 +11,7 @@
 #                        [--writable <dir>] (repeatable) \
 #                        [--fresh] [--foreground] [--max-tool-calls N] [--max-tool-output-kb N] \
 #                        [--handoff-context-tokens N] [--handoff-tool-calls N] [--max-handoffs N] [--state-file PATH] \
-#                        [--parallel] [--ignore-credit-marker] [--no-contract]
+#                        [--parallel] [--no-contract]
 #   codex-exec.sh resume ...same flags; requires an existing --thread-file
 #   codex-exec.sh watch  --log <events.jsonl> --out <last-msg.md> [--max-wait <secs>] [--stall <secs>]
 #   codex-exec.sh stats  --log <events.jsonl>          # tool calls, output bytes, tokens, errors from an event log
@@ -39,10 +39,8 @@
 # by Codex itself via tool_output_token_limit. Web search and MCP servers are
 # disabled per role.
 #
-# CREDITS: the "out of credits" error kills the session at once (exit 77,
-# CODEX_NO_CREDITS) and writes a marker; further starts within
-# creditCooldownMinutes refuse immediately (exit 77) unless --ignore-credit-marker
-# or FORGE_CODEX_IGNORE_CREDIT_MARKER=1. Delete the marker after a refill.
+# CREDITS: the "out of credits" error kills that session at once (exit 77,
+# CODEX_NO_CREDITS). A later start may retry after billing is fixed.
 #
 # LOCK: sessions run one at a time by default (a credit failure then costs one
 # session, not three). A second start waits up to lockWaitSeconds, touching the
@@ -63,7 +61,7 @@
 # Exit codes: 0 success (CODEX_OK line + final message); 1 codex failed or
 # produced no final message; 2 thread-file state error; 10 watch max-wait
 # elapsed while still running; 64 usage error; 65 config error; 75 stalled;
-# 76 budget exceeded; 77 out of credits (or cooldown active); 78 lock timeout;
+# 76 budget exceeded; 77 out of credits; 78 lock timeout;
 # 79 context/tool-call handoff (CODEX_CONTEXT_HANDOFF).
 #
 # Settings come from forge.config.json per --role; --model/--effort/--max-* flags
@@ -84,7 +82,6 @@ SKILL_DIR="${FORGE_CODEX_EXEC_SKILL_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 CONFIG_FILE="$SKILL_DIR/forge.config.json"
 CONTRACT_FILE="$SKILL_DIR/references/codex-prompt-contract.md"
 STATE_DIR="${FORGE_CODEX_STATE_DIR:-$SKILL_DIR/.state}"
-CREDIT_MARKER="$STATE_DIR/credits-exhausted"
 LOCK_DIR="$STATE_DIR/session.lock"
 USAGE_LOG="$STATE_DIR/usage.log"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
@@ -100,7 +97,6 @@ STALL_TIMEOUT="${FORGE_CODEX_STALL_TIMEOUT:-}"
 MAX_TOOL_CALLS="" MAX_TOOL_OUTPUT_KB="" TOOL_OUTPUT_TOKEN_LIMIT="" WEB_SEARCH="" MCP_ENABLED="" CONTRACT=""
 HANDOFF_CONTEXT_TOKENS="" HANDOFF_TOOL_CALLS="" MAX_HANDOFFS=""
 PARALLEL="${FORGE_CODEX_PARALLEL:-false}"
-IGNORE_CREDIT_MARKER="${FORGE_CODEX_IGNORE_CREDIT_MARKER:-false}"
 USE_CONTRACT=true
 FOREGROUND=false
 MAX_WAIT=270
@@ -152,14 +148,12 @@ while [ $# -gt 0 ]; do
         --max-handoffs) MAX_HANDOFFS="$2"; shift 2 ;;
         --state-file) STATE_FILE="$2"; shift 2 ;;
         --parallel)    PARALLEL=true; shift ;;
-        --ignore-credit-marker) IGNORE_CREDIT_MARKER=true; shift ;;
         --no-contract) USE_CONTRACT=false; shift ;;
         --foreground) FOREGROUND=true; shift ;;
         *) echo "error: unknown flag: $1" >&2; exit 64 ;;
     esac
 done
 case "$PARALLEL" in 1|true) PARALLEL=true ;; *) PARALLEL=false ;; esac
-case "$IGNORE_CREDIT_MARKER" in 1|true) IGNORE_CREDIT_MARKER=true ;; *) IGNORE_CREDIT_MARKER=false ;; esac
 
 LOCK_HELD=false
 terminal_cleanup() {
@@ -313,7 +307,6 @@ CONTRACT="$(role_cfg contract)"
 [ -n "$STALL_TIMEOUT" ] || STALL_TIMEOUT="$(resolve_config '.codex.stallTimeoutSeconds')"
 STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
 LOCK_WAIT="$(resolve_config '.codex.lockWaitSeconds')"; LOCK_WAIT="${LOCK_WAIT:-1800}"
-CREDIT_COOLDOWN_MIN="$(resolve_config '.codex.creditCooldownMinutes')"; CREDIT_COOLDOWN_MIN="${CREDIT_COOLDOWN_MIN:-60}"
 MAX_TOOL_CALLS="${MAX_TOOL_CALLS:-40}"
 MAX_TOOL_OUTPUT_KB="${MAX_TOOL_OUTPUT_KB:-300}"
 HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-120000}"
@@ -356,7 +349,7 @@ if [ -z "$MODEL" ] || [ -z "$EFFORT" ]; then
     exit 65
 fi
 if [ "$MODE" = "config" ]; then
-    echo "role=$ROLE model=$MODEL effort=$EFFORT max_tool_calls=$MAX_TOOL_CALLS max_tool_output_kb=$MAX_TOOL_OUTPUT_KB handoff_context_tokens=$HANDOFF_CONTEXT_TOKENS handoff_tool_calls=$HANDOFF_TOOL_CALLS max_handoffs=$MAX_HANDOFFS tool_output_token_limit=${TOOL_OUTPUT_TOKEN_LIMIT:-default} web_search=${WEB_SEARCH:-default} mcp=$MCP_ENABLED contract=$CONTRACT stall=$STALL_TIMEOUT lock_wait=$LOCK_WAIT credit_cooldown_min=$CREDIT_COOLDOWN_MIN config=$CONFIG_FILE"
+    echo "role=$ROLE model=$MODEL effort=$EFFORT max_tool_calls=$MAX_TOOL_CALLS max_tool_output_kb=$MAX_TOOL_OUTPUT_KB handoff_context_tokens=$HANDOFF_CONTEXT_TOKENS handoff_tool_calls=$HANDOFF_TOOL_CALLS max_handoffs=$MAX_HANDOFFS tool_output_token_limit=${TOOL_OUTPUT_TOKEN_LIMIT:-default} web_search=${WEB_SEARCH:-default} mcp=$MCP_ENABLED contract=$CONTRACT stall=$STALL_TIMEOUT lock_wait=$LOCK_WAIT config=$CONFIG_FILE"
     if [ "$SANDBOX" = "workspace-write" ] && [ "${#WRITABLE_DIRS[@]}" -gt 0 ]; then
         build_writable_roots
         echo "writable_roots=$WRITABLE_ROOTS_VALUE"
@@ -406,13 +399,6 @@ if [ -n "$INLINE_DIFF" ] && [ ! -s "$INLINE_DIFF" ]; then
     fail 65 "CODEX_DIFF_INVALID: diff must be non-empty: $INLINE_DIFF"
 elif [ -n "$INLINE_DIFF" ] && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --git" ]; then
     fail 65 "CODEX_DIFF_INVALID: non-empty diff must begin with diff --git: $INLINE_DIFF"
-fi
-
-if [ -f "$CREDIT_MARKER" ] && [ "$IGNORE_CREDIT_MARKER" != "true" ]; then
-    marker_age_min=$(( ( $(date +%s) - $(mtime "$CREDIT_MARKER") ) / 60 ))
-    if [ "$marker_age_min" -lt "$CREDIT_COOLDOWN_MIN" ]; then
-        fail 77 "CODEX_NO_CREDITS: a session hit 'out of credits' ${marker_age_min} min ago ($(cat "$CREDIT_MARKER")). Refusing to start for $(( CREDIT_COOLDOWN_MIN - marker_age_min )) more min. After a refill: rm $CREDIT_MARKER, or pass --ignore-credit-marker."
-    fi
 fi
 
 if [ "$MODE" = "start" ]; then
@@ -575,7 +561,6 @@ run_codex() {
         stats="$(log_stats "$LOG")"
         if [ "$(stat_field "$stats" .nocredit)" != "0" ]; then
             kill_codex "$pid"
-            date '+%Y-%m-%dT%H:%M:%S' >"$CREDIT_MARKER"
             return 77
         fi
         calls=$(stat_field "$stats" .calls); bytes=$(stat_field "$stats" .bytes)
@@ -708,7 +693,7 @@ case "$rc" in
         ;;
     77)
         stats="$(record_usage no_credits)"
-        fail 77 "CODEX_NO_CREDITS: Codex reported 'out of credits' ($(usage_line "$stats")). Starts are refused for the next ${CREDIT_COOLDOWN_MIN} min; after a refill: rm $CREDIT_MARKER. Log: $LOG"
+        fail 77 "CODEX_NO_CREDITS: Codex reported 'out of credits' ($(usage_line "$stats")). Retry after fixing billing. Log: $LOG"
         ;;
     76)
         stats="$(record_usage budget_exceeded)"
