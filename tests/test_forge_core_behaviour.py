@@ -126,6 +126,12 @@ def test_codex_budget_error_is_not_retried(repo_root):
     assert result["error"].startswith("CODEX_BUDGET_EXCEEDED")
 
 
+def test_codex_handoff_exhaustion_is_not_retried(repo_root):
+    result = _harness(repo_root, "codex-handoff-exhausted", {})
+
+    assert result["error"].startswith("CODEX_HANDOFF_EXHAUSTED")
+
+
 def test_dry_run_stubborn_findings_stop_after_two_judgments(repo_root):
     journal = _harness(repo_root, "dry", {"dryRunStubborn": True})
     labels = [entry["label"] for entry in journal]

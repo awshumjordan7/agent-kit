@@ -9,7 +9,9 @@
 #   codex-exec.sh start  --thread-file <f> --prompt-file <p> --log <events.jsonl> --out <last-msg.md> \
 #                        [--sandbox read-only|workspace-write] [--role <r>] [--model <m>] [--effort <e>] [--cd <dir>] \
 #                        [--writable <dir>] (repeatable) \
-#                        [--fresh] [--foreground] [--max-tool-calls N] [--max-tool-output-kb N] [--parallel] [--ignore-credit-marker] [--no-contract]
+#                        [--fresh] [--foreground] [--max-tool-calls N] [--max-tool-output-kb N] \
+#                        [--handoff-context-tokens N] [--handoff-tool-calls N] [--max-handoffs N] [--state-file PATH] \
+#                        [--parallel] [--ignore-credit-marker] [--no-contract]
 #   codex-exec.sh resume ...same flags; requires an existing --thread-file
 #   codex-exec.sh watch  --log <events.jsonl> --out <last-msg.md> [--max-wait <secs>] [--stall <secs>]
 #   codex-exec.sh stats  --log <events.jsonl>          # tool calls, output bytes, tokens, errors from an event log
@@ -61,7 +63,8 @@
 # Exit codes: 0 success (CODEX_OK line + final message); 1 codex failed or
 # produced no final message; 2 thread-file state error; 10 watch max-wait
 # elapsed while still running; 64 usage error; 65 config error; 75 stalled;
-# 76 budget exceeded; 77 out of credits (or cooldown active); 78 lock timeout.
+# 76 budget exceeded; 77 out of credits (or cooldown active); 78 lock timeout;
+# 79 context/tool-call handoff (CODEX_CONTEXT_HANDOFF).
 #
 # Settings come from forge.config.json per --role; --model/--effort/--max-* flags
 # and FORGE_CODEX_MODEL / FORGE_CODEX_EFFORT / FORGE_CODEX_STALL_TIMEOUT override.
@@ -86,7 +89,7 @@ LOCK_DIR="$STATE_DIR/session.lock"
 USAGE_LOG="$STATE_DIR/usage.log"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 
-THREAD_FILE="" PROMPT_FILE="" LOG="" OUT="" INLINE_DIFF=""
+THREAD_FILE="" PROMPT_FILE="" LOG="" OUT="" INLINE_DIFF="" STATE_FILE=""
 FRESH=false
 SANDBOX="read-only"
 CD_DIR="$PWD"
@@ -95,12 +98,13 @@ MODEL="${FORGE_CODEX_MODEL:-}"
 EFFORT="${FORGE_CODEX_EFFORT:-}"
 STALL_TIMEOUT="${FORGE_CODEX_STALL_TIMEOUT:-}"
 MAX_TOOL_CALLS="" MAX_TOOL_OUTPUT_KB="" TOOL_OUTPUT_TOKEN_LIMIT="" WEB_SEARCH="" MCP_ENABLED="" CONTRACT=""
+HANDOFF_CONTEXT_TOKENS="" HANDOFF_TOOL_CALLS="" MAX_HANDOFFS=""
 PARALLEL="${FORGE_CODEX_PARALLEL:-false}"
 IGNORE_CREDIT_MARKER="${FORGE_CODEX_IGNORE_CREDIT_MARKER:-false}"
 USE_CONTRACT=true
 FOREGROUND=false
 MAX_WAIT=270
-POLL_INTERVAL=15
+POLL_INTERVAL="${FORGE_CODEX_POLL_INTERVAL:-15}"
 WRITABLE_DIRS=()
 RESULT_WRITTEN=false
 
@@ -117,7 +121,8 @@ write_result() {
         --arg status "$status" --argjson code "$code" --arg message "$message" \
         --arg thread "$([ -s "$THREAD_FILE" ] && head -1 "$THREAD_FILE" || true)" \
         --arg role "$ROLE" --arg model "$MODEL" --argjson stats "$stats" \
-        '{status:$status,code:$code,message:$message,thread:$thread,
+        --argjson max_handoffs "${MAX_HANDOFFS:-3}" \
+        '{status:$status,code:$code,message:$message,thread:$thread,max_handoffs:$max_handoffs,
           tool_calls:($stats.calls // 0),tool_output_kb:(($stats.bytes // 0) / 1024 | floor),
           tokens_in:($stats.usage.input_tokens // 0),tokens_out:($stats.usage.output_tokens // 0),
           role:$role,model:$model}' >"$LOG.result.json"
@@ -142,6 +147,10 @@ while [ $# -gt 0 ]; do
         --stall)       STALL_TIMEOUT="$2"; shift 2 ;;
         --max-tool-calls)     MAX_TOOL_CALLS="$2"; shift 2 ;;
         --max-tool-output-kb) MAX_TOOL_OUTPUT_KB="$2"; shift 2 ;;
+        --handoff-context-tokens) HANDOFF_CONTEXT_TOKENS="$2"; shift 2 ;;
+        --handoff-tool-calls) HANDOFF_TOOL_CALLS="$2"; shift 2 ;;
+        --max-handoffs) MAX_HANDOFFS="$2"; shift 2 ;;
+        --state-file) STATE_FILE="$2"; shift 2 ;;
         --parallel)    PARALLEL=true; shift ;;
         --ignore-credit-marker) IGNORE_CREDIT_MARKER=true; shift ;;
         --no-contract) USE_CONTRACT=false; shift ;;
@@ -294,6 +303,9 @@ role_runtime_cfg() { resolve_config ".roles[\"$ROLE\"].$1 // .codex.roles[\"$ROL
 [ -n "$EFFORT" ] || EFFORT="$(role_runtime_cfg effort)"
 [ -n "$MAX_TOOL_CALLS" ] || MAX_TOOL_CALLS="$(role_cfg maxToolCalls)"
 [ -n "$MAX_TOOL_OUTPUT_KB" ] || MAX_TOOL_OUTPUT_KB="$(role_cfg maxToolOutputKB)"
+[ -n "$HANDOFF_CONTEXT_TOKENS" ] || HANDOFF_CONTEXT_TOKENS="$(role_cfg handoffContextTokens)"
+[ -n "$HANDOFF_TOOL_CALLS" ] || HANDOFF_TOOL_CALLS="$(role_cfg handoffToolCalls)"
+[ -n "$MAX_HANDOFFS" ] || MAX_HANDOFFS="$(role_cfg maxHandoffs)"
 TOOL_OUTPUT_TOKEN_LIMIT="$(role_cfg toolOutputTokenLimit)"
 WEB_SEARCH="$(role_cfg webSearch)"
 MCP_ENABLED="$(role_cfg mcp)"
@@ -304,6 +316,15 @@ LOCK_WAIT="$(resolve_config '.codex.lockWaitSeconds')"; LOCK_WAIT="${LOCK_WAIT:-
 CREDIT_COOLDOWN_MIN="$(resolve_config '.codex.creditCooldownMinutes')"; CREDIT_COOLDOWN_MIN="${CREDIT_COOLDOWN_MIN:-60}"
 MAX_TOOL_CALLS="${MAX_TOOL_CALLS:-40}"
 MAX_TOOL_OUTPUT_KB="${MAX_TOOL_OUTPUT_KB:-300}"
+HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-120000}"
+if [ -z "$HANDOFF_TOOL_CALLS" ]; then
+    if [ "$CONTRACT" = "impl" ]; then HANDOFF_TOOL_CALLS=60; else HANDOFF_TOOL_CALLS=30; fi
+fi
+MAX_HANDOFFS="${MAX_HANDOFFS:-3}"
+if [ "$HANDOFF_TOOL_CALLS" -gt 0 ] && [ "$HANDOFF_TOOL_CALLS" -gt "$MAX_TOOL_CALLS" ]; then
+    HANDOFF_TOOL_CALLS=$(( MAX_TOOL_CALLS - 1 ))
+    echo "warn: handoff tool-call cap must be below hard budget; clamped to $HANDOFF_TOOL_CALLS (budget $MAX_TOOL_CALLS)" >&2
+fi
 MCP_ENABLED="${MCP_ENABLED:-false}"
 CONTRACT="${CONTRACT:-review}"
 build_writable_roots() {
@@ -335,7 +356,7 @@ if [ -z "$MODEL" ] || [ -z "$EFFORT" ]; then
     exit 65
 fi
 if [ "$MODE" = "config" ]; then
-    echo "role=$ROLE model=$MODEL effort=$EFFORT max_tool_calls=$MAX_TOOL_CALLS max_tool_output_kb=$MAX_TOOL_OUTPUT_KB tool_output_token_limit=${TOOL_OUTPUT_TOKEN_LIMIT:-default} web_search=${WEB_SEARCH:-default} mcp=$MCP_ENABLED contract=$CONTRACT stall=$STALL_TIMEOUT lock_wait=$LOCK_WAIT credit_cooldown_min=$CREDIT_COOLDOWN_MIN config=$CONFIG_FILE"
+    echo "role=$ROLE model=$MODEL effort=$EFFORT max_tool_calls=$MAX_TOOL_CALLS max_tool_output_kb=$MAX_TOOL_OUTPUT_KB handoff_context_tokens=$HANDOFF_CONTEXT_TOKENS handoff_tool_calls=$HANDOFF_TOOL_CALLS max_handoffs=$MAX_HANDOFFS tool_output_token_limit=${TOOL_OUTPUT_TOKEN_LIMIT:-default} web_search=${WEB_SEARCH:-default} mcp=$MCP_ENABLED contract=$CONTRACT stall=$STALL_TIMEOUT lock_wait=$LOCK_WAIT credit_cooldown_min=$CREDIT_COOLDOWN_MIN config=$CONFIG_FILE"
     if [ "$SANDBOX" = "workspace-write" ] && [ "${#WRITABLE_DIRS[@]}" -gt 0 ]; then
         build_writable_roots
         echo "writable_roots=$WRITABLE_ROOTS_VALUE"
@@ -353,6 +374,8 @@ fi
 # happily answers ("What would you like to work on?") while this script reports OK.
 THREAD_FILE=$(abspath "$THREAD_FILE"); PROMPT_FILE=$(abspath "$PROMPT_FILE")
 LOG=$(abspath "$LOG"); OUT=$(abspath "$OUT")
+[ -n "$STATE_FILE" ] || STATE_FILE="$(dirname "$THREAD_FILE")/codex-state.md"
+STATE_FILE=$(abspath "$STATE_FILE")
 [ -z "$INLINE_DIFF" ] || INLINE_DIFF=$(abspath "$INLINE_DIFF")
 mkdir -p "$(dirname "$LOG")"
 rm -f "$LOG.failed"
@@ -414,10 +437,15 @@ fi
 compose_prompt() {
     if [ "$USE_CONTRACT" = "true" ] && [ "$CONTRACT" != "none" ] && [ -f "$CONTRACT_FILE" ]; then
         awk -v want="## $CONTRACT" '
-            /^## / { on = ($0 == want); next }
+            /^## (review|impl)$/ { on = ($0 == want); next }
             on { print }
         ' "$CONTRACT_FILE" \
-        | sed -e "s/{{MAX_TOOL_CALLS}}/$MAX_TOOL_CALLS/g" -e "s/{{MAX_TOOL_OUTPUT_KB}}/$MAX_TOOL_OUTPUT_KB/g" -e "s/{{ROLE}}/$ROLE/g"
+        | sed -e "s/{{MAX_TOOL_CALLS}}/$MAX_TOOL_CALLS/g" \
+              -e "s/{{MAX_TOOL_OUTPUT_KB}}/$MAX_TOOL_OUTPUT_KB/g" \
+              -e "s/{{HANDOFF_CONTEXT_TOKENS}}/$HANDOFF_CONTEXT_TOKENS/g" \
+              -e "s/{{HANDOFF_TOOL_CALLS}}/$HANDOFF_TOOL_CALLS/g" \
+              -e "s|{{STATE_FILE}}|$STATE_FILE|g" \
+              -e "s/{{ROLE}}/$ROLE/g"
         echo
     fi
     cat "$PROMPT_FILE"
@@ -506,7 +534,7 @@ if [ "$MCP_ENABLED" != "true" ] && [ -f "$CODEX_HOME_DIR/config.toml" ]; then
 fi
 
 # Runs codex ($1 = start|resume) in the background and babysits it every
-# POLL_INTERVAL seconds: budget (76), credits (77), stall (75). Returns codex's
+# POLL_INTERVAL seconds: handoff (79), budget (76), credits (77), stall (75). Returns codex's
 # own exit code otherwise.
 kill_codex() {
     kill "$1" 2>/dev/null || true
@@ -528,7 +556,8 @@ run_codex() {
             >"$LOG" 2>"$LOG.stderr" &
     fi
     local pid=$!
-    local last_size=0 stalled_for=0 size stats calls bytes thread_id
+    local last_size=0 stalled_for=0 size stats calls bytes thread_id context=0
+    local rollout_file="" rollout_warned=false candidate reason
     local max_bytes=$(( MAX_TOOL_OUTPUT_KB * 1024 ))
     while kill -0 "$pid" 2>/dev/null; do
         sleep "$POLL_INTERVAL"
@@ -545,6 +574,51 @@ run_codex() {
             return 77
         fi
         calls=$(stat_field "$stats" .calls); bytes=$(stat_field "$stats" .bytes)
+        thread_id="$(thread_id_from_log)"
+        # The rollout file can appear a poll or two after thread.started; keep looking until it does.
+        if [ -n "$thread_id" ] && [ "$thread_id" != "null" ] && [ -z "$rollout_file" ]; then
+            for candidate in "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*-"$thread_id".jsonl; do
+                if [ -f "$candidate" ]; then rollout_file="$candidate"; break; fi
+            done
+            if [ -z "$rollout_file" ] && [ "$rollout_warned" = "false" ]; then
+                rollout_warned=true
+                echo "warn: rollout file not found yet for thread $thread_id; context handoff check unavailable until it appears" >&2
+            fi
+        fi
+        if [ -n "$rollout_file" ]; then
+            context=$(tail -n 300 "$rollout_file" | jq -r 'select(.type=="event_msg" and .payload.type=="token_count") | .payload.info.last_token_usage.input_tokens' 2>/dev/null | tail -1)
+            case "$context" in ''|null) context=0 ;; esac
+        fi
+        reason=""
+        if [ "$HANDOFF_CONTEXT_TOKENS" -gt 0 ] && [ "$context" -ge "$HANDOFF_CONTEXT_TOKENS" ]; then
+            reason="context=$context/$HANDOFF_CONTEXT_TOKENS"
+        fi
+        if [ "$HANDOFF_TOOL_CALLS" -gt 0 ] && [ "$calls" -ge "$HANDOFF_TOOL_CALLS" ]; then
+            if [ -n "$reason" ]; then reason="$reason calls=$calls/$HANDOFF_TOOL_CALLS"; else reason="calls=$calls/$HANDOFF_TOOL_CALLS"; fi
+        fi
+        if [ -n "$reason" ]; then
+            echo "warn: context handoff ($reason) — killing codex (pid $pid)" >&2
+            kill_codex "$pid"
+            if [ -n "$thread_id" ] && [ "$thread_id" != "null" ]; then printf '%s\n' "$thread_id" >"$THREAD_FILE"; fi
+            if [ -n "$rollout_file" ]; then
+                tail -n 300 "$rollout_file" | jq -s -r '[.[] | select(.type=="event_msg" and .payload.type=="agent_message") | .payload.message] | last // ""' 2>/dev/null >"$LOG.last-message.txt"
+            else
+                : >"$LOG.last-message.txt"
+            fi
+            {
+                echo "## Reason"; echo; echo "$reason thread_id=${thread_id:-unknown}"
+                echo; echo "## State file"; echo
+                if [ -f "$STATE_FILE" ]; then cat "$STATE_FILE"; else echo "absent"; fi
+                echo; echo "## Last message"; echo
+                head -c 4000 "$LOG.last-message.txt"; echo
+                echo; echo "## git diff --stat"; echo
+                { git -C "$CD_DIR" diff --stat; git -C "$CD_DIR" status --short | grep '^??' || true; } | sed -n '1,200p'
+            } >"$LOG.handoff.md"
+            HANDOFF_CONTEXT="$context"
+            HANDOFF_CALLS="$calls"
+            HANDOFF_THREAD_ID="${thread_id:-}"
+            return 79
+        fi
         if [ "$calls" -gt "$MAX_TOOL_CALLS" ] || [ "$bytes" -gt "$max_bytes" ]; then
             echo "warn: budget exceeded (tool_calls=$calls/$MAX_TOOL_CALLS tool_output_kb=$(( bytes / 1024 ))/$MAX_TOOL_OUTPUT_KB) — killing codex (pid $pid)" >&2
             kill_codex "$pid"
@@ -594,7 +668,7 @@ fi
 
 # A thread id is persisted on success and on a budget kill (so the caller can
 # resume and ask for the verdict); not after a credit failure or a wedge.
-if [ "$MODE" = "start" ] && { [ "$rc" -eq 0 ] || [ "$rc" -eq 76 ]; }; then
+if [ "$MODE" = "start" ] && { [ "$rc" -eq 0 ] || [ "$rc" -eq 76 ] || [ "$rc" -eq 79 ]; }; then
     THREAD_ID="$(thread_id_from_log)"
     if [ -n "$THREAD_ID" ] && [ "$THREAD_ID" != "null" ]; then
         printf '%s\n' "$THREAD_ID" >"$THREAD_FILE"
@@ -611,6 +685,22 @@ final_message_after_kill() {
 }
 
 case "$rc" in
+    79)
+        stats="$(record_usage handoff)"
+        handoff_line="CODEX_CONTEXT_HANDOFF context=${HANDOFF_CONTEXT:-0} calls=${HANDOFF_CALLS:-0} handoff=$LOG.handoff.md"
+        printf '%s\n' "$handoff_line" >"$LOG.status"
+        write_result handoff 79 "$handoff_line"
+        jq --arg handoff_file "$LOG.handoff.md" \
+           --argjson context_tokens "${HANDOFF_CONTEXT:-0}" \
+           --argjson tool_calls "${HANDOFF_CALLS:-0}" \
+           --arg thread_id "${HANDOFF_THREAD_ID:-}" \
+           '. + {handoff_file:$handoff_file,context_tokens:$context_tokens,tool_calls:$tool_calls,thread_id:$thread_id}' \
+           "$LOG.result.json" >"$LOG.result.json.tmp"
+        mv "$LOG.result.json.tmp" "$LOG.result.json"
+        { echo 79; echo "$handoff_line"; } >"$LOG.failed"
+        echo "$handoff_line" >&2
+        exit 79
+        ;;
     77)
         stats="$(record_usage no_credits)"
         fail 77 "CODEX_NO_CREDITS: Codex reported 'out of credits' ($(usage_line "$stats")). Starts are refused for the next ${CREDIT_COOLDOWN_MIN} min; after a refill: rm $CREDIT_MARKER. Log: $LOG"
