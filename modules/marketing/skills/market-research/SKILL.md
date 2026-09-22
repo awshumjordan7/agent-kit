@@ -9,9 +9,10 @@ The entry point is a business idea in plain words - a product, a company, a serv
 wants to enter. One sentence or one paragraph is enough.
 
 From that idea, derive `{company}`, `{product}`, `{audience}` and a first list of competitors, then
-confirm all four in a single question before any research starts. When no competitors are named, the
-discovery brief seeds the list. Optional inputs: named competitors, `quick` or `deep` (default `quick`),
-a `{company}` product-context file, and access to an internal transcript or call-notes tool.
+confirm all four in a single question before the per-competitor research starts. When no competitors are
+named, run the seeding pass in `references/discovery.md` first and put its candidates into that same
+question. Optional inputs: named competitors, `quick` or `deep` (default `quick`), a `{company}`
+product-context file, and access to an internal transcript or call-notes tool.
 
 Create a run directory and write findings under `intelligence/competitors/<name>/` and
 `intelligence/personas/<name>/`.

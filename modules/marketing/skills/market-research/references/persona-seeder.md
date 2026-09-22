@@ -114,6 +114,7 @@ the origin column stands in for a URL when the origin is a person rather than a 
 The brief fails when any box is unchecked:
 
 - [ ] Every claim in the output has an evidence-ledger row with an origin and a date.
+- [ ] Every inference is labelled as an inference rather than stated as fact.
 - [ ] Every assumption is marked in the line where it appears, not only in a summary table.
 - [ ] No required section of the output template is empty and no `{placeholder}` is left unresolved;
       sections without context read "unknown - no evidence".

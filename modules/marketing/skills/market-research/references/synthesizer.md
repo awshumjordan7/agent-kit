@@ -9,6 +9,7 @@ behind them, the contradictions, and the questions still open.
 
 - Every brief written for this competitor under `intelligence/competitors/{competitor}/`.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
+- `intelligence/personas/{persona}/profile.md` on a deep run where the persona track also ran.
 - Depth: `quick` or `deep`.
 - A `{company}` product-context file when one was supplied.
 
@@ -117,6 +118,6 @@ The brief fails when any box is unchecked:
 
 ## Handoff
 
-Final brief in the competitor track. The profile at `intelligence/competitors/{competitor}/profile.md`
-is the input the `content-pipeline` skill reads at its render stage, together with
-`content-pipeline/references/modes.md`.
+Next brief: `content-pipeline/references/modes.md`, which reads
+`intelligence/competitors/{competitor}/profile.md` at the render stage of the `content-pipeline` skill.
+This is the last brief in the market-research competitor track.

@@ -50,7 +50,10 @@ else is Low.
    distinct records, and which customer segments it came from.
 7. **Cross-check against public evidence.** Where internal and public findings agree, confidence rises.
    Where they disagree, record the contradiction rather than picking the flattering side.
-8. **Roll every verified mention into the evidence ledger** as a tier 1 row with its record link.
+8. **Roll every verified mention into the evidence ledger**, graded by how direct the record is rather
+   than by having passed the gate. A customer speaking for themselves on a linked, dated record is
+   tier 1. A colleague's note reporting what a customer said is second-hand: tier 2 when a second
+   independent record confirms it, tier 3 on its own.
 9. **Record a zero result explicitly** when the search finds nothing, and lower the confidence of every
    claim that would have rested on it.
 
@@ -117,5 +120,5 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Next brief: `synthesizer.md`, which reads
-`intelligence/competitors/{competitor}/internal-sources.md` and treats its verified mentions as the
-tier 1 evidence in the profile.
+`intelligence/competitors/{competitor}/internal-sources.md` and carries each verified mention at the
+tier this brief graded it.

@@ -54,23 +54,17 @@ def test_every_brief_is_present(references: Path):
 
 
 @pytest.mark.parametrize("name", BRIEFS)
-def test_brief_has_the_method_sections_in_order(references: Path, name: str):
+def test_brief_follows_the_house_shape(references: Path, name: str):
     text = (references / name).read_text(encoding="utf-8")
 
     assert headings(text, "## ") == list(BRIEF_SECTIONS)
-
-
-@pytest.mark.parametrize("name", BRIEFS)
-def test_brief_length_stays_within_the_house_range(references: Path, name: str):
-    lines = len((references / name).read_text(encoding="utf-8").splitlines())
-
-    assert 80 <= lines <= 160
+    assert 80 <= len(text.splitlines()) <= 160
 
 
 def test_content_modes_each_have_purpose_inputs_and_template(repo_root: Path):
-    text = (
-        repo_root / "modules/marketing/skills/content-pipeline/references/modes.md"
-    ).read_text(encoding="utf-8")
+    text = (repo_root / "modules/marketing/skills/content-pipeline/references/modes.md").read_text(
+        encoding="utf-8"
+    )
 
     modes = text.split("\n## Mode ")[1:]
     assert len(modes) == 4

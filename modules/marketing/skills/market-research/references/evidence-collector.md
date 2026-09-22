@@ -72,8 +72,7 @@ from 001 within a day.
 {Situation, participants, purpose, original date if different from the collection date.}
 
 ## Key insights
-- {What this says about the persona.}
-- {Second insight.}
+- {The one insight this file carries about the persona. A further insight gets its own file.}
 
 ## Supports or diverges
 {Which recorded assumption this supports or contradicts, or "new - no assumption on record".}
@@ -99,6 +98,8 @@ future row, carrying its source link, date and tier.
 The brief fails when any box is unchecked:
 
 - [ ] Every evidence file has a source link or identifier and a real collection date.
+- [ ] Every inference drawn in the insights or context is labelled as an inference rather than stated
+      as fact.
 - [ ] Every snippet is verbatim; paraphrase is marked as paraphrase and any cut is marked.
 - [ ] No required section of the output template is empty and no `{placeholder}` is left unresolved.
 - [ ] Each file holds one insight, and the file name follows the dated sequence convention.

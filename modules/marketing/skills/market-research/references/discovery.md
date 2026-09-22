@@ -7,7 +7,8 @@ company, its products, its audience, its pricing signals, and its public proof.
 
 ## Inputs
 
-- `{competitor}` name and website.
+- `{competitor}` name and website. With no competitor named yet, step 0 seeds the list and the rest
+  of the brief then runs once per confirmed competitor.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
 - Depth: `quick` or `deep`.
 - The existing `intelligence/competitors/{competitor}/discovery.md`, when one exists, so this run records
@@ -31,10 +32,16 @@ Medium needs one strong tier 2 source or several tier 3 sources; everything else
 
 ## Steps
 
+0. **Seed the competitor list when none was supplied.** From the business idea, write the category words
+   `{audience}` would search, then read those search results, the matching category pages on G2,
+   TrustRadius and Capterra, and the "alternatives" pages of the obvious incumbents. Return five to eight
+   candidates, each with a name, a website and one line on why it competes with `{company} {product}`,
+   ranked by overlap. The ranking is an inference; mark it as one. Hand the list back for confirmation and
+   run the steps below only on the competitors that come back confirmed.
 1. **Check for a prior run.** Read the existing discovery file if there is one and note its date. Focus
    this run on what has appeared since.
-2. **Map the site.** Use `firecrawl_map` on the competitor website. Save the URL of the homepage, about
-   page, pricing page, product and feature pages, partner or reseller page, careers page, blog or
+2. **Map the site.** Use the site-mapping tool on the competitor website. Save the URL of the homepage,
+   about page, pricing page, product and feature pages, partner or reseller page, careers page, blog or
    resource centre, customer stories, and the demo or contact page.
 3. **Find third-party sources.** Search review platforms (G2, TrustRadius, Capterra), category forums,
    professional networks such as LinkedIn, community threads such as Reddit, and trade publications that
@@ -96,6 +103,10 @@ date from an example.
 | Source or method | Used / fallback / unavailable | Note |
 |---|---|---|
 | | | |
+
+### Implications for {company}
+{What these base facts change about where {company} {product} sits against this competitor, and which of
+them the later briefs should test first. Mark each as an inference.}
 ```
 
 ## Evidence ledger
