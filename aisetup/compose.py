@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -29,9 +30,18 @@ class ComposeResult:
     backup: Path | None = None
 
 
+@dataclass(frozen=True)
+class InstallationPaths:
+    preserved: tuple[Path, ...]
+    retired: tuple[Path, ...]
+    retired_modified: tuple[Path, ...]
+
+
 DEFAULT_DIRECTORIES = ("hooks", "agents", "skills", "references", "scripts")
 COMPILED_SUFFIXES = {".pyc", ".pyo", ".pyd"}
 COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.pyd")
+MANAGED_PATHS_VERSION = 1
+MANAGED_PATHS_FILENAME = "managed-paths.json"
 
 
 def _is_compiled_artifact(path: Path) -> bool:
@@ -195,24 +205,83 @@ def _backup_path(home: Path) -> Path:
     return candidate
 
 
-def unmanaged_paths(home: Path, staged: Path) -> tuple[Path, ...]:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_managed_paths(layers_root: Path) -> dict[str, str]:
+    path = layers_root.expanduser() / MANAGED_PATHS_FILENAME
+    if not path.is_file():
+        return {}
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ComposeError(f"cannot read managed path record {path}: {error}") from error
+    if not isinstance(record, dict):
+        raise ComposeError(f"invalid managed path record: {path}")
+    paths = record.get("paths")
+    if record.get("version") != MANAGED_PATHS_VERSION or not isinstance(paths, dict):
+        raise ComposeError(f"unsupported managed path record: {path}")
+    if not all(
+        isinstance(relative, str) and isinstance(digest, str) for relative, digest in paths.items()
+    ):
+        raise ComposeError(f"invalid managed path record: {path}")
+    return paths
+
+
+def _write_managed_paths(layers_root: Path, staged: Path, files: Iterable[str]) -> None:
+    layers_root = layers_root.expanduser()
+    layers_root.mkdir(parents=True, exist_ok=True)
+    path = layers_root / MANAGED_PATHS_FILENAME
+    temporary = path.with_suffix(".tmp")
+    record = {
+        "version": MANAGED_PATHS_VERSION,
+        "paths": {relative: _sha256(staged / relative) for relative in sorted(files)},
+    }
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def installation_paths(home: Path, staged: Path, layers_root: Path) -> InstallationPaths:
     home = home.expanduser()
     if not home.is_dir():
-        return ()
+        return InstallationPaths((), (), ())
 
-    paths: list[Path] = []
+    previous = _load_managed_paths(layers_root)
+    preserved: list[Path] = []
+    retired: list[Path] = []
+    retired_modified: list[Path] = []
+
+    def contains_managed_path(relative: Path) -> bool:
+        prefix = relative.as_posix().rstrip("/") + "/"
+        return any(path.startswith(prefix) for path in previous)
 
     def collect(source: Path) -> None:
         for entry in sorted(source.iterdir()):
             relative = entry.relative_to(home)
             target = staged / relative
             if not target.exists() and not target.is_symlink():
-                paths.append(relative)
+                recorded_digest = previous.get(relative.as_posix())
+                if entry.is_dir() and not entry.is_symlink() and contains_managed_path(relative):
+                    collect(entry)
+                elif recorded_digest is None:
+                    preserved.append(relative)
+                elif (
+                    not entry.is_symlink() and entry.is_file() and _sha256(entry) == recorded_digest
+                ):
+                    retired.append(relative)
+                else:
+                    preserved.append(relative)
+                    retired_modified.append(relative)
             elif entry.is_dir() and target.is_dir():
                 collect(entry)
 
     collect(home)
-    return tuple(paths)
+    return InstallationPaths(tuple(preserved), tuple(retired), tuple(retired_modified))
 
 
 def _restore_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> None:
@@ -237,7 +306,7 @@ def _restore_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> N
             shutil.copy2(source, target, follow_symlinks=False)
 
 
-def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
+def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> ComposeResult:
     home = home.expanduser().resolve()
     home.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f".{home.name}.install-", dir=home.parent))
@@ -246,7 +315,7 @@ def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
     backup: Path | None = None
     try:
         result = compose_tree(profile, staging, auxiliary_root=auxiliary)
-        preserved = unmanaged_paths(home, staging)
+        paths = installation_paths(home, staging, layers_root)
         if home.exists():
             backup = _backup_path(home)
             os.replace(home, backup)
@@ -257,9 +326,12 @@ def install_tree(profile: dict[str, Any], home: Path) -> ComposeResult:
                 os.replace(backup, home)
             raise
         if backup is not None:
-            _restore_unmanaged(backup, home, preserved)
-            sys.stdout.write(f"preserved {len(preserved)} unmanaged path(s) from {backup}\n")
+            _restore_unmanaged(backup, home, paths.preserved)
+            sys.stdout.write(f"preserved {len(paths.preserved)} unmanaged path(s) from {backup}\n")
+            for relative in paths.retired_modified:
+                sys.stdout.write(f"retired but locally modified: {relative}\n")
         _install_auxiliary(auxiliary, home.parent)
+        _write_managed_paths(layers_root, home, result.files)
         return ComposeResult(result.files, result.settings, backup)
     finally:
         if work.exists():

@@ -21,6 +21,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Use existing patterns first.** Search the codebase (and sibling repos in the workspace) for how similar things are done. Match existing style. Report what you found before writing new code.
 - **Explain alternatives.** If you see a better approach, say so and explain why. Don't silently deviate or stay quiet about improvements.
 - **Make minimal changes.** Touch only what's needed.
+- Diagnose before fixing: read the code path and capture live evidence (response body, console, DB state) before naming a cause.
+- When the user reports unexpected behaviour, state what you found before what you will change.
 
 ## Delegation and context hygiene
 

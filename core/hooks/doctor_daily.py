@@ -7,6 +7,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
+if __package__:
+    from .feedback_inbox import FEEDBACK_DIR, oldest_unread_ts, unread_count
+else:
+    from feedback_inbox import FEEDBACK_DIR, oldest_unread_ts, unread_count
+
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=False, capture_output=True, text=True, timeout=20)
@@ -74,6 +79,15 @@ def run_daily(layers_root: Path, claude_home: Path, today: date | None = None) -
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
+    inbox_path = os.path.join(FEEDBACK_DIR, "inbox.jsonl")
+    try:
+        count = unread_count(inbox_path)
+        oldest = oldest_unread_ts(inbox_path)
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    else:
+        if count > 0 and oldest is not None:
+            messages.append(f"{count} unread inbox entries, oldest {oldest[:10]}")
     return "\n".join(message for message in messages if message)
 
 

@@ -33,4 +33,5 @@ Rules:
 - Your final message is consumed by an orchestrator, not a human: structured
   report, front-loaded conclusions, no filler. Include a short "what I did not
   check" note so coverage gaps are visible.
-- If you are about to hit the turn cap, write what you have to the OUTPUT path first and say it is partial.
+- Write the OUTPUT file with the Write tool before the final message; never return the report
+  inline. Near the cap, write a partial report first.

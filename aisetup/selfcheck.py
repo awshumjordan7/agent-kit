@@ -5,9 +5,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from aisetup.layers import ResolvedLayers
 from aisetup.paths import is_default_claude_home
 
 
@@ -49,8 +51,15 @@ def _json_file(capability_id: str, path: Path) -> Capability:
     return _result(capability_id, True, str(path))
 
 
+def _agent_owner(resolved_layers: ResolvedLayers, filename: str) -> str:
+    for layer in reversed(resolved_layers.layers):
+        if (layer.root / "agents" / filename).is_file():
+            return layer.name
+    return "unknown"
+
+
 def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
-    from aisetup.compose import ComposeError
+    from aisetup.compose import ComposeError, compose_tree
     from aisetup.layers import resolve_layers
     from aisetup.manifest import ManifestError
     from aisetup.mcp import McpError, _matches, registration_for_layers
@@ -133,6 +142,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
 
     if profile is None:
         results.append(_skip("managed_content", "valid profile unavailable"))
+        results.append(_skip("installed_agents_match", "valid profile unavailable"))
         results.append(_skip("mcp_registered_set", "valid profile unavailable"))
     else:
         try:
@@ -147,6 +157,34 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
                     not drift,
                     paths,
                     None if not drift else "managed files differ",
+                )
+            )
+
+        try:
+            resolved = resolve_layers(profile)
+            with tempfile.TemporaryDirectory(prefix="agent-kit-agent-check-") as temporary:
+                composed = Path(temporary) / "claude"
+                compose_tree(profile, composed)
+                mismatches = []
+                for expected in sorted((composed / "agents").glob("*.md")):
+                    installed = home / "agents" / expected.name
+                    if installed.is_file() and installed.read_bytes() == expected.read_bytes():
+                        continue
+                    mismatches.append(
+                        f"{expected.name} (owning layer: {_agent_owner(resolved, expected.name)})"
+                    )
+        except (ComposeError, ManifestError, OSError) as error:
+            results.append(
+                _result("installed_agents_match", False, str(home / "agents"), str(error))
+            )
+        else:
+            evidence = ", ".join(mismatches) or "installed agents match composed layers"
+            results.append(
+                _result(
+                    "installed_agents_match",
+                    not mismatches,
+                    evidence,
+                    None if not mismatches else "installed agents differ",
                 )
             )
 
@@ -202,7 +240,11 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
     )
     hooks = home / "hooks"
     non_python = (
-        sorted(path.name for path in hooks.iterdir() if path.is_file() and path.suffix != ".py")
+        sorted(
+            path.name
+            for path in hooks.iterdir()
+            if path.is_file() and not path.name.startswith(".") and path.suffix != ".py"
+        )
         if hooks.is_dir()
         else []
     )

@@ -18,3 +18,5 @@ Use `install --profile FILE --yes` to replay a profile without prompts. Paths be
 profile is loaded. Later layer data overrides earlier values through the normal deep-merge rules. When `--home`
 points somewhere other than `~/.claude`, MCP registration and the self-check's MCP list probe are skipped because
 the Claude CLI writes user-scoped servers to the default home.
+
+On later installs, files that are no longer managed are retired when unchanged and preserved with a notice when locally modified.

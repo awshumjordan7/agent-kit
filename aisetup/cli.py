@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from aisetup import __version__
-from aisetup.compose import ComposeError, compose_tree, install_tree, unmanaged_paths
+from aisetup.compose import ComposeError, compose_tree, install_tree, installation_paths
 from aisetup.denylist import load_entries, scan_tree
 from aisetup.deps import (
     CORE_DEPENDENCIES,
@@ -125,13 +125,18 @@ def _install(args: argparse.Namespace) -> int:
             with tempfile.TemporaryDirectory(prefix="agent-kit-dry-run-") as temporary:
                 destination = Path(temporary) / "claude"
                 result = compose_tree(profile, destination)
-                preserved = unmanaged_paths(args.home, destination)
+                paths = installation_paths(args.home, destination, args.layers_root)
             print("Planned files:")
             for path in result.files:
                 print(path)
             print("Preserved (unmanaged):")
-            for path in preserved:
+            for path in paths.preserved:
                 print(path)
+            print("Retired (managed):")
+            for path in paths.retired:
+                print(path)
+            for path in paths.retired_modified:
+                print(f"retired but locally modified: {path}")
             print("Merged settings:")
             print(json.dumps(result.settings, indent=2))
             print("MCP commands:")
@@ -144,7 +149,7 @@ def _install(args: argparse.Namespace) -> int:
         local_root = args.layers_root / "local"
         if not local_root.exists():
             shutil.copytree(REPO_ROOT / "core/templates/local", local_root)
-        result = install_tree(profile, args.home)
+        result = install_tree(profile, args.home, args.layers_root)
         plans, retire = registration_for_layers(resolved, profile)
         register_servers(plans, home=args.home, retire=retire)
         write_profile(args.layers_root / "profile.json", profile)
@@ -221,7 +226,7 @@ def _update(args: argparse.Namespace) -> int:
         for repo, subject in commit_subjects(profile):
             print(f"{repo}: {subject}")
         update_profile_commits(profile)
-        result = install_tree(profile, args.home)
+        result = install_tree(profile, args.home, args.layers_root)
         resolved = resolve_layers(profile)
         plans, retire = registration_for_layers(resolved, profile)
         register_servers(plans, home=args.home, retire=retire)

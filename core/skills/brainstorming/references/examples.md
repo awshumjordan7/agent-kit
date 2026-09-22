@@ -2,19 +2,21 @@
 
 Worked examples of the brainstorming phases.
 
-## Starting a session (Phase 1, one question at a time)
+## Starting a session (Phase 1, independent questions together)
 
 ```
 User: Let's brainstorm the new notification system.
 
-Claude: Before we explore approaches, let me understand the current state.
-What notification mechanisms exist in the system today, if any?
+Claude: Before we explore approaches, let me understand the current state:
+1. What notification mechanisms exist in the system today, if any?
+2. Who needs the new notifications?
+3. Are there delivery, timing, or infrastructure constraints I should account for?
 
-User: We have email notifications via SendGrid for account events. Nothing else.
+User: We have email notifications via SendGrid for account events. Customers need in-app
+notifications within a minute, and we need to stay on our existing AWS stack.
 
-Claude: Got it — email-only via SendGrid for account events. What's driving the need for a
-new system? Are there specific gaps (real-time, in-app, more channels), or is it about the
-reliability/scalability of what exists?
+Claude: Got it — email-only today, with customer-facing in-app delivery within a minute on
+the existing AWS stack. Which account events need in-app delivery first?
 ```
 
 ## Presenting approaches (Phase 2)

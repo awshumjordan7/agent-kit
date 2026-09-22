@@ -1,10 +1,10 @@
 ---
 name: brainstorming
 description: >
-  Structured discussion skill that produces a spec document before planning begins.
-  Guides question-by-question exploration (batching independent questions), grounds the design in the actual codebase,
-  presents 2-3 approaches with trade-offs, includes test strategy, and outputs a structured
-  spec. Use whenever: "brainstorm", "discuss this feature", "let's design", "new feature",
+  Structured discussion skill that produces a forge plan before implementation begins.
+  Guides focused exploration, grounds the design in the actual codebase, presents 2-3
+  approaches with trade-offs, includes test strategy, and hands the agreed approach to forge.
+  Use whenever: "brainstorm", "discuss this feature", "let's design", "new feature",
   "I want to build", "explore approaches", "what do you think about building", "let's think
   through", "design session", or before starting a complex feature that needs upfront
   discussion. Also use when the user wants to explore trade-offs before committing to an
@@ -15,12 +15,13 @@ description: >
 
 # Brainstorming
 
-Structured discussion that produces a spec document before planning begins. This skill is for
-exploration and design — it produces a spec, not code.
+Structured discussion that produces a forge plan before implementation begins. This skill is for
+exploration and design — it produces a plan, not code.
 
 ## Phase 1: Understand
 
-Explore the problem in small batches: ask two or three questions per turn when they are independent, one at a time when the next question depends on the answer.
+Ask every independent question in the same turn; go one at a time only when the next question
+depends on the answer.
 
 **Ground in the codebase first.** When the feature touches existing code, before (or
 alongside) questioning, map the current state instead of assuming it: spawn one or more
@@ -37,9 +38,10 @@ Areas to explore (follow the conversation, not all at once):
 - **Constraints** — performance, backwards compatibility, timeline, technical debt, infra.
 - **Success criteria** — how do we know this is done and working?
 
-Rules: ask at most three independent questions per turn and wait for the answers; summarize understanding every 2-3
-answers to confirm alignment; on a vague answer, ask a specific follow-up rather than moving on
-with ambiguity; stop exploring once you have enough to propose approaches (usually 3-6 questions).
+Rules: ask every independent question in the same turn; go one at a time only when the next
+question depends on the answer. Summarize understanding after the answers to confirm alignment;
+on a vague answer, ask a specific follow-up rather than moving on with ambiguity; stop exploring
+once you have enough to propose approaches.
 
 ## Phase 2: Approaches
 
@@ -73,34 +75,26 @@ When the user picks an approach (or a hybrid): confirm the choice; capture the *
 (why this over the others — as valuable as the approach itself for future "why did we do it
 this way?"); note any hybrid elements borrowed from other approaches.
 
-## Phase 5: Spec Document
+## Phase 5: Hand off to forge
 
-Write a structured spec to a file using the template in `references/spec-template.md`. Location:
-1. If a forge run directory exists (`.workflow/YYYY-MM-DD-*/`), write `<run-dir>/spec.md`.
-2. Else if a `docs/` directory exists, write `docs/spec-<feature-slug>.md`.
-3. Else ask the user where to put it.
+Before writing the plan, check for gaps, contradictions, unstated assumptions, and missing
+context. Fix what you find so someone reading it cold can understand the decisions.
 
-Do NOT leave any section as "TBD" — unresolved items go in Open Questions with context on what
-needs to be decided and who can decide it.
+Write the agreed approach, key decisions, scope, and test strategy to `<runDir>/plan.md` in
+forge's plan shape:
 
-## Phase 6: Self-Review
+- Summary
+- Public API contract
+- Phases
+- Acceptance criteria
+- Run settings
 
-Before presenting the spec, check for: gaps (everything discussed captured? decisions made
-verbally but not written?), contradictions (scope vs approach; test strategy vs stated risks),
-unstated assumptions, and missing context (would someone reading it cold understand the
-decisions?). Fix what you find — don't present a spec with obvious holes.
+Do not render a brainstorming artifact or a separate spec document. Invoke `/forge <plan path>`
+for the default forge lane. When the user already has a phased plan, route directly to
+`/forge implement <plan path>`.
 
-## Phase 7: Handoff
-
-The spec feeds the next phase. State the recommended next step from project context, and
-always include the explicit spec path in the suggested command:
-- **forge dev** (most common) — `/forge <spec path>`: the spec becomes the plan input for the
-  full pipeline (Sol plan-review → confirm → implement → dual-model review → QA).
-- **forge implement** — strict phased execution of a plan derived from the spec.
-- **External tool** — the user takes the spec to Cursor, Jira, etc.
-
-Example: "Spec written to `.workflow/2026-04-13-auth-redesign/spec.md`. Ready for
-`/forge .workflow/2026-04-13-auth-redesign/spec.md` when you are."
+Example: "Plan written to `.workflow/2026-04-13-auth-redesign/plan.md`. Ready for
+`/forge .workflow/2026-04-13-auth-redesign/plan.md` when you are."
 
 See `references/examples.md` for worked examples of each phase.
 
