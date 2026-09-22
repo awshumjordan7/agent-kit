@@ -66,7 +66,7 @@ SECRET_COMMANDS = re.compile(
 #     "v"->"s" is not a word boundary.
 #   - The bare-word patterns need trailing \b or they match inside ordinary
 #     identifiers: "token" hits "tokenize", "secret" hits "secretary".
-SECRET_PATHS = (
+SECRET_PATH_SHAPES = (
     r"\.envs?\b|\.env\.|/\.envs?\b|"
     r"\.ssh/|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|authorized_keys|known_hosts|"
     r"\.aws/|\.gnupg/|\.kube/config|"
@@ -77,10 +77,17 @@ SECRET_PATHS = (
     r"\.tfstate\b|"
     # Shell history routinely contains pasted secrets.
     r"\.bash_history\b|\.zsh_history\b|\.psql_history\b|\.mysql_history\b|"
+    r"\.pem\b|\.p12\b|\.pfx\b|\.jks\b|\.keystore\b"
+)
+
+# Bare words that name credential material in prose as easily as in a path,
+# so they are skipped where the text is likely prose (interpreter heredocs).
+SECRET_BARE_WORDS = (
     r"\bcredentials?\b|\bsecrets?\b|\bpasswd\b|\bshadow\b|"
-    r"\.pem\b|\.p12\b|\.pfx\b|\.jks\b|\.keystore\b|"
     r"\btokens?\b|\bapi[_-]?keys?\b"
 )
+
+SECRET_PATHS = rf"{SECRET_PATH_SHAPES}|{SECRET_BARE_WORDS}"
 
 # Explicitly fine: sample/template files that carry no real values.
 ALLOWLIST = re.compile(
@@ -113,27 +120,36 @@ REDIRECT_FROM_SECRET = re.compile(rf"<\s*[^\s;&|]*({SECRET_PATHS})", re.IGNORECA
 HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 # Commands that will actually execute a heredoc body handed to them, as
-# opposed to just writing it out or filing it away unread.
-HEREDOC_EXECUTOR = re.compile(
-    r"\b(bash|sh|zsh|dash|ksh|fish|python3?|node|perl|ruby|php|eval|exec|ssh|sudo|env|xargs|source)\b",
+# opposed to just writing it out or filing it away unread. A shell runs the
+# body as commands, so it gets the full scan; an interpreter body is code
+# whose string literals are often prose (a STATE.md rewrite), so it is checked
+# for path-shaped secrets only.
+HEREDOC_SHELL = re.compile(
+    r"\b(bash|sh|zsh|dash|ksh|fish|eval|exec|ssh|sudo|env|xargs|source)\b",
     re.IGNORECASE,
 )
+HEREDOC_INTERPRETER = re.compile(r"\b(python3?|node|perl|ruby|php)\b", re.IGNORECASE)
+
+INTERPRETER_BODY_SECRET = re.compile(SECRET_PATH_SHAPES, re.IGNORECASE)
 
 
-def strip_heredoc_bodies(command: str) -> str:
+def strip_heredoc_bodies(command: str) -> tuple[str, list[str]]:
     """Drop heredoc body lines that are inert data instead of executed code.
 
     Scans line by line: a line matching `<<-?(['"]?)(\\w+)\\1` opens a heredoc
     whose body runs to the first line equal to the terminator (leading tabs
     allowed when the opener is `<<-`). If the header line (the whole line,
-    every pipeline stage) names an interpreter or shell -- bash, python3,
-    eval, ssh, source, and the like -- the body is kept for scanning;
-    otherwise the body is dropped and only the header line remains. Several
-    heredocs in one command are handled in order, and an unterminated heredoc
-    drops to end of text under the same keep/drop rule.
+    every pipeline stage) names a shell -- bash, eval, ssh, sudo, source, and
+    the like -- the body is kept in the returned command for the full scan.
+    If it names only an interpreter -- python3, node, perl, ruby, php -- the
+    body is removed from the command and returned separately for the
+    path-only check. Otherwise the body is dropped and only the header line
+    remains. Several heredocs in one command are handled in order, and an
+    unterminated heredoc runs to end of text under the same rule.
     """
     lines = command.split("\n")
     out: list[str] = []
+    interpreter_bodies: list[str] = []
     i, n = 0, len(lines)
     while i < n:
         header = lines[i]
@@ -144,25 +160,34 @@ def strip_heredoc_bodies(command: str) -> str:
             continue
         terminator = match.group(2)
         strip_tabs = match.group(0).startswith("<<-")
-        executed = bool(HEREDOC_EXECUTOR.search(header))
+        shell = bool(HEREDOC_SHELL.search(header))
+        interpreter = not shell and bool(HEREDOC_INTERPRETER.search(header))
         j = i + 1
         while j < n:
             candidate = lines[j].lstrip("\t") if strip_tabs else lines[j]
             if candidate == terminator:
                 break
             j += 1
-        if executed:
-            out.extend(lines[i + 1 : j + 1] if j < n else lines[i + 1 : n])
+        body = lines[i + 1 : j + 1] if j < n else lines[i + 1 : n]
+        if shell:
+            out.extend(body)
+        elif interpreter:
+            interpreter_bodies.append("\n".join(body))
         i = j + 1
-    return "\n".join(out)
+    return "\n".join(out), interpreter_bodies
 
 
-# Heredoc bodies are data unless an interpreter on the header line will
-# execute them; strip_heredoc_bodies() applies that split before segments
-# are checked below.
+# Heredoc bodies are data unless a shell or interpreter on the header line
+# will execute them; strip_heredoc_bodies() applies that split before
+# segments are checked below.
 def verdict(command: str) -> str | None:
     """Return a human-readable reason to block, or None to allow."""
-    command = strip_heredoc_bodies(command)
+    command, interpreter_bodies = strip_heredoc_bodies(command)
+    for body in interpreter_bodies:
+        body = ALLOWLIST.sub(" ", body)
+        body = AUTHORIZED_PATHS.sub(" ", body)
+        if INTERPRETER_BODY_SECRET.search(body):
+            return "runs code that names a credential-bearing path"
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
     segments = re.split(r"&&|\|\||;|\||\n", command)

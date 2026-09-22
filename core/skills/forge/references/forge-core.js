@@ -734,7 +734,7 @@ async function codexAttempts(prompt, opts) {
     const terminalError = /^(?:CODEX_DIFF_INVALID|CODEX_BUDGET_EXCEEDED|CODEX_NO_CREDITS|CODEX_HANDOFF_EXHAUSTED|CODEX_CONTEXT_HANDOFF)\b/.test(result.error)
     if (terminalError) return result
     await decide(`${opts.label} wrapper returned an error (${result.error.slice(0, 200)}); retrying once.`)
-    result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-error-retry` })
+    result = await agentT('codexWrap', `${prompt}\nattempt=error-retry`, { ...opts, label: `${opts.label}-error-retry` })
     if (result) result.error = normalizedCodexError(result.error)
     await recordCodexHandoffs(result, opts.label)
     return result
@@ -742,7 +742,7 @@ async function codexAttempts(prompt, opts) {
   if (result === null || result.codexInvoked === true) return result
   if (result.threadMode === 'start' && result.threadExists === true) return result
   await decide(`${opts.label} wrapper returned without invoking Codex (${String(result.error || 'no error text').slice(0, 200)}); retrying once.`)
-  result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-retry` })
+  result = await agentT('codexWrap', `${prompt}\nattempt=retry`, { ...opts, label: `${opts.label}-retry` })
   if (result) result.error = normalizedCodexError(result.error)
   await recordCodexHandoffs(result, opts.label)
   return result
