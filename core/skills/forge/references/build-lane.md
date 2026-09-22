@@ -10,9 +10,11 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 | Plan | main session | State the public contract, files, tests, acceptance criteria, access rules, risks, and run settings. |
 | Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. |
 | Confirm | user | Skipped only in explicitly requested auto mode. |
-| Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate or real run, ship, optional QA, parallel Codex and Fable review plus lenses, triage, at most one fix with one scoped Fable verification, handoff. |
+| Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, optional QA, parallel Codex and Fable review plus lenses, triage, at most one fix with one scoped Fable verification, handoff. |
 
 `quick-impl` is selected only when `fullySpecified` is true and the plan names no more source files than `quickReviewThreshold`; otherwise Forge uses `impl`. Tests and documentation do not count as source files.
+
+Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke.
 
 ## Evidence rules
 
@@ -33,7 +35,7 @@ The triage agent confirms each finding against current code. Forge runs at most 
 
 `gate.mode` is resolved per repository and defaults to `full`. Full mode retains the configured gate. Personal repositories use `none`: they have no tests, spawn no gate agent, and run no test, lint, typecheck, migration, Semgrep, or parity command; Forge still creates the review diff with plain `git diff`.
 
-Mode `none` runs `gate.realRun` once after implementation with a 900-second cap. A plan may override the command with `real_run` under `## Run Settings`. A non-zero exit blocks and is recorded in `realrun.log`; absence of a configured command is non-blocking but must appear as `real run: not configured` at the start of the handoff.
+Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer summarizes the change and recommends shipping, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without an enabled sandbox stops before shipping. Mode `none` still reaches this checkpoint after skipping its gate.
 
 ## Multi-repository work
 
@@ -41,4 +43,4 @@ Use a separate run directory and repository-specific `planPath` for each reposit
 
 ## What the user receives
 
-The handoff includes the implementation summary, gate or real-run result, review disposition, live-evidence status, manual QA checklist, decision log, branch and pull-request link, and optional sandbox metadata. For `mode: none`, it states `gates: none (personal repo)` and cites `realrun.log` when a real run was configured.
+The handoff includes the implementation summary, gate and checkpoint result, review disposition, live-evidence status, manual QA checklist, decision log, branch and pull-request link, and optional sandbox metadata. For `mode: none`, it states `gates: none (personal repo)` and cites `checkpoint.json`.

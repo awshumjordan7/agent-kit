@@ -7,7 +7,7 @@ description: Turn a confirmed bug or feature plan into an implemented, repositor
 
 Forge has two lanes:
 
-- `build` (default): investigate, plan, implement, run the repository's gate or real run, ship, optionally exercise a sandbox, review, apply at most one fix, and hand off.
+- `build` (default): investigate, plan, implement, run the repository's gate, pause at a pre-ship checkpoint, ship, optionally exercise a sandbox, review, apply at most one fix, and hand off.
 - `review`: review and bounded fixes for existing changes. Pass a base ref when committed branch changes must be included.
 
 `quick` and `dev` remain accepted aliases for `build` for one release. Add `auto` only when the user explicitly requested unattended execution.
@@ -26,6 +26,7 @@ Workflow({
   args: {
     lane, auto, runDir, projectDir, repo, ticket, criteria,
     planText, planPath, fullySpecified, stageAlso, ghEnvUnset,
+    checkpointDecision, smokeCommand,
     forgeConfig: { roles, stages, thresholds, lenses, ticketUrl, repos, gate, ghEnvUnset }
   }
 })
@@ -33,7 +34,8 @@ Workflow({
 
 `planText` is required. When `forgeConfig` is absent, a small reader agent loads it; orchestration code never reads files directly.
 
-6. Publish the handoff with gate or real-run evidence, review findings, unresolved work, decision records, and one manual QA item per acceptance criterion. Keep `decisions.md` append-only and rewrite `STATE.md` from the template. Preserve the Workflow id and session directory so `workflow_carry.py` can transfer it during a session handoff.
+6. When the Workflow returns `PRE_SHIP`, present the checkpoint summary and recommendation to the user with AskUserQuestion. Offer: ship as is; run the suggested smoke command, showing it as editable; or run a QA round. Relaunch the Workflow with the same args plus `checkpointDecision`, and include `smokeCommand` when smoke was selected.
+7. Publish the handoff with gate and checkpoint evidence, review findings, unresolved work, decision records, and one manual QA item per acceptance criterion. Keep `decisions.md` append-only and rewrite `STATE.md` from the template. Preserve the Workflow id and session directory so `workflow_carry.py` can transfer it during a session handoff.
 
 ## Providers
 
@@ -58,7 +60,8 @@ Core ships optional stages disabled. An overlay may supply and enable:
 
 - The user confirms the plan before implementation.
 - Gate behavior is repository-specific: `gate.mode` defaults to `full`; `none` spawns no gate agent and runs no tests, lint, typecheck, migrations, Semgrep, or parity commands. Personal repositories use `none` and have no tests.
-- In `full` mode, the local gate must pass before shipping. In `none` mode, Forge instead runs `gate.realRun` once after implementation with a 900-second cap; `## Run Settings` may override it with `real_run`. A configured failure blocks, while a missing command is reported as `real run: not configured` and review continues.
+- In `full` mode, the local gate must pass before shipping.
+- Every build run pauses at a pre-ship checkpoint: a fresh reviewer summarizes the change and recommends ship, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without a sandbox stage stops the run before shipping.
 - Every review finding is triaged against current code before a fixer runs.
 - Forge allows one fix round on a fresh implementation thread. One fresh Fable reviewer then verifies only the original post-triage findings from both reviewers using the implementer's per-finding explanations and the fix diff; it cannot add findings. Unresolved items go directly to the handoff, with no post-fix gate, status agent, judge, or second fix round.
 - Review diffs are files. Codex receives the validated file through `--inline-diff`; Claude reviewers use the Read tool in ranges of at most 2,000 lines.

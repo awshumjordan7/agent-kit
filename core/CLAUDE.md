@@ -104,7 +104,7 @@ without opening the ticket.
 
 ### Tests
 
-As of 2026-09-22, personal repositories configured with Forge `gate.mode: none` have no tests. Do not add or run tests, lint, typecheck, migrations, Semgrep, or parity commands in those repositories. Forge runs the configured `realRun` command once after implementation instead; a plan may override it with `real_run` under `## Run Settings`. Repositories in `full` mode retain their configured gates.
+As of 2026-09-22, personal repositories configured with Forge `gate.mode: none` have no tests. Do not add or run tests, lint, typecheck, migrations, Semgrep, or parity commands in those repositories. Every build uses a fresh pre-ship checkpoint reviewer to recommend shipping, one smoke command, or a QA round; repositories in `full` mode retain their configured gates.
 
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?

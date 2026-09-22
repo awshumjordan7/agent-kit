@@ -6,6 +6,7 @@ export const meta = {
   phases: [
     { title: 'Implement', detail: 'Codex implementation on a persistent thread' },
     { title: 'Gate', detail: 'Repository-native tests, lint, Semgrep, and migration checks' },
+    { title: 'Checkpoint', detail: 'Fresh pre-ship recommendation and decision' },
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
     { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
@@ -54,6 +55,7 @@ const TIERS = {
 const ROLE_MAP = {
   implementer: ['impl', 'quick-impl'],
   reviewer: ['review'],
+  checkpoint: ['review'],
 }
 
 const requestedLane = args.lane || 'build'
@@ -85,6 +87,8 @@ const PARAMS = {
   forgeConfig: args.forgeConfig && typeof args.forgeConfig === 'object' ? args.forgeConfig : null,
   fullySpecified: args.fullySpecified === true,
   stageAlso: Array.isArray(args.stageAlso) ? args.stageAlso.map(String) : [],
+  checkpointDecision: typeof args.checkpointDecision === 'string' ? args.checkpointDecision : null,
+  smokeCommand: typeof args.smokeCommand === 'string' ? args.smokeCommand : '',
 }
 
 let FORGE_CONFIG = PARAMS.forgeConfig
@@ -122,6 +126,9 @@ if (!PARAMS.planText) {
 }
 if (!['build', 'review'].includes(PARAMS.lane)) {
   throw new Error(`unsupported forge lane: ${PARAMS.lane}`)
+}
+if (PARAMS.checkpointDecision && !['ship', 'smoke', 'qa'].includes(PARAMS.checkpointDecision)) {
+  throw new Error(`unsupported checkpointDecision: ${PARAMS.checkpointDecision}; allowed values are ship, smoke, qa`)
 }
 
 const FINDING = {
@@ -319,14 +326,33 @@ const GATE_SCHEMA = {
   },
   required: ['passed', 'failures', 'commands'],
 }
-const REAL_RUN_SCHEMA = {
+const CHECKPOINT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    configured: { type: 'boolean' }, passed: { type: 'boolean' },
+    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
+    command: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
+  },
+  required: ['recommendation', 'command', 'reason', 'summary'],
+}
+const CHECKPOINT_FILE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
+    command: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
+    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user'] },
+    implementFilesChanged: { type: 'array', items: { type: 'string' } },
+    context: CONTEXT_SCHEMA,
+  },
+  required: ['recommendation', 'command', 'reason', 'summary', 'decidedBy', 'implementFilesChanged', 'context'],
+}
+const SMOKE_RUN_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    passed: { type: 'boolean' },
     exitCode: { type: 'integer' }, timedOut: { type: 'boolean' },
     command: { type: 'string' }, logPath: { type: 'string' }, summary: { type: 'string' },
   },
-  required: ['configured', 'passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary'],
+  required: ['passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary'],
 }
 const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -477,6 +503,9 @@ const STUBS = {
   reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
     : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
+  checkpoint: () => PARAMS.dryRunFindings
+    ? { recommendation: 'smoke', command: 'true', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
+    : { recommendation: 'ship', command: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
   triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   judge: () => ({ decisions: dryFindings().map(finding => ({ id: findingKey(finding), verdict: 'respec', instruction: finding.fix_hint, reason: 'dry-run respec' })), cannotDecide: false }),
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
@@ -501,8 +530,10 @@ const STUBS = {
   },
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
-    : opts.schema === REAL_RUN_SCHEMA
-    ? { configured: true, passed: true, exitCode: 0, timedOut: false, command: 'dry-run real run', logPath: `${PARAMS.runDir}/realrun.log`, summary: 'real run passed' }
+    : opts.schema === SMOKE_RUN_SCHEMA
+    ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
+    : opts.schema === CHECKPOINT_FILE_SCHEMA
+    ? { recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } }
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : {
@@ -556,7 +587,8 @@ function configuredStage(name) {
 }
 
 function tierProfile(tierRole) {
-  const fallback = TIERS[PARAMS.tier][tierRole]
+  const profileRole = tierRole === 'checkpoint' ? 'reviewer' : tierRole
+  const fallback = TIERS[PARAMS.tier][profileRole]
   const override = configuredRole(configRoleForTier(tierRole))
   if (!override || (override.provider && override.provider !== 'claude')) return fallback
   return { ...fallback, model: override.model || fallback.model, effort: override.effort || fallback.effort }
@@ -591,7 +623,7 @@ async function agentT(role, prompt, opts = {}) {
     }
     await decide(`${role} returned null on Fable; retrying once with Opus high.`)
     spawnCount++
-    const fallback = TIERS.opus[role]
+    const fallback = TIERS.opus[role === 'checkpoint' ? 'reviewer' : role]
     result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
   }
   return result
@@ -706,25 +738,6 @@ function configuredGateMode() {
   return mode
 }
 
-function planRealRun() {
-  let inRunSettings = false
-  for (const line of String(PARAMS.planText || '').split('\n')) {
-    if (/^##\s+Run Settings\s*$/i.test(line.trim())) { inRunSettings = true; continue }
-    if (/^##\s+/.test(line)) inRunSettings = false
-    if (!inRunSettings) continue
-    const match = line.match(/^\s*real_run\s*:\s*(.+?)\s*$/i)
-    if (match) return match[1].replace(/^`|`$/g, '').trim()
-  }
-  return ''
-}
-
-function configuredRealRun() {
-  const override = planRealRun()
-  if (override) return override
-  const command = configuredGateEntry().realRun
-  return typeof command === 'string' ? command.trim() : ''
-}
-
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
@@ -745,7 +758,7 @@ function claudeTestPromptInstruction() {
 }
 
 function runBeforeReturningInstruction() {
-  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; Forge runs the configured real-run command after implementation.'
+  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint determines whether further verification is useful.'
   return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
@@ -764,13 +777,9 @@ Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exact
   { label: 'implement', phase: 'Implement', schema: CODEX_RESULT })
 }
 
-function realRun() {
-  const command = configuredRealRun()
-  if (!command) {
-    return Promise.resolve({ configured: false, passed: true, exitCode: 0, timedOut: false, command: '', logPath: `${PARAMS.runDir}/realrun.log`, summary: 'real run: not configured' })
-  }
-  return agentT('changedFiles', `Start exactly this command with the Bash tool using run_in_background=true and timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py real-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)}\`. Poll the background task with TaskOutput calls using timeout=30000 until it completes. Return its stdout JSON unchanged. The background command has its own 900-second cap and must be allowed to finish; do not rerun it.`,
-    { label: 'real-run', phase: 'Gate', schema: REAL_RUN_SCHEMA })
+function smokeRun(command) {
+  return agentT('changedFiles', `Start exactly this command with the Bash tool using run_in_background=true and timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)}\`. Poll the background task with TaskOutput calls using timeout=30000 until it completes. Return its stdout JSON unchanged. The background command has its own 900-second cap and must be allowed to finish; do not rerun it.`,
+    { label: 'checkpoint-smoke', phase: 'Checkpoint', schema: SMOKE_RUN_SCHEMA })
 }
 
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = []) {
@@ -831,7 +840,7 @@ async function gateWithFixes(label, files, threadFile, context, phaseLabel) {
 }
 
 function stopped(state) {
-  return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN'
+  return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN' || state.status === 'PRE_SHIP'
 }
 
 function changedFiles(allDirty = false) {
@@ -839,6 +848,67 @@ function changedFiles(allDirty = false) {
   const base = PARAMS.lane === 'review' ? ` --base ${shellQuote(args.base || 'main')}` : ''
   return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
   { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
+}
+
+function checkpointReview(context, gate, implement) {
+  return agentT('checkpoint', `You are the fresh pre-ship checkpoint reviewer. Read the plan text below and the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. Recommend qa when only a human or sandbox exercise would prove it. Set command to an empty string unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+
+PLAN
+${PARAMS.planText}
+
+GATE RESULT
+${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
+
+IMPLEMENTER RESULT
+${JSON.stringify(implement || {})}`,
+  { label: 'checkpoint', phase: 'Checkpoint', agentType: 'reviewer', schema: CHECKPOINT_SCHEMA })
+}
+
+function checkpointDocument(checkpoint, implement, context, decidedBy) {
+  return {
+    recommendation: checkpoint.recommendation,
+    command: checkpoint.recommendation === 'smoke' ? checkpoint.command : '',
+    reason: checkpoint.reason,
+    summary: checkpoint.summary,
+    decidedBy,
+    implementFilesChanged: (implement && implement.filesChanged) || [],
+    context,
+  }
+}
+
+function writeCheckpoint(checkpoint) {
+  const script = 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(json.loads(sys.argv[2]), indent=2) + "\\n", encoding="utf-8"); print(json.dumps({"written": True}))'
+  const path = `${PARAMS.runDir}/checkpoint.json`
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)} ${shellQuote(JSON.stringify(checkpoint))}`,
+  { label: 'write-checkpoint', phase: 'Checkpoint', schema: ACK_SCHEMA })
+}
+
+function readCheckpoint() {
+  const script = 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), end="")'
+  const path = `${PARAMS.runDir}/checkpoint.json`
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
+  { label: 'read-checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_FILE_SCHEMA })
+}
+
+async function followCheckpoint(state, decision, command) {
+  if (decision === 'ship') return state
+  if (decision === 'smoke') {
+    if (!command) {
+      state.status = 'BLOCKED'
+      await decide('Pre-ship checkpoint smoke command was empty; shipping was stopped.')
+      return state
+    }
+    state.checkpointSmoke = await smokeRun(command)
+    if (!state.checkpointSmoke || !state.checkpointSmoke.passed) {
+      state.status = 'BLOCKED'
+      await decide(`Pre-ship smoke failed or timed out; see ${(state.checkpointSmoke && state.checkpointSmoke.logPath) || `${PARAMS.runDir}/smoke.log`}.`)
+    }
+    return state
+  }
+  if (sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos)) return state
+  state.status = 'PRE_SHIP'
+  await decide('Pre-ship checkpoint recommends a QA round and no sandbox stage is configured; human decision needed before shipping')
+  return state
 }
 
 function planSummary(context) {
@@ -1265,11 +1335,8 @@ function sandboxRefresh(sandbox, shipResult, context) {
 
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
-  const firstLine = noGates && state.realRun && !state.realRun.configured
-    ? 'The first line must be exactly `real run: not configured`.'
-    : ''
   const gateNotice = noGates
-    ? `State exactly \`gates: none (personal repo)\`. Cite ${(state.realRun && state.realRun.logPath) || `${PARAMS.runDir}/realrun.log`} for a configured real run, including its failure in Status when it did not pass.`
+    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint result at ${PARAMS.runDir}/checkpoint.json.`
     : ''
   const handoffState = {
     ...state,
@@ -1280,8 +1347,14 @@ async function handoff(state, context) {
     },
   }
   await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
+  if (state.status === 'PRE_SHIP') {
+    return agentT('handoff', `Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
+APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
+Then rewrite ${PARAMS.runDir}/STATE.md whole (never append) from ~/.claude/references/state-template.md with status PRE_SHIP, the checkpoint decision as the next step, and pointers to the plan, decisions, STATUS.json, checkpoint.json, and handoff.md. Return the handoff path.`,
+    { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
+  }
   return agentT('handoff', `You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
-${firstLine} ${gateNotice}
+${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
@@ -1294,12 +1367,24 @@ Return the handoff path.`,
 async function fullLane() {
   phase('Implement')
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
-  await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
-  const initial = { status: 'DONE', implement: null, realRun: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
+  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
+  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
+  if (PARAMS.checkpointDecision) {
+    const saved = await readCheckpoint()
+    if (!saved || !saved.context || !Array.isArray(saved.implementFilesChanged)) {
+      throw new Error(`checkpointDecision requires a readable ${PARAMS.runDir}/checkpoint.json with saved context`)
+    }
+    initial.implement = { filesChanged: saved.implementFilesChanged }
+    initial.context = saved.context
+    initial.checkpoint = { ...saved, decidedBy: 'user' }
+    await decide(`Pre-ship checkpoint decision: ${PARAMS.checkpointDecision} (user)`)
+    if (!await writeCheckpoint(initial.checkpoint)) throw new Error(`could not update ${PARAMS.runDir}/checkpoint.json for the user decision`)
+  }
   const rows = await pipeline(
     [initial],
     async state => {
       phase('Implement')
+      if (PARAMS.checkpointDecision) return state
       state.implement = await implement()
       if (!assertImplementation(state.implement, 'implement')) state.status = 'BLOCKED'
       if (capBlocked && state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
@@ -1308,16 +1393,7 @@ async function fullLane() {
     async state => {
       phase('Gate')
       if (stopped(state)) return state
-      if (configuredGateMode() === 'none') {
-        state.realRun = await realRun()
-        if (!state.realRun || !state.realRun.passed) {
-          state.status = 'BLOCKED'
-          await decide(`Real run failed; see ${(state.realRun && state.realRun.logPath) || `${PARAMS.runDir}/realrun.log`}.`)
-        } else if (!state.realRun.configured) {
-          await decide('real run: not configured')
-        }
-        return state
-      }
+      if (PARAMS.checkpointDecision || configuredGateMode() === 'none') return state
       const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
@@ -1327,6 +1403,40 @@ async function fullLane() {
         await decide('Pre-ship local gate did not pass; later stages were stopped.')
       }
       return state
+    },
+    async state => {
+      phase('Checkpoint')
+      if (stopped(state) || PARAMS.noShip) return state
+      if (PARAMS.checkpointDecision) {
+        const command = PARAMS.checkpointDecision === 'smoke'
+          ? (PARAMS.smokeCommand || state.checkpoint.command)
+          : ''
+        return followCheckpoint(state, PARAMS.checkpointDecision, command)
+      }
+      state.context = await changedFiles()
+      if (contextFailed(state.context)) {
+        state.status = 'BLOCKED'
+        await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
+        return state
+      }
+      const result = await checkpointReview(state.context, state.gate, state.implement)
+      if (!result) {
+        state.status = 'BLOCKED'
+        await decide('Pre-ship checkpoint agent returned null; shipping was stopped.')
+        return state
+      }
+      state.checkpoint = checkpointDocument(result, state.implement, state.context, PARAMS.auto ? 'auto' : 'pending')
+      if (!await writeCheckpoint(state.checkpoint)) {
+        state.status = 'BLOCKED'
+        await decide('Pre-ship checkpoint result could not be written; shipping was stopped.')
+        return state
+      }
+      await decide(`Pre-ship checkpoint: recommends ${state.checkpoint.recommendation} - ${state.checkpoint.reason}`)
+      if (!PARAMS.auto) {
+        state.status = 'PRE_SHIP'
+        return state
+      }
+      return followCheckpoint(state, state.checkpoint.recommendation, state.checkpoint.command)
     },
     async state => {
       phase('Ship')
@@ -1501,14 +1611,14 @@ let state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
 if (state.needsJudge) {
   return { status: 'needsJudge', findings: state.review.findings, disputes: state.review.unresolvedDisputes, runDir: PARAMS.runDir }
 }
-if (capBlocked && state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
+if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 phase('Handoff')
 const ho = await handoff(state, state.context || { criteria: PARAMS.criteria })
 if (!ho) {
-  if (state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
+  if (!['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
   await decide('Handoff agent returned null; no handoff path was produced.')
 }
-if (capBlocked && state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
+if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 return {
   status: state.status,
   runDir: PARAMS.runDir,
@@ -1516,6 +1626,11 @@ return {
   prUrl: (state.ship && state.ship.prUrl) || '',
   qaDraft: qaDraftSummary(state.qaDraft),
   sandboxId: (state.sandbox && state.sandbox.sandboxId) || '',
+  recommendation: (state.checkpoint && state.checkpoint.recommendation) || '',
+  command: (state.checkpoint && state.checkpoint.command) || '',
+  reason: (state.checkpoint && state.checkpoint.reason) || '',
+  summary: (state.checkpoint && state.checkpoint.summary) || '',
+  checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
   decisions,
   dryRunJournal: PARAMS.dryRun ? dryRunJournal.map(entry => entry.label) : undefined,
 }
