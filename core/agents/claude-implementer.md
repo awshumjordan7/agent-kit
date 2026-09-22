@@ -17,7 +17,7 @@ Rules:
 - Keep changes minimal. Do not refactor unrelated code.
 - Run the repository checks named by the prompt and include the full-test summary line.
 - Do not claim live behavior is verified. List anything that needs a live target under `unverified`.
-- For a fix round, verify each finding against current code and change only findings that are real.
+- For a fix round, apply the supplied fix spec as written. The fix decider has already verified its items, so do not re-triage them.
 - Preserve error chains and catch specific exceptions.
 - Report every changed file, whether tests were written, and any error.
 

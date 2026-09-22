@@ -10,7 +10,7 @@ export const meta = {
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
     { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
-    { title: 'Fix', detail: 'One fix round and one scoped Claude verification' },
+    { title: 'Fix', detail: 'Capped decide-then-apply fix loop with re-gate and scoped verification' },
     { title: 'Handoff', detail: 'Run status, evidence, decisions, and manual QA' },
   ],
 }
@@ -20,7 +20,8 @@ const TIERS = {
     implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'fable', effort: 'high' },
     triage: { model: 'fable', effort: 'high' },
-    judge: { model: 'fable', effort: 'high' },
+    decider: { model: 'opus', effort: 'high' },
+    applier: { model: 'opus', effort: 'medium' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
@@ -37,7 +38,8 @@ const TIERS = {
     implementer: { model: 'opus', effort: 'high' },
     reviewer: { model: 'opus', effort: 'xhigh' },
     triage: { model: 'opus', effort: 'high' },
-    judge: { model: 'opus', effort: 'xhigh' },
+    decider: { model: 'opus', effort: 'high' },
+    applier: { model: 'opus', effort: 'medium' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
@@ -54,6 +56,7 @@ const TIERS = {
 
 const ROLE_MAP = {
   implementer: ['impl', 'quick-impl'],
+  applier: ['quick-impl'],
   reviewer: ['review'],
   checkpoint: ['review'],
 }
@@ -272,22 +275,26 @@ const TRIAGE_SCHEMA = {
   },
   required: ['verdicts'],
 }
-const JUDGE_SCHEMA = {
+const FIX_SPEC_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    decisions: {
+    items: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
         properties: {
-          id: { type: 'string' }, verdict: { type: 'string', enum: ['dismiss', 'respec', 'fixed'] },
-          instruction: { type: 'string' }, reason: { type: 'string' },
+          id: { type: 'string' }, source: { type: 'string', enum: ['gate', 'review'] },
+          action: { type: 'string', enum: ['fix', 'reject', 'defer'] }, reason: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' } }, change: { type: 'string' }, check: { type: 'string' },
         },
-        required: ['id', 'verdict', 'instruction', 'reason'],
+        required: ['id', 'source', 'action', 'reason', 'files', 'change', 'check'],
       },
     },
-    cannotDecide: { type: 'boolean' },
+    cannotDecide: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' }, diffStat: { type: 'string' },
+    applied: { type: 'boolean' },
+    apply: { anyOf: [{ type: 'null' }, FIX_SCHEMA] },
   },
-  required: ['decisions', 'cannotDecide'],
+  required: ['items', 'cannotDecide', 'notes', 'diffStat', 'applied', 'apply'],
 }
 const CONTEXT_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -582,7 +589,12 @@ const STUBS = {
     ? { recommendation: 'smoke', command: 'true', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
     : { recommendation: 'ship', command: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
   triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
-  judge: () => ({ decisions: dryFindings().map(finding => ({ id: findingKey(finding), verdict: 'respec', instruction: finding.fix_hint, reason: 'dry-run respec' })), cannotDecide: false }),
+  decider: opts => {
+    const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
+    const items = String(opts.label).startsWith('decide-fix-gate') ? gateItems : dryFindings().map(finding => ({ ...finding, source: 'review' }))
+    return { items: items.map(item => ({ id: findingKey(item), source: item.source, action: 'fix', reason: 'dry-run decision', files: [item.file].filter(Boolean), change: item.fix_hint, check: 'dry-run check' })), cannotDecide: [], notes: 'dry-run spec', diffStat: ' 1 file changed', applied: false, apply: null }
+  },
+  applier: opts => STUBS.implementer(opts),
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
   gate: opts => {
     if (String(opts.label).startsWith('commit-')) {
@@ -936,41 +948,16 @@ function gateFindings(gate) {
 }
 
 // hooks.first is a gate result already collected; hooks.run gates a label and file list;
-// hooks.afterFix(touched, files) runs after each fix and returns false to stop the flow.
+// hooks.afterFix(touched, files) runs after each applied fix and returns false to stop the loop;
+// hooks.planExcerpt narrows the plan text the decider and applier see.
 async function gateWithFixes(label, files, threadFile, context, phaseLabel, hooks = {}) {
   const runGate = hooks.run || ((gateLabel, gateFiles) => localGate(gateLabel, phaseLabel, gateFiles))
-  const afterFix = hooks.afterFix || (async () => true)
-  let gate = 'first' in hooks ? hooks.first : await runGate(label, files)
-  const touchedFiles = []
-  if (!gate || !gate.passed) {
-    const findings = gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
-    const fix = await fixAgent(findings, context, `fix-${label}`, threadFile, phaseLabel)
-    if (!fix) return { gate, touchedFiles, blocked: true, needsJudge: false }
-    touchedFiles.push(...(fix.touchedFiles || []))
-    files = [...new Set([...files, ...touchedFiles])]
-    if (!await afterFix(fix.touchedFiles || [], files)) return { gate, touchedFiles, blocked: true, needsJudge: false }
-    gate = await runGate(`${label}-retry`, files)
-  }
-  if (!gate || !gate.passed) {
-    const findings = gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
-    const judge = await agentT('judge', `Judge this repeated gate failure. Dismiss only a false finding, respec with exact fix instructions, or mark fixed if the code already contains the fix. Set cannotDecide=true if current evidence is insufficient. Findings: ${JSON.stringify(findings.map(item => ({ id: findingKey(item), finding: item })))}\n\nPUBLIC API CONTRACT\n${context.contract || '(none declared)'}`,
-      { label: `judge-${label}`, phase: phaseLabel, schema: JUDGE_SCHEMA, agentType: 'judge' })
-    if (!judge || judge.cannotDecide) return { gate, touchedFiles, blocked: true, needsJudge: true }
-    const respecified = findings.flatMap(finding => {
-      const decision = (judge.decisions || []).find(item => item.id === findingKey(finding))
-      if (!decision || decision.verdict !== 'respec') return []
-      return [{ ...finding, fix_hint: decision.instruction || finding.fix_hint }]
-    })
-    if (respecified.length) {
-      const fix = await fixAgent(respecified, context, `fix-${label}-2`, `${threadFile}-2`, phaseLabel)
-      if (!fix) return { gate, touchedFiles, blocked: true, needsJudge: false }
-      touchedFiles.push(...(fix.touchedFiles || []))
-      files = [...new Set([...files, ...touchedFiles])]
-      if (!await afterFix(fix.touchedFiles || [], files)) return { gate, touchedFiles, blocked: true, needsJudge: false }
-    }
-    gate = await runGate(`${label}-retry2`, files)
-  }
-  return { gate, touchedFiles, blocked: !gate || !gate.passed, needsJudge: false }
+  const gate = 'first' in hooks ? hooks.first : await runGate(label, files)
+  if (gate && gate.passed) return { gate, touchedFiles: [], blocked: false, needsJudge: false }
+  return fixLoop({
+    kind: 'gate', label: `fix-${label}`, gateLabel: label, gate, reviewItems: [], files, threadFile, context, phaseLabel,
+    runGate, afterFix: hooks.afterFix, planExcerpt: hooks.planExcerpt, commitsPerRound: Boolean(hooks.afterFix),
+  })
 }
 
 function stopped(state) {
@@ -1118,7 +1105,7 @@ ${review}`,
 }
 
 const REVIEW_TIMEOUT_MS = 25 * 60 * 1000
-const MAX_FIX_ROUNDS = 1
+const MAX_FIX_ROUNDS = 2
 
 function withTimeout(promise, ms, label) {
   if (typeof setTimeout !== 'function') return promise
@@ -1201,17 +1188,33 @@ function triageFindings(findings, context, label = 'triage') {
     { label, phase: 'Review', schema: TRIAGE_SCHEMA, agentType: 'triage' })
 }
 
+// A ruling matches by finding id first, then by file and line. Any decision other than drop
+// applies the finding; rescope also replaces its fix text with the ruling's instruction.
+function rulingFor(item) {
+  const rulings = (PARAMS.rulings || []).filter(ruling => ruling && typeof ruling === 'object')
+  const id = findingKey(item)
+  return rulings.find(ruling => ruling.id && ruling.id === id) ||
+    rulings.find(ruling => !ruling.id && ruling.file === item.file && ruling.line === item.line) || null
+}
+
+function ruledItem(item, ruling) {
+  const rescoped = ruling.decision === 'rescope' && ruling.instruction
+  return { ...item, ruling: rescoped ? 'rescope' : 'apply', ...(rescoped ? { fix_hint: String(ruling.instruction) } : {}) }
+}
+
 async function applyRulings(findings, contradictions) {
   const dropped = new Set()
-  const applied = new Set()
+  const applied = new Map()
   const unresolved = []
+  const record = (finding, ruling) => {
+    if (ruling.decision === 'drop') dropped.add(findingKey(finding))
+    else applied.set(findingKey(finding), ruledItem(finding, ruling))
+  }
   for (const contradiction of contradictions) {
     const finding = contradiction.finding
-    const ruling = (PARAMS.rulings || []).find(item => item.file === finding.file && item.line === finding.line)
+    const ruling = rulingFor(finding)
     if (ruling) {
-      const key = JSON.stringify([finding.file, finding.line])
-      if (ruling.decision === 'drop') dropped.add(key)
-      else applied.add(key)
+      record(finding, ruling)
     } else if (PARAMS.auto) {
       await decide(`Auto ruling applied ${finding.file}:${finding.line} conservatively: ${finding.claim}`)
     } else {
@@ -1219,20 +1222,13 @@ async function applyRulings(findings, contradictions) {
     }
   }
   for (const finding of findings) {
-    const ruling = (PARAMS.rulings || []).find(item => item.file === finding.file && item.line === finding.line)
-    if (ruling) {
-      const key = JSON.stringify([finding.file, finding.line])
-      if (ruling.decision === 'drop') dropped.add(key)
-      else applied.add(key)
-    }
+    const ruling = rulingFor(finding)
+    if (ruling) record(finding, ruling)
   }
   return {
     unresolved,
-    applied: findings.filter(finding => applied.has(JSON.stringify([finding.file, finding.line]))),
-    confirmed: findings.filter(finding => {
-      const key = JSON.stringify([finding.file, finding.line])
-      return !dropped.has(key) && !applied.has(key)
-    }),
+    applied: findings.flatMap(finding => applied.has(findingKey(finding)) ? [applied.get(findingKey(finding))] : []),
+    confirmed: findings.filter(finding => !dropped.has(findingKey(finding)) && !applied.has(findingKey(finding))),
   }
 }
 
@@ -1268,29 +1264,33 @@ async function reviewPanel(context) {
   return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed: [...ruled.applied, ...partitioned.fix], failures, returned: present.length }
 }
 
-async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
-  const round = Number(label.match(/(\d+)$/)?.[1] || 1)
+// The applier gets only the decider's fix items, already verified, so it applies them without
+// re-triage. The quick-impl role's provider picks the Claude or Codex branch.
+async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
+  const { round, planExcerpt, diffStat } = extra
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
-  const findingFileCount = new Set(items.map(item => item.file).filter(isSourcePath)).size
-  const implementationRole = findingFileCount <= quickReviewThreshold() ? 'quick-impl' : 'impl'
+  const implementationRole = configRoleForTier('applier')
+  const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
+  const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nPLAN EXCERPT\n${planExcerpt}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const identified = items.map(item => ({ id: findingKey(item), finding: item }))
-    const result = await agentT('implementer', `Fix only these confirmed findings in ${PARAMS.projectDir}: ${JSON.stringify(identified)}. Verify each against current code first. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per finding with the same id and a concise reason explaining what you changed or why you could not fix it. Include the fix diff in diff.`,
+    const result = await agentT('applier', `Apply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
       { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
     return result || null
   }
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per finding with the same id and a concise reason explaining what changed or why it could not be fixed. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
+Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, the fix spec, plan excerpt, and diff stat below verbatim, and the instruction that the fix decider already verified every item against current code, so Codex applies each change as written and does not re-triage or widen scope. With ranged reads, include the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason explaining what changed or why it could not be applied. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.
+
+${inputs}`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA }, { threadFile, log: `${PARAMS.runDir}/codex-${label}.jsonl` })
   if (!assertCodex(result, label)) return null
   return result.fix
 }
 
-function verifyFixes(items, fixResult) {
+function verifyFixes(items, fixResult, label = 'verify-review') {
   const explanations = Array.isArray(fixResult.results) ? fixResult.results : []
   const diff = String(fixResult.diff || '').slice(0, 12000)
-  return withTimeout(agentT('reviewer', `Verify only the original findings below after one fix round. Return exactly one result for each original id with status RESOLVED or UNRESOLVED and a one-line reason. Do not add findings or assess anything outside this list.
+  return withTimeout(agentT('reviewer', `Verify only the original findings below after a fix round. Return exactly one result for each original id with status RESOLVED or UNRESOLVED and a one-line reason. Do not add findings or assess anything outside this list.
 
 ORIGINAL FINDINGS
 ${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}
@@ -1300,12 +1300,12 @@ ${JSON.stringify(explanations)}
 
 FIX DIFF
 ${diff}`,
-  { label: 'verify-review', phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer', forceTier: true }), REVIEW_TIMEOUT_MS, 'verify-review')
+  { label, phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer', forceTier: true }), REVIEW_TIMEOUT_MS, label)
 }
 
-async function unresolvedAfterVerification(items, verify) {
+async function unresolvedAfterVerification(items, verify, label = 'verify-review') {
   if (!verify || !Array.isArray(verify.results)) {
-    await decide('verify-review returned no usable result; every original finding remains unresolved.')
+    await decide(`${label} returned no usable result; every finding it checked remains unresolved.`)
     return items
   }
   const originals = new Map(items.map(item => [findingKey(item), item]))
@@ -1313,7 +1313,7 @@ async function unresolvedAfterVerification(items, verify) {
   for (const result of verify.results) {
     const key = result.id
     if (!originals.has(key) || accepted.has(key)) {
-      await decide(`verify-review dropped extra item ${String(result.id).slice(0, 200)}: ${String(result.reason || '').slice(0, 200)}`)
+      await decide(`${label} dropped extra item ${String(result.id).slice(0, 200)}: ${String(result.reason || '').slice(0, 200)}`)
       continue
     }
     accepted.set(key, result)
@@ -1321,7 +1321,7 @@ async function unresolvedAfterVerification(items, verify) {
   return items.flatMap(item => {
     const result = accepted.get(findingKey(item))
     if (result && result.status === 'RESOLVED') return []
-    return [{ ...item, verificationReason: result ? result.reason : 'verify-review omitted this original finding' }]
+    return [{ ...item, verificationReason: result ? result.reason : `${label} omitted this original finding` }]
   })
 }
 
@@ -1329,19 +1329,215 @@ async function converge(panel, context) {
   const originalFindings = panel.confirmed || []
   if (!originalFindings.length) {
     await decide('Fix stage skipped because the review panel returned no confirmed findings.')
-    return { unresolved: [], fixesApplied: false, rounds: [], touchedFiles: [], blocked: false, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
+    return { unresolved: [], unresolvedDisputes: [], fixesApplied: false, rounds: [], touchedFiles: [], blocked: false, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
   }
-  const fix = await fixAgent(originalFindings, context, `fix-${MAX_FIX_ROUNDS}`, `${PARAMS.runDir}/codex-fix-${MAX_FIX_ROUNDS}.thread`)
-  if (!fix) {
-    return { unresolved: originalFindings, fixesApplied: false, rounds: [], touchedFiles: [], blocked: true, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
+  const gated = configuredGateMode() === 'full'
+  return fixLoop({
+    kind: 'review', label: 'fix', gateLabel: 'gate-fix', gate: null,
+    reviewItems: originalFindings.map(finding => ({ ...finding, source: 'review' })),
+    files: context.files || [], threadFile: `${PARAMS.runDir}/codex-fix.thread`, context, phaseLabel: 'Fix',
+    runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles) : null,
+    planExcerpt: PARAMS.planText, commitsPerRound: false,
+  })
+}
+
+function fixDiffStatCommand() {
+  const repo = shellQuote(PARAMS.projectDir)
+  return `git -C ${repo} diff --stat "$(git -C ${repo} merge-base HEAD "$(cd ${repo} && bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || echo main)")"`
+}
+
+function deciderPrompt(round, open, gate, opts, history) {
+  const contract = opts.context && opts.context.contract && opts.context.contract !== PARAMS.planText ? opts.context.contract : '(see the plan excerpt)'
+  const diffPath = (opts.context && opts.context.diffPath) || (gate && gate.diffPath) || ''
+  const gateExcerpt = gate && !gate.passed
+    ? JSON.stringify({ failures: gate.failures || [], commands: gate.commands || [] }).slice(0, 6000)
+    : '(no failing gate this round)'
+  const rulings = (PARAMS.rulings || []).filter(ruling => ruling && open.some(item => rulingFor(item) === ruling))
+  return `You are the Forge fix DECIDER for round ${round} of ${MAX_FIX_ROUNDS} (${opts.label}) in ${PARAMS.projectDir}. Gate items come from a failing gate; review items were confirmed by triage. Turn the open items into an exact fix spec.
+First run \`${fixDiffStatCommand()}\` and return its stdout as diffStat. Read the run's change set only for the files the open items touch: ${diffPath ? `ranged reads (at most 2,000 lines) of ${diffPath}, or ` : ''}\`git -C ${shellQuote(PARAMS.projectDir)} diff -- <file>\` for uncommitted edits, and ranged reads of current code.
+Return one items[] entry per open item, with the same id and source:
+- fix: files lists the files to edit, change states the exact edit (file, location, and what to write), and check states how the result will be confirmed.
+- reject: current code proves the claim false; reason carries that evidence.
+- defer: the item is real but outside this plan's scope; reason says why.
+Put in cannotDecide every id whose evidence cannot support a decision. Rejected, deferred, and cannot-decide review items go to a human for a ruling; a gate item closes only when the gate passes. An item whose ruling is apply or rescope was decided by a human: its action is fix, using its fix_hint.
+Small-fix rule: when the whole fix set of this round is at most about 20 changed lines across at most 2 files and adds no new function or control flow, make those edits yourself, set applied=true, and fill apply with fixed, couldNotFix, touchedFiles, the diff of your edits (at most 12000 characters), notes, and one results[] entry per fix item with the same id and what you changed. Otherwise edit nothing, set applied=false, and set apply=null. Never edit code for an item you do not list with action fix.
+Respect the public API contract. Do not widen scope, redesign, commit, push, run tests or other checks, or delegate. Put what the next reader should know in notes.
+
+OPEN ITEMS
+${JSON.stringify(open.map(item => ({ id: findingKey(item), source: item.source, ruling: item.ruling || null, finding: item })))}
+
+GATE OUTPUT
+${gateExcerpt}
+
+EARLIER ROUNDS
+${history.length ? JSON.stringify(history) : '(none)'}
+
+RULINGS
+${rulings.length ? JSON.stringify(rulings) : '(none)'}
+
+PUBLIC API CONTRACT
+${contract}
+
+PLAN EXCERPT
+${opts.planExcerpt}`
+}
+
+// One capped loop for gate failures and review findings. Each round a decider writes the fix
+// spec (applying a small fix set itself), an applier applies the rest, then the re-gate checks
+// gate items and a separate verifier re-checks only this round's fixed review items. Gate item
+// ids come from failure text and change across edits, so gate progress is a failure count.
+async function fixLoop(opts) {
+  const { kind, label, runGate } = opts
+  const afterFix = opts.afterFix || (async () => true)
+  opts.planExcerpt = opts.planExcerpt || PARAMS.planText
+  let gate = opts.gate
+  let gateOpen = kind === 'gate' ? gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] }) : []
+  const reviewOpen = new Map(opts.reviewItems.map(item => [findingKey(item), item]))
+  const closedIds = new Set()
+  const disputes = []
+  const history = []
+  const deciderNotes = []
+  const rounds = []
+  const touchedFiles = []
+  let files = [...opts.files]
+  let gateRan = false
+  let reason = null
+  PARAMS.spawnCap += MAX_FIX_ROUNDS * (3 + (opts.commitsPerRound ? 1 : 0))
+  for (let round = 1; round <= MAX_FIX_ROUNDS; round++) {
+    for (const [id, item] of [...reviewOpen]) {
+      const ruling = rulingFor(item)
+      if (!ruling) continue
+      if (ruling.decision === 'drop') {
+        reviewOpen.delete(id)
+        closedIds.add(id)
+        await decide(`${label} round ${round}: ruling dropped ${item.file}:${item.line}.`)
+      } else {
+        reviewOpen.set(id, ruledItem(item, ruling))
+      }
+    }
+    gateOpen = gateOpen.map(item => {
+      const ruling = rulingFor(item)
+      return ruling && ruling.decision !== 'drop' ? ruledItem(item, ruling) : item
+    })
+    if (!reviewOpen.size && !gateOpen.length) break
+    const before = { review: reviewOpen.size, gate: gateOpen.length }
+    const open = [...gateOpen, ...reviewOpen.values()]
+    const spec = await agentT('decider', deciderPrompt(round, open, gate, opts, history),
+      { label: `decide-${label}-${round}`, phase: opts.phaseLabel, schema: FIX_SPEC_SCHEMA, agentType: 'judge' })
+    if (!spec) {
+      reason = capBlocked ? 'spawn-cap' : 'agent-null'
+      await decide(`${label} round ${round}: the fix decider returned null; the loop stopped.`)
+      break
+    }
+    if (spec.notes) deciderNotes.push(`Round ${round}: ${spec.notes}`)
+    const openById = new Map(open.map(item => [findingKey(item), item]))
+    const cannotDecide = new Set((spec.cannotDecide || []).filter(id => openById.has(id)))
+    const fixItems = []
+    const seen = new Set()
+    for (const entry of spec.items || []) {
+      const item = openById.get(entry.id)
+      if (!item) {
+        await decide(`${label} round ${round}: the decider named unknown item ${String(entry.id).slice(0, 200)}; ignored.`)
+        continue
+      }
+      if (cannotDecide.has(entry.id) || seen.has(entry.id)) continue
+      seen.add(entry.id)
+      if (entry.action === 'fix') {
+        fixItems.push({ ...item, specFiles: entry.files || [], change: entry.change || item.fix_hint, check: entry.check || '' })
+      } else if (item.ruling) {
+        await decide(`${label} round ${round}: the decider chose ${entry.action} for ${item.file}:${item.line}, which a ruling decided; it stays open.`)
+      } else if (item.source === 'gate') {
+        await decide(`${label} round ${round}: the decider chose ${entry.action} for gate item ${item.claim.slice(0, 200)}; only a passing gate closes it. ${String(entry.reason || '').slice(0, 300)}`)
+      } else {
+        reviewOpen.delete(entry.id)
+        disputes.push({ finding: item, reason: `decider ${entry.action}: ${entry.reason || '(no reason given)'}` })
+      }
+    }
+    for (const id of cannotDecide) {
+      const item = openById.get(id)
+      disputes.push({ finding: item, reason: 'decider could not decide from current evidence' })
+      reviewOpen.delete(id)
+    }
+    const listed = new Set((spec.items || []).map(entry => entry.id))
+    const unlisted = open.filter(item => !listed.has(findingKey(item)) && !cannotDecide.has(findingKey(item)))
+    if (unlisted.length) await decide(`${label} round ${round}: the decider left ${unlisted.length} open item(s) unlisted; they stay open.`)
+    let fix = null
+    let appliedBy = null
+    if (spec.applied) {
+      appliedBy = 'decider'
+      fix = spec.apply || { fixed: [], couldNotFix: [], touchedFiles: [], diff: '', notes: 'decider reported applied=true without an apply result', results: [] }
+      if (!spec.apply) await decide(`${label} round ${round}: the decider reported applied=true without an apply result.`)
+    } else if (fixItems.length) {
+      appliedBy = 'applier'
+      const threadFile = round === 1 ? opts.threadFile : `${opts.threadFile}-${round}`
+      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planExcerpt: opts.planExcerpt, diffStat: spec.diffStat })
+      if (!fix) {
+        reason = capBlocked ? 'spawn-cap' : 'agent-null'
+        await decide(`${label} round ${round}: the fix applier returned null; the loop stopped.`)
+        break
+      }
+    }
+    const record = { round, appliedBy, fixIds: fixItems.map(item => findingKey(item)), fix: fix && { ...fix, diff: undefined }, verify: null, gatePassed: null }
+    rounds.push(record)
+    if (fix) {
+      const touched = fix.touchedFiles || []
+      touchedFiles.push(...touched)
+      files = [...new Set([...files, ...touched])]
+      if (!await afterFix(touched, files)) {
+        reason = 'commit-failed'
+        break
+      }
+      if (runGate) {
+        gate = await runGate(round === 1 ? `${opts.gateLabel}-retry` : `${opts.gateLabel}-retry${round}`, files)
+        gateRan = true
+        gateOpen = gate && gate.passed ? [] : gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
+        record.gatePassed = Boolean(gate && gate.passed)
+      }
+      const reviewFixed = fixItems.filter(item => item.source !== 'gate' && reviewOpen.has(findingKey(item)))
+      if (reviewFixed.length) {
+        const verifyLabel = round === 1 ? 'verify-review' : `verify-review-${round}`
+        const verify = await verifyFixes(reviewFixed, fix, verifyLabel)
+        record.verify = verify
+        const stillOpen = new Set((await unresolvedAfterVerification(reviewFixed, verify, verifyLabel)).map(item => findingKey(item)))
+        for (const item of reviewFixed) {
+          const id = findingKey(item)
+          if (stillOpen.has(id)) continue
+          reviewOpen.delete(id)
+          closedIds.add(id)
+        }
+      }
+    }
+    history.push({
+      round, appliedBy,
+      spec: (spec.items || []).map(entry => ({ id: entry.id, action: entry.action, change: entry.change, reason: entry.reason })),
+      cannotDecide: [...cannotDecide],
+      gatePassed: record.gatePassed,
+      stillOpen: [...reviewOpen.keys()],
+      gateFailures: gateOpen.map(item => item.claim.slice(0, 300)),
+    })
+    if (!reviewOpen.size && !gateOpen.length) break
+    const reopened = [...reviewOpen.keys()].some(id => closedIds.has(id))
+    if (reopened || (reviewOpen.size >= before.review && gateOpen.length >= before.gate)) {
+      reason = 'no-progress'
+      break
+    }
+    if (round === MAX_FIX_ROUNDS) reason = 'fix-cap'
   }
-  const verify = await verifyFixes(originalFindings, fix)
-  const unresolved = await unresolvedAfterVerification(originalFindings, verify)
-  const touched = [...new Set(fix.touchedFiles || [])]
+  const open = [...gateOpen, ...reviewOpen.values()]
+  if (open.length && !reason) reason = capBlocked ? 'spawn-cap' : 'fix-cap'
+  const blocked = open.length > 0 || reason === 'commit-failed'
+  // A gate item the decider could not decide needs a ruling only while the gate still fails.
+  const openDisputes = gateOpen.length ? disputes : disputes.filter(item => item.finding.source !== 'gate')
+  const needsJudge = openDisputes.length > 0
+  if (blocked) await decide(`${label} stopped BLOCKED (${reason}) after ${rounds.length} round(s) with ${open.length} open item(s).`)
+  if (needsJudge) await decide(`${label}: ${openDisputes.length} item(s) need a human ruling: ${openDisputes.map(item => `${item.finding.file}:${item.finding.line}`).join(', ').slice(0, 500)}`)
+  const touched = [...new Set(touchedFiles)]
+  const blockedFields = blocked ? { reason, open, deciderNotes } : { deciderNotes }
+  if (kind === 'gate') return { gate, touchedFiles: touched, blocked, needsJudge, disputes: openDisputes, rounds, ...blockedFields }
   return {
-    unresolved, fixesApplied: touched.length > 0, rounds: [{ round: MAX_FIX_ROUNDS, fix, verify }],
-    touchedFiles: touched, blocked: unresolved.length > 0, needsJudge: false,
-    gatePassed: true, gate: null, gateRan: false,
+    unresolved: open, unresolvedDisputes: openDisputes, fixesApplied: touched.length > 0, rounds,
+    touchedFiles: touched, blocked, needsJudge,
+    gatePassed: gateRan ? Boolean(gate && gate.passed) : true, gate, gateRan, ...blockedFields,
   }
 }
 
@@ -1611,8 +1807,10 @@ async function collectPhaseGate(run, entry, allowFix) {
   }
   let sha = entry.sha
   let fixes = 0
+  const planned = PHASES.find(item => item.id === entry.id)
   const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contract: PARAMS.planText }, 'Gate', {
     first: gate,
+    planExcerpt: planned ? `### Phase ${planned.id}: ${planned.title}\n${planned.text}` : PARAMS.planText,
     run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
     afterFix: async (touched, files) => {
       fixes++
@@ -1633,11 +1831,13 @@ async function collectPhaseGate(run, entry, allowFix) {
   })
   run.lastGate = gateRun.gate
   row.gate = gateRun.blocked ? 'failed' : 'passed'
+  if (gateRun.disputes && gateRun.disputes.length) run.disputes.push(...gateRun.disputes)
+  if (gateRun.needsJudge) run.needsJudge = true
   if (gateRun.blocked) {
     run.blocked = true
     run.unresolved.push({ id: entry.id, sha, label: entry.label })
-    if (gateRun.needsJudge) run.needsJudge = true
-    await decide(`Phase ${entry.id} gate did not pass after the fix round; later phases were stopped.`)
+    run.gateFix = { phase: entry.id, reason: gateRun.reason, open: gateRun.open, rounds: gateRun.rounds.length, deciderNotes: gateRun.deciderNotes }
+    await decide(`Phase ${entry.id} gate did not pass after the fix loop (${gateRun.reason}); later phases were stopped.`)
   }
 }
 
@@ -1656,7 +1856,7 @@ async function phasedImplement(state) {
   const finalLabel = `gate-phase-${lastPhase.id}`
   const run = {
     branch: saved.branch || '', rows: PHASES.map(item => ({ id: item.id, title: item.title, sha: null, gate: null })),
-    lastCommittedPhase: null, pending: [], unresolved: [], files: [], headSha: null, blocked: false, needsJudge: false, lastGate: null, results: [],
+    lastCommittedPhase: null, pending: [], unresolved: [], files: [], headSha: null, blocked: false, needsJudge: false, lastGate: null, results: [], disputes: [], gateFix: null,
   }
   for (const row of saved.phases || []) {
     const target = run.rows.find(item => item.id === row.id)
@@ -1747,6 +1947,8 @@ async function phasedImplement(state) {
     error: null,
   }
   if (run.needsJudge) state.needsJudge = true
+  if (run.disputes.length) state.fixDisputes = run.disputes
+  if (run.gateFix) state.gateFix = run.gateFix
   if (run.blocked || capBlocked) state.status = 'BLOCKED'
   return state
 }
@@ -1794,9 +1996,11 @@ async function fullLane() {
       const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
+      if (gateRun.needsJudge) state.needsJudge = true
+      if (gateRun.disputes && gateRun.disputes.length) state.fixDisputes = gateRun.disputes
       if (!state.gate || !state.gate.passed) {
         state.status = 'BLOCKED'
-        if (gateRun.needsJudge) state.needsJudge = true
+        if (gateRun.reason) state.gateFix = { reason: gateRun.reason, open: gateRun.open, rounds: gateRun.rounds.length, deciderNotes: gateRun.deciderNotes }
         await decide('Pre-ship local gate did not pass; later stages were stopped.')
       }
       return state
@@ -1922,11 +2126,13 @@ async function fullLane() {
       if (state.convergence.blocked) {
         state.status = 'BLOCKED'
       }
-      if (state.convergence.blocked) {
+      if (state.convergence.blocked || (state.convergence.needsJudge && state.convergence.fixesApplied)) {
         const branch = (state.ship && state.ship.branch) || '(unknown branch)'
-        await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} original finding(s) remained unresolved after verify-review.`)
+        await decide(state.convergence.blocked
+          ? `Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} item(s) stayed open after the fix loop (${state.convergence.reason}).`
+          : `Fixes stayed unpushed on ${branch} until ${state.convergence.unresolvedDisputes.length} disputed item(s) get a human ruling.`)
       }
-      if (!state.convergence.blocked && state.convergence.fixesApplied && state.ship) {
+      if (!state.convergence.blocked && !state.convergence.needsJudge && state.convergence.fixesApplied && state.ship) {
         state.context = await changedFiles()
         if (contextFailed(state.context) || !state.context.diffValid) {
           state.status = 'BLOCKED'
@@ -2017,7 +2223,12 @@ try {
 }
 if (state.needsJudge) {
   if (usesGateCheckout()) await removeGateCheckout()
-  return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes: (state.review && state.review.unresolvedDisputes) || [], runDir: PARAMS.runDir }
+  const disputes = [
+    ...((state.review && state.review.unresolvedDisputes) || []),
+    ...((state.convergence && state.convergence.unresolvedDisputes) || []),
+    ...(state.fixDisputes || []),
+  ]
+  return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, runDir: PARAMS.runDir }
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 phase('Handoff')

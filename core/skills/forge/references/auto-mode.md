@@ -15,7 +15,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 - Test-table approval. Auto starts only after the user explicitly approves the table or its `None: <reason>`.
 - The local gate and the sandbox gate.
 - Scope limits. A run that needs a materially different plan stops with the evidence and reason.
-- Progress-based convergence. Two judged rounds without progress stop with the failure list and resume pointers in `STATE.md`; eight total rounds is the safety ceiling.
+- The capped fix loop. It stops BLOCKED at `MAX_FIX_ROUNDS` (2) rounds, or earlier when a round shrinks neither the open review set nor the failing gate count, with the open items and decider notes in the handoff. Review items the decider rejects, defers, or cannot decide still stop for a human ruling.
 - Bot-review triage stops for the user. Auto never addresses bot findings by itself.
 
 ## The trail — `decisions.md`

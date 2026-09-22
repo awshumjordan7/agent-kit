@@ -7,7 +7,7 @@ description: Turn a confirmed bug or feature plan into an implemented, repositor
 
 Forge has two lanes:
 
-- `build` (default): investigate, plan, implement, run the repository's gate, pause at a pre-ship checkpoint, ship, optionally exercise a sandbox, review, apply at most one fix, and hand off.
+- `build` (default): investigate, plan, implement, run the repository's gate, pause at a pre-ship checkpoint, ship, optionally exercise a sandbox, review, run a capped fix loop, and hand off.
 - `review`: review and bounded fixes for existing changes. Pass a base ref when committed branch changes must be included.
 
 `quick` and `dev` remain accepted aliases for `build` for one release. Add `auto` only when the user explicitly requested unattended execution.
@@ -77,7 +77,8 @@ Core ships optional stages disabled. An overlay may supply and enable:
 - In `full` mode, the local gate must pass before shipping. In a multi-phase run, every phase gate and the final gate over all run files must pass before the pre-ship checkpoint.
 - Every build run pauses at a pre-ship checkpoint: a fresh reviewer summarizes the change and recommends ship, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without a sandbox stage stops the run before shipping.
 - Every review finding is triaged against current code before a fixer runs.
-- Forge allows one fix round on a fresh implementation thread. One fresh Claude reviewer then verifies only the original post-triage findings from both reviewers using the implementer's per-finding explanations and the fix diff; it cannot add findings. Unresolved items go directly to the handoff, with no post-fix gate, status agent, judge, or second fix round.
+- Gate failures and review findings go through one capped fix loop of at most `MAX_FIX_ROUNDS` (2) rounds. Each round, an Opus decider turns the open items into an exact fix spec and applies a small fix set itself (at most about 20 lines across at most 2 files, no new functions or control flow); otherwise a medium-effort applier applies only that spec without re-triage. In gate mode `full` every applied round is re-gated, and only a passing gate closes a gate item. A separate verifier re-checks only the review items fixed that round and cannot add findings.
+- The loop stops when nothing is open, BLOCKED `fix-cap` at the round cap, or BLOCKED `no-progress` when a round leaves as many open review items and failing gate checks as before, or a closed item reopens. BLOCKED results carry the open items, rounds, and decider notes. Review items the decider rejects, defers, or cannot decide go to a human ruling (`needsJudge`) and never close silently. Resume with `args.rulings` entries `{ id?, file?, line?, decision: drop | apply | rescope, instruction? }`, matched by id first, then file and line, and applied at the start of every round.
 - Review diffs are files. Codex receives the validated file through `--inline-diff`; Claude reviewers use the Read tool in ranges of at most 2,000 lines.
 - Shippers stage exactly the changed-file context and never force-push without approval.
 - Live-dependent capabilities remain implemented-unverified until a live harness proves them.
