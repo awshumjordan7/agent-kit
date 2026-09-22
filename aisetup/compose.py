@@ -328,6 +328,9 @@ def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> Comp
         if backup is not None:
             _restore_unmanaged(backup, home, paths.preserved)
             sys.stdout.write(f"preserved {len(paths.preserved)} unmanaged path(s) from {backup}\n")
+            sys.stdout.write(f"retired {len(paths.retired)} managed path(s)\n")
+            for relative in paths.retired:
+                sys.stdout.write(f"retired: {relative}\n")
             for relative in paths.retired_modified:
                 sys.stdout.write(f"retired but locally modified: {relative}\n")
         _install_auxiliary(auxiliary, home.parent)
