@@ -93,7 +93,8 @@ forge's plan shape:
 
 - Summary
 - Public API contract
-- Phases
+- Phases, as `### Phase <id>: <title>` headings under `## Phases`, where `<id>` is a number with an
+  optional letter prefix (`0`, `1`, `A1`)
 - Tests
 - Acceptance criteria
 - Run settings

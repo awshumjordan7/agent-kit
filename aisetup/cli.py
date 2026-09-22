@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -35,11 +36,14 @@ from aisetup.update import (
     check_content,
     check_repositories,
     commit_subjects,
+    core_head,
     update_profile_commits,
     update_repositories,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Set on the re-executed update so a core checkout that moves again cannot loop.
+REEXEC_ENV = "AGENT_KIT_UPDATE_REEXEC"
 
 
 def _path(value: str) -> Path:
@@ -222,7 +226,10 @@ def _update(args: argparse.Namespace) -> int:
                 for drift in drifts:
                     print(f"{drift.path}: drift (source: {drift.source})")
             return 1 if any(status.behind for status in statuses) or drifts else 0
+        head_before = core_head(profile)
         update_repositories(profile)
+        if core_head(profile) != head_before and os.environ.get(REEXEC_ENV) != "1":
+            _reexec_update(args, Path(profile["layers"]["core"]["path"]))
         for repo, subject in commit_subjects(profile):
             print(f"{repo}: {subject}")
         update_profile_commits(profile)
@@ -259,6 +266,19 @@ def _update(args: argparse.Namespace) -> int:
         return doctor.returncode
     print(f"Updated {len(result.files)} files in {args.home}")
     return 0
+
+
+def _reexec_update(args: argparse.Namespace, core_path: Path) -> None:
+    # Modules imported before the checkout are stale; the checked-out code must validate and
+    # install the new tree.
+    command = [sys.executable, str(core_path / "install.py"), "update"]
+    if args.profile:
+        command.extend(["--profile", str(args.profile)])
+    command.extend(["--home", str(args.home), "--layers-root", str(args.layers_root)])
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.environ[REEXEC_ENV] = "1"
+    os.execv(sys.executable, command)
 
 
 def _tune(args: argparse.Namespace) -> int:

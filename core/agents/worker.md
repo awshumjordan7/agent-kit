@@ -1,7 +1,8 @@
 ---
 name: worker
 description: Cheap read-write agent for mechanical multi-step tasks — file moves, config edits, running scripts and tests, formatting, applying a spec that is already decided. Use instead of the built-in general-purpose agent so the work never runs on the session model. Not for judgment calls, design, or review.
-model: sonnet
+model: opus
+effort: medium
 disallowedTools: Agent
 maxTurns: 150
 ---
@@ -30,6 +31,8 @@ Rules:
   rediscover them.
 - Command output over ~2 KB goes to a file in the run dir; return the path,
   pass/fail, and failing test names only.
+- When the brief names an output file, write a partial version early and update it as the
+  work goes, so a turn cap or a rate-limit error loses nothing.
 - Any command that may run longer than 60 seconds gets a hard timeout:
   `perl -e 'alarm shift @ARGV; exec @ARGV' <seconds> <command>`.
 - A global permission rule denies every command containing `rm -rf`. To empty or

@@ -8,6 +8,12 @@ single line `None: <reason>`, it must contain one table where every test row fil
 columns: `Section`, `Test`, `Pins`, `How`, and `Why`. Each `Why` must tie the test to a plan risk
 or acceptance criterion; a test that pins nothing the plan risks or requires is a finding.
 
+Check every file, directory, and run-directory path the plan says an implementer or tool will
+read or write. Each must be named as an exact path, or the plan must name the step that creates
+it. A claim that a path already exists, or that a script already knows it, is a finding unless
+the recon or excerpts show it at file:line. A path the plan assumes but never creates costs an
+implementer round when it turns out to be missing.
+
 Output format. Write the file {{OUT_PATH}} and also print it:
 - One line verdict: PLAN OK | PLAN NEEDS CHANGES | PLAN WRONG.
 - Findings as a numbered list. Each: severity (CRITICAL | HIGH | MEDIUM | LOW), file:line evidence, what fails or is wrong, the concrete fix. CRITICAL only for something that makes the plan wrong. Do not pad.

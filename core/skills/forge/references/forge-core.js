@@ -131,6 +131,16 @@ if (PARAMS.checkpointDecision && !['ship', 'smoke', 'qa'].includes(PARAMS.checkp
   throw new Error(`unsupported checkpointDecision: ${PARAMS.checkpointDecision}; allowed values are ship, smoke, qa`)
 }
 
+const PHASES = PARAMS.lane === 'build' ? planPhases(PARAMS.planText) : []
+const PHASED = PHASES.length >= 2
+// Spawns one phase adds: implement, a possible Codex wrapper retry, commit, phases.json write, gate.
+const PHASE_SPAWNS = 5
+// Spawns a phased run adds once: phases.json read, branch switch, resume file scan, final phases.json write.
+const PHASED_RUN_SPAWNS = 4
+if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
+const GATE_CHECKOUT = `${PARAMS.runDir}/gate-checkout`
+const EMPTY_PHASES_FILE = { branch: '', phases: [], lastCommittedPhase: null, headSha: null, pendingGates: [] }
+
 const FINDING = {
   type: 'object', additionalProperties: false,
   properties: {
@@ -334,6 +344,35 @@ const CHECKPOINT_SCHEMA = {
   },
   required: ['recommendation', 'command', 'reason', 'summary'],
 }
+const PHASE_ROW_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    id: { type: 'string' }, title: { type: 'string' },
+    sha: { type: ['string', 'null'] }, gate: { type: ['string', 'null'] },
+  },
+  required: ['id', 'title', 'sha', 'gate'],
+}
+const PHASES_FILE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    branch: { type: 'string' },
+    phases: { type: 'array', items: PHASE_ROW_SCHEMA },
+    lastCommittedPhase: { type: ['string', 'null'] },
+    headSha: { type: ['string', 'null'] },
+    pendingGates: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { id: { type: 'string' }, sha: { type: 'string' }, label: { type: 'string' } },
+        required: ['id', 'sha', 'label'],
+      },
+    },
+  },
+  required: ['branch', 'phases', 'lastCommittedPhase', 'pendingGates'],
+}
+const BRANCH_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { branch: { type: 'string' } }, required: ['branch'],
+}
 const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
@@ -342,6 +381,8 @@ const CHECKPOINT_FILE_SCHEMA = {
     decidedBy: { type: 'string', enum: ['pending', 'auto', 'user'] },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
+    branch: { type: 'string' },
+    phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
   required: ['recommendation', 'command', 'reason', 'summary', 'decidedBy', 'implementFilesChanged', 'context'],
 }
@@ -399,6 +440,10 @@ const ACK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { written: { type: 'boolean' } }, required: ['written'],
 }
+const THREAD_CHECK_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
+}
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { handoffPath: { type: 'string' } }, required: ['handoffPath'],
@@ -430,6 +475,30 @@ function plannedSourceFiles(planText) {
     .map(match => match[1])
     .filter(path => /[\\/]/.test(path) || knownSourceExtension.test(path))
   return new Set(paths.filter(isSourcePath)).size
+}
+
+function planPhases(planText) {
+  const heading = /^###\s+Phase\s+([A-Za-z]*[0-9]+):\s*(\S.*?)\s*$/
+  const lines = String(planText || '').split(/\r?\n/)
+  const start = lines.findIndex(line => /^##\s+Phases\s*$/i.test(line))
+  if (start < 0) return []
+  const phases = []
+  let fenced = false
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced
+    } else if (!fenced && /^#{1,2}\s/.test(line)) {
+      break
+    } else if (!fenced && /^###\s/.test(line)) {
+      const match = heading.exec(line)
+      if (!match) throw new Error(`Plan heading under ## Phases must read "### Phase <id>: <title>" with an id such as 1 or A1: ${line.trim()}`)
+      if (phases.some(item => item.id === match[1])) throw new Error(`Plan phase id ${match[1]} appears twice under ## Phases`)
+      phases.push({ id: match[1], title: match[2], lines: [] })
+      continue
+    }
+    if (phases.length) phases[phases.length - 1].lines.push(line)
+  }
+  return phases.map(({ id, title, lines: body }) => ({ id, title, text: body.join('\n').trim() }))
 }
 
 function isSourcePath(path) {
@@ -489,6 +558,12 @@ function ticketLinks() {
   return PARAMS.tickets.map(key => ({ key, url: template ? template.replace('<KEY>', key) : '' }))
 }
 
+function dryRunSha(label) {
+  let hash = 0
+  for (const character of String(label)) hash = (hash * 31 + character.charCodeAt(0)) >>> 0
+  return hash.toString(16).padStart(8, '0').repeat(5)
+}
+
 function dryFindings() {
   return Array.from({ length: PARAMS.dryRunFindings }, (_, index) => ({
     file: 'auth/api/client.py', line: index + 1, severity: 'HIGH',
@@ -510,8 +585,10 @@ const STUBS = {
   judge: () => ({ decisions: dryFindings().map(finding => ({ id: findingKey(finding), verdict: 'respec', instruction: finding.fix_hint, reason: 'dry-run respec' })), cannotDecide: false }),
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
   gate: opts => {
+    if (String(opts.label).startsWith('commit-')) {
+      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep', 'parity'], commit: { sha: dryRunSha(opts.label), pushed: false, error: '' } }
+    }
     const forcedFailure = PARAMS.dryRunFailGate === opts.label
-      || (PARAMS.dryRunFailGate && dryRunJournal.some(entry => entry.role === 'gate' && entry.label === PARAMS.dryRunFailGate))
     return forcedFailure
       ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
       : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
@@ -536,6 +613,12 @@ const STUBS = {
     ? { recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } }
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
+    : opts.schema === PHASES_FILE_SCHEMA
+    ? { ...EMPTY_PHASES_FILE }
+    : opts.schema === BRANCH_SCHEMA
+    ? { branch: `${PARAMS.ticket}-dry-run` }
+    : opts.schema === THREAD_CHECK_SCHEMA
+    ? { threadExists: true }
     : {
       files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary',
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
@@ -557,6 +640,7 @@ if (canonicalLane !== requestedLane) decisions.push(`Lane alias ${requestedLane}
 const dryRunJournal = []
 const __test = {
   plannedSourceFiles,
+  planPhases,
   partitionTriage,
   pickImplRole,
   sandboxAllowed,
@@ -570,6 +654,10 @@ let capBlocked = false
 
 async function decide(text) {
   decisions.push(text)
+}
+
+function journal(label) {
+  if (PARAMS.dryRun) dryRunJournal.push({ role: 'event', label, prompt: '' })
 }
 
 function configRoleForTier(tierRole) {
@@ -595,7 +683,8 @@ function tierProfile(tierRole) {
 }
 
 async function agentT(role, prompt, opts = {}) {
-  const isHandoff = role === 'handoff' && opts.label === 'handoff'
+  // The gate-checkout removal runs only on exits that skip the handoff, so it may take the handoff's slot.
+  const isHandoff = (role === 'handoff' && opts.label === 'handoff') || opts.label === 'remove-gate-checkout'
   const limit = isHandoff ? PARAMS.spawnCap : PARAMS.spawnCap - 1
   if (spawnCount >= limit) {
     if (!isHandoff && !capBlocked) {
@@ -637,7 +726,7 @@ const codexWrapper = `Read ~/.claude/skills/forge/references/codex-wrapper.md an
 // Normalize wrapper errors and retry a real error once before assertCodex throws. A Codex process
 // still holding the helper lock surfaces as CODEX_LOCK_TIMEOUT and throws after that retry.
 // A null result means the spawn cap was hit and is not retried.
-async function codexAgent(prompt, opts) {
+async function codexAttempts(prompt, opts) {
   let result = await agentT('codexWrap', prompt, opts)
   if (result) result.error = normalizedCodexError(result.error)
   await recordCodexHandoffs(result, opts.label)
@@ -656,6 +745,29 @@ async function codexAgent(prompt, opts) {
   result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-retry` })
   if (result) result.error = normalizedCodexError(result.error)
   await recordCodexHandoffs(result, opts.label)
+  return result
+}
+
+// evidence names the stage's --thread-file and --log paths so a start the wrapper reports as
+// threadless can be checked against the thread file and the helper's status line.
+async function codexAgent(prompt, opts, evidence = null) {
+  const result = await codexAttempts(prompt, opts)
+  if (!evidence || !result || result.codexInvoked !== true || result.threadMode !== 'start' || result.threadExists === true || normalizedCodexError(result.error)) return result
+  const script = [
+    'import json, pathlib, sys',
+    'thread, log = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])',
+    'thread_id = thread.read_text(encoding="utf-8").strip() if thread.is_file() else ""',
+    'stem = log.name.split(".")[0]',
+    'statuses = [pathlib.Path(str(log) + ".status"), *log.parent.glob(stem + "*-h*.status")]',
+    'lines = [path.read_text(encoding="utf-8").strip() for path in statuses if path.is_file()]',
+    'print(json.dumps({"threadExists": bool(thread_id) and any(line.startswith("CODEX_OK ") and "thread=" + thread_id in line.split() for line in lines)}))',
+  ].join('; ')
+  const check = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(evidence.threadFile)} ${shellQuote(evidence.log)}`,
+    { label: `${opts.label}-thread-check`, phase: opts.phase, schema: THREAD_CHECK_SCHEMA })
+  if (check && check.threadExists === true) {
+    result.threadExists = true
+    await decide(`${opts.label} wrapper reported threadExists=false; ${evidence.threadFile} and a CODEX_OK status line for that thread were found, so the result was kept.`)
+  }
   return result
 }
 
@@ -742,8 +854,8 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
-function baselineContext() {
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py baseline --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)}`,
+function baselineContext(reuse = false) {
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py baseline --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)}${reuse ? ' --reuse' : ''}`,
     { label: 'baseline', phase: 'Implement', schema: ACK_SCHEMA })
 }
 
@@ -762,19 +874,34 @@ function runBeforeReturningInstruction() {
   return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
-function implement() {
+function phaseScope(phase) {
+  if (!phase) return ''
+  const partial = phase.resumed
+    ? ' An interrupted run may have left partial work for this phase in the working tree; keep it, finish the phase, and list those files in filesChanged.'
+    : ''
+  return `Implement only Phase ${phase.id}: ${phase.title}. The full plan is context: earlier phases are already committed, and later phases are implemented separately.${partial}`
+}
+
+function implement(phase = null) {
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  const suffix = phase ? `-phase-${phase.id}` : ''
+  const label = `implement${suffix}`
+  const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
+  const scope = phaseScope(phase)
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    return agentT('implementer', `Implement this confirmed Forge plan in ${PARAMS.projectDir}. Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${PARAMS.runDir}/implementation-summary.md. Report live-dependent capabilities under unverified.\n\nPLAN\n${PARAMS.planText}`,
-      { label: 'implement', phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' })
+    return agentT('implementer', `Implement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified.\n\nPLAN\n${PARAMS.planText}`,
+      { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' })
   }
-  const promptPath = `${PARAMS.runDir}/implement-prompt.md`
-  const logPath = `${PARAMS.runDir}/codex-implement.jsonl`
-  const outPath = `${PARAMS.runDir}/codex-implement-final.md`
+  const promptPath = `${PARAMS.runDir}/implement${suffix}-prompt.md`
+  const logPath = `${PARAMS.runDir}/codex-implement${suffix}.jsonl`
+  const outPath = `${PARAMS.runDir}/codex-implement${suffix}-final.md`
+  const scopeInstruction = scope
+    ? `Put this scope instruction verbatim directly above the PLAN heading: "${scope}" Implement only that phase and the rows of its approved test table.`
+    : 'Implement only the confirmed plan and its approved test table.'
   return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
-Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its approved test table. ${runBeforeReturningInstruction()} Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
+Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. ${scopeInstruction} ${runBeforeReturningInstruction()} Do not commit, and write ${summaryPath}. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
 Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
-  { label: 'implement', phase: 'Implement', schema: CODEX_RESULT })
+  { label, phase: 'Implement', schema: CODEX_RESULT }, { threadFile: CODEX_IMPL_THREAD, log: logPath })
 }
 
 function smokeRun(command) {
@@ -782,11 +909,12 @@ function smokeRun(command) {
     { label: 'checkpoint-smoke', phase: 'Checkpoint', schema: SMOKE_RUN_SCHEMA })
 }
 
-function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = []) {
+function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sha = '') {
   const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
-  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  const shaArg = sha ? ` --sha ${quote(sha)}` : ''
+  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -807,8 +935,12 @@ function gateFindings(gate) {
   })
 }
 
-async function gateWithFixes(label, files, threadFile, context, phaseLabel) {
-  let gate = await localGate(label, phaseLabel, files)
+// hooks.first is a gate result already collected; hooks.run gates a label and file list;
+// hooks.afterFix(touched, files) runs after each fix and returns false to stop the flow.
+async function gateWithFixes(label, files, threadFile, context, phaseLabel, hooks = {}) {
+  const runGate = hooks.run || ((gateLabel, gateFiles) => localGate(gateLabel, phaseLabel, gateFiles))
+  const afterFix = hooks.afterFix || (async () => true)
+  let gate = 'first' in hooks ? hooks.first : await runGate(label, files)
   const touchedFiles = []
   if (!gate || !gate.passed) {
     const findings = gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
@@ -816,7 +948,8 @@ async function gateWithFixes(label, files, threadFile, context, phaseLabel) {
     if (!fix) return { gate, touchedFiles, blocked: true, needsJudge: false }
     touchedFiles.push(...(fix.touchedFiles || []))
     files = [...new Set([...files, ...touchedFiles])]
-    gate = await localGate(`${label}-retry`, phaseLabel, files)
+    if (!await afterFix(fix.touchedFiles || [], files)) return { gate, touchedFiles, blocked: true, needsJudge: false }
+    gate = await runGate(`${label}-retry`, files)
   }
   if (!gate || !gate.passed) {
     const findings = gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
@@ -833,8 +966,9 @@ async function gateWithFixes(label, files, threadFile, context, phaseLabel) {
       if (!fix) return { gate, touchedFiles, blocked: true, needsJudge: false }
       touchedFiles.push(...(fix.touchedFiles || []))
       files = [...new Set([...files, ...touchedFiles])]
+      if (!await afterFix(fix.touchedFiles || [], files)) return { gate, touchedFiles, blocked: true, needsJudge: false }
     }
-    gate = await localGate(`${label}-retry2`, phaseLabel, files)
+    gate = await runGate(`${label}-retry2`, files)
   }
   return { gate, touchedFiles, blocked: !gate || !gate.passed, needsJudge: false }
 }
@@ -850,7 +984,7 @@ function changedFiles(allDirty = false) {
   { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
 }
 
-function checkpointReview(context, gate, implement) {
+function checkpointReview(context, gate, implement, phases = null) {
   return agentT('checkpoint', `You are the fresh pre-ship checkpoint reviewer. Read the plan text below and the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. Recommend qa when only a human or sandbox exercise would prove it. Set command to an empty string unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
 
 PLAN
@@ -858,13 +992,13 @@ ${PARAMS.planText}
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
-
+${phases ? `\nPHASE COMMITS AND GATES\n${JSON.stringify(phases)}\n` : ''}
 IMPLEMENTER RESULT
 ${JSON.stringify(implement || {})}`,
   { label: 'checkpoint', phase: 'Checkpoint', agentType: 'reviewer', schema: CHECKPOINT_SCHEMA })
 }
 
-function checkpointDocument(checkpoint, implement, context, decidedBy) {
+function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
   return {
     recommendation: checkpoint.recommendation,
     command: checkpoint.recommendation === 'smoke' ? checkpoint.command : '',
@@ -873,6 +1007,7 @@ function checkpointDocument(checkpoint, implement, context, decidedBy) {
     decidedBy,
     implementFilesChanged: (implement && implement.filesChanged) || [],
     context,
+    ...(state.phases ? { branch: state.branch || '', phases: state.phases } : {}),
   }
 }
 
@@ -966,7 +1101,7 @@ async function codexReview(context) {
 Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
-  { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA })
+  { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA }, { threadFile: CODEX_REVIEW_THREAD, log: `${PARAMS.runDir}/codex-review.jsonl` })
   // A Codex failure (out of credits, auth, stall) must surface as a named failure, not as
   // the placeholder verdict the wrapper returns alongside its `error` field.
   try {
@@ -1147,7 +1282,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
 Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per finding with the same id and a concise reason explaining what changed or why it could not be fixed. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
 Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
-  { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
+  { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA }, { threadFile, log: `${PARAMS.runDir}/codex-${label}.jsonl` })
   if (!assertCodex(result, label)) return null
   return result.fix
 }
@@ -1228,12 +1363,14 @@ function ghEnvironmentInstruction() {
   return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
 }
 
-function ship(existing = null, files = [], context = {}) {
+function ship(existing = null, files = [], context = {}, committedBranch = '') {
   const gateNotice = configuredGateMode() === 'none'
     ? 'The PR body must include the exact line `gates: none (personal repo)`.'
     : ''
   const prompt = existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    : committedBranch
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
     : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
@@ -1338,6 +1475,9 @@ async function handoff(state, context) {
   const gateNotice = noGates
     ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint result at ${PARAMS.runDir}/checkpoint.json.`
     : ''
+  const cleanup = usesGateCheckout()
+    ? `Before anything else, run exactly this command once and continue regardless of its output: \`${gateCheckoutCleanupCommand()}\`. `
+    : ''
   const handoffState = {
     ...state,
     qaDraft: qaDraftSummary(state.qaDraft),
@@ -1348,12 +1488,12 @@ async function handoff(state, context) {
   }
   await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
   if (state.status === 'PRE_SHIP') {
-    return agentT('handoff', `Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
+    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
 Then rewrite ${PARAMS.runDir}/STATE.md whole (never append) from ~/.claude/references/state-template.md with status PRE_SHIP, the checkpoint decision as the next step, and pointers to the plan, decisions, STATUS.json, checkpoint.json, and handoff.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
 ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
@@ -1364,10 +1504,262 @@ Return the handoff path.`,
   { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
 }
 
+function usesGateCheckout() {
+  return PHASED && configuredGateMode() !== 'none'
+}
+
+function gateCheckoutCleanupCommand() {
+  const dir = shellQuote(GATE_CHECKOUT)
+  const repo = shellQuote(PARAMS.projectDir)
+  return `if [ -e ${dir} ]; then git -C ${repo} worktree remove --force ${dir} || { find ${dir} -mindepth 1 -delete; rmdir ${dir}; }; fi; git -C ${repo} worktree prune`
+}
+
+function removeGateCheckout() {
+  return agentT('changedFiles', `Execute exactly one command and return {"written": true} when it finishes: ${gateCheckoutCleanupCommand()}`,
+    { label: 'remove-gate-checkout', phase: 'Handoff', schema: ACK_SCHEMA })
+}
+
+function readPhases() {
+  const empty = JSON.stringify(EMPTY_PHASES_FILE).replace(/null/g, 'None')
+  const script = `import json, pathlib, sys; path = pathlib.Path(sys.argv[1]); print(path.read_text(encoding="utf-8") if path.is_file() else json.dumps(${empty}), end="")`
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)}`,
+    { label: 'read-phases', phase: 'Implement', schema: PHASES_FILE_SCHEMA })
+}
+
+function writePhases(run, extraPending = []) {
+  const document = {
+    branch: run.branch,
+    phases: run.rows,
+    lastCommittedPhase: run.lastCommittedPhase,
+    headSha: run.headSha,
+    pendingGates: [...extraPending, ...run.unresolved, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
+  }
+  const script = 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(json.loads(sys.argv[2]), indent=2) + "\\n", encoding="utf-8"); print(json.dumps({"written": True}))'
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)} ${shellQuote(JSON.stringify(document))}`,
+    { label: 'write-phases', phase: 'Implement', schema: ACK_SCHEMA })
+}
+
+function planBranchName() {
+  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText) || [])[1] || PHASES[0].title
+  const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const words = slug(heading.replace(/^plan:\s*/i, '')).split('-').filter(Boolean).slice(0, 6).join('-')
+  return [slug(PARAMS.ticket), words].filter(Boolean).join('-').slice(0, 60).replace(/-+$/, '') || 'forge-phases'
+}
+
+// ship-pr's rule: create a branch only when the checkout is on the base branch (or detached).
+function phaseBranch(name) {
+  const repo = shellQuote(PARAMS.projectDir)
+  const branch = shellQuote(name)
+  const report = `python3 -c 'import json, subprocess; print(json.dumps({"branch": subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()}))'`
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && base=$(bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || true) && case "$current" in ''|develop|main|master|"$base") git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
+    { label: 'phase-branch', phase: 'Implement', schema: BRANCH_SCHEMA })
+}
+
+// gate.sh drops absolute paths, so implementer-reported paths are made repository-relative first.
+function repoRelative(files) {
+  const prefix = `${String(PARAMS.projectDir).replace(/\/+$/, '')}/`
+  return files.map(file => String(file).startsWith(prefix) ? String(file).slice(prefix.length) : String(file))
+}
+
+async function commitFiles(label, message, files) {
+  if (!files.length) return { sha: null, empty: true, error: '' }
+  const quote = shellQuote
+  const subject = String(message).replace(/`/g, '')
+  const result = await agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
+    { label, phase: 'Implement', schema: GATE_SCHEMA })
+  const commit = result && result.commit
+  if (commit && commit.sha) return { sha: commit.sha, empty: false, error: '' }
+  const error = (commit && commit.error) || (result && (result.failures || [])[0] && result.failures[0].summary) || 'commit agent returned null'
+  if (/^no (?:staged changes to commit|committable --files paths remain)/.test(error)) return { sha: null, empty: true, error: '' }
+  return { sha: null, empty: false, error }
+}
+
+// Gates share one checkout and label-keyed state files, so they run strictly one at a time.
+// A gate with nothing ahead of it starts at once instead of on a later microtask.
+let gateTail = Promise.resolve()
+let gatesInFlight = 0
+function serialGate(start) {
+  gatesInFlight++
+  const started = gatesInFlight === 1 ? start() : gateTail.then(start)
+  const done = () => { gatesInFlight-- }
+  gateTail = started.then(done, done)
+  return started
+}
+
+function queuePhaseGate(run, entry) {
+  entry.settled = false
+  entry.promise = serialGate(() => localGate(entry.label, 'Gate', entry.files, [], entry.sha)).catch(() => null)
+  entry.promise.then(() => { entry.settled = true })
+  run.pending.push(entry)
+}
+
+async function collectPhaseGate(run, entry, allowFix) {
+  const gate = await entry.promise
+  run.pending = run.pending.filter(item => item !== entry)
+  journal(`gate-collected-phase-${entry.id}`)
+  const row = run.rows.find(item => item.id === entry.id)
+  run.lastGate = gate
+  if (gate && gate.passed) {
+    row.gate = 'passed'
+    await decide(`Phase ${entry.id} gate passed on ${entry.sha.slice(0, 12)}.`)
+    return
+  }
+  row.gate = 'failed'
+  if (!allowFix) {
+    run.unresolved.push({ id: entry.id, sha: entry.sha, label: entry.label })
+    return
+  }
+  let sha = entry.sha
+  let fixes = 0
+  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contract: PARAMS.planText }, 'Gate', {
+    first: gate,
+    run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
+    afterFix: async (touched, files) => {
+      fixes++
+      run.files = [...new Set([...run.files, ...repoRelative(touched)])]
+      const commit = await commitFiles(`commit-fix-phase-${entry.id}-${fixes}`, `Fix Phase ${entry.id} gate`, [...new Set(repoRelative(files))])
+      if (commit.error) {
+        await decide(`Fix Phase ${entry.id} gate could not be committed: ${commit.error.slice(0, 300)}`)
+        return false
+      }
+      if (commit.sha) {
+        sha = commit.sha
+        run.headSha = commit.sha
+        await decide(`Fix Phase ${entry.id} gate committed as ${sha.slice(0, 12)}.`)
+        await writePhases(run, [{ id: entry.id, sha, label: entry.label }])
+      }
+      return true
+    },
+  })
+  run.lastGate = gateRun.gate
+  row.gate = gateRun.blocked ? 'failed' : 'passed'
+  if (gateRun.blocked) {
+    run.blocked = true
+    run.unresolved.push({ id: entry.id, sha, label: entry.label })
+    if (gateRun.needsJudge) run.needsJudge = true
+    await decide(`Phase ${entry.id} gate did not pass after the fix round; later phases were stopped.`)
+  }
+}
+
+async function collectSettledGates(run) {
+  while (run.pending.length && run.pending[0].settled && !run.blocked) await collectPhaseGate(run, run.pending[0], true)
+}
+
+// Each phase is implemented and committed in the primary worktree; its gate runs on the
+// committed SHA in the gate checkout while the next phase is implemented. Gate failures are
+// fixed only at phase boundaries, never while an implementer is editing. The final gate runs on
+// HEAD over every run file only after all earlier gates and their fix commits have settled.
+async function phasedImplement(state) {
+  const gated = configuredGateMode() !== 'none'
+  const saved = PHASES_SAVED
+  const lastPhase = PHASES[PHASES.length - 1]
+  const finalLabel = `gate-phase-${lastPhase.id}`
+  const run = {
+    branch: saved.branch || '', rows: PHASES.map(item => ({ id: item.id, title: item.title, sha: null, gate: null })),
+    lastCommittedPhase: null, pending: [], unresolved: [], files: [], headSha: null, blocked: false, needsJudge: false, lastGate: null, results: [],
+  }
+  for (const row of saved.phases || []) {
+    const target = run.rows.find(item => item.id === row.id)
+    if (target) Object.assign(target, { sha: row.sha, gate: row.gate })
+  }
+  let startIndex = 0
+  let resumeFiles = []
+  if (PHASES_RECORDED) {
+    if (saved.lastCommittedPhase) {
+      const index = PHASES.findIndex(item => item.id === saved.lastCommittedPhase)
+      if (index < 0) throw new Error(`${PARAMS.runDir}/phases.json records committed phase ${saved.lastCommittedPhase}, which the plan does not contain`)
+      startIndex = index + 1
+      run.lastCommittedPhase = saved.lastCommittedPhase
+      run.headSha = saved.headSha || [...run.rows.slice(0, index + 1)].reverse().map(row => row.sha).find(Boolean) || null
+    }
+    const context = await changedFiles()
+    if (contextFailed(context)) {
+      state.status = 'BLOCKED'
+      await decide(`Changed-file collection failed while resuming the phase loop: ${(context && context.error) || 'agent returned null'}`)
+      return state
+    }
+    resumeFiles = context.files || []
+    run.files = [...resumeFiles]
+    // The final gate always runs after the loop, so a saved final gate is not queued twice.
+    const requeue = gated && resumeFiles.length ? saved.pendingGates.filter(pending => pending.label !== finalLabel) : []
+    for (const pending of requeue) queuePhaseGate(run, { id: pending.id, sha: pending.sha, label: pending.label, files: resumeFiles })
+    await decide(saved.lastCommittedPhase
+      ? `Resuming the phase loop after Phase ${saved.lastCommittedPhase}; ${requeue.length} pending or failed gate(s) re-queued.`
+      : `Resuming the phase loop at Phase ${PHASES[0].id}; no phase was committed before the interruption.`)
+  }
+  if (!run.branch) {
+    const branch = await phaseBranch(planBranchName())
+    if (!branch || !branch.branch) {
+      state.status = 'BLOCKED'
+      await decide('Could not switch to a branch for the phase commits; the phase loop did not start.')
+      return state
+    }
+    run.branch = branch.branch
+    await decide(`Phase commits go on branch ${run.branch}.`)
+  }
+  // Written before Phase 1 so an interrupted first phase resumes with this run's baseline.
+  if (!PHASES_RECORDED) await writePhases(run)
+  for (let index = startIndex; index < PHASES.length && !run.blocked; index++) {
+    const phase = PHASES[index]
+    const row = run.rows[index]
+    const resumed = index === startIndex && PHASES_RECORDED
+    const result = await implement({ ...phase, resumed })
+    if (capBlocked || !assertImplementation(result, `implement-phase-${phase.id}`)) {
+      run.blocked = true
+      break
+    }
+    run.results.push({ id: phase.id, result })
+    const phaseFiles = [...new Set(repoRelative([...(result.filesChanged || []), ...(resumed ? resumeFiles : [])]))]
+    run.files = [...new Set([...run.files, ...phaseFiles])]
+    const commit = await commitFiles(`commit-phase-${phase.id}`, `Phase ${phase.id}: ${phase.title}`, phaseFiles)
+    if (commit.error) {
+      run.blocked = true
+      await decide(`Phase ${phase.id} could not be committed: ${commit.error.slice(0, 300)}`)
+      break
+    }
+    row.sha = commit.sha
+    row.gate = !gated ? 'none' : commit.sha ? 'pending' : 'skipped'
+    run.lastCommittedPhase = phase.id
+    if (commit.sha) run.headSha = commit.sha
+    await decide(commit.sha ? `Phase ${phase.id} committed as ${commit.sha.slice(0, 12)}.` : `Phase ${phase.id} left nothing committable; no commit was made.`)
+    if (gated) {
+      await collectSettledGates(run)
+      if (run.blocked) break
+      if (commit.sha && phase !== lastPhase) queuePhaseGate(run, { id: phase.id, sha: commit.sha, label: `gate-phase-${phase.id}`, files: phaseFiles })
+    }
+    await writePhases(run)
+  }
+  while (run.pending.length) await collectPhaseGate(run, run.pending[0], !run.blocked)
+  if (gated && !run.blocked && !capBlocked && run.headSha && run.files.length) {
+    run.rows[run.rows.length - 1].gate = 'pending'
+    queuePhaseGate(run, { id: lastPhase.id, sha: run.headSha, label: finalLabel, files: run.files })
+    await collectPhaseGate(run, run.pending[0], true)
+  }
+  await writePhases(run)
+  state.branch = run.branch
+  state.phases = run.rows
+  state.gate = run.lastGate
+  state.implement = {
+    filesChanged: run.files,
+    testsWritten: run.results.some(item => item.result.testsWritten === true || item.result.testsWritten > 0),
+    summary: run.results.map(item => `Phase ${item.id}: ${item.result.summary || ''}`).join('\n'),
+    unverified: run.results.flatMap(item => item.result.unverified || []),
+    error: null,
+  }
+  if (run.needsJudge) state.needsJudge = true
+  if (run.blocked || capBlocked) state.status = 'BLOCKED'
+  return state
+}
+
 async function fullLane() {
   phase('Implement')
   const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
+  if (PHASED && !PARAMS.checkpointDecision) {
+    await decide(configuredGateMode() === 'none'
+      ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
+      : `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed, then gated on its SHA in ${GATE_CHECKOUT} while the next phase runs.`)
+  }
   const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
   if (PARAMS.checkpointDecision) {
     const saved = await readCheckpoint()
@@ -1376,6 +1768,10 @@ async function fullLane() {
     }
     initial.implement = { filesChanged: saved.implementFilesChanged }
     initial.context = saved.context
+    if (saved.phases) {
+      initial.branch = saved.branch || ''
+      initial.phases = saved.phases
+    }
     initial.checkpoint = { ...saved, decidedBy: 'user' }
     await decide(`Pre-ship checkpoint decision: ${PARAMS.checkpointDecision} (user)`)
     if (!await writeCheckpoint(initial.checkpoint)) throw new Error(`could not update ${PARAMS.runDir}/checkpoint.json for the user decision`)
@@ -1385,6 +1781,7 @@ async function fullLane() {
     async state => {
       phase('Implement')
       if (PARAMS.checkpointDecision) return state
+      if (PHASED) return phasedImplement(state)
       state.implement = await implement()
       if (!assertImplementation(state.implement, 'implement')) state.status = 'BLOCKED'
       if (capBlocked && state.status !== 'READY_FOR_HUMAN') state.status = 'BLOCKED'
@@ -1393,7 +1790,7 @@ async function fullLane() {
     async state => {
       phase('Gate')
       if (stopped(state)) return state
-      if (PARAMS.checkpointDecision || configuredGateMode() === 'none') return state
+      if (PARAMS.checkpointDecision || PHASED || configuredGateMode() === 'none') return state
       const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
@@ -1419,13 +1816,13 @@ async function fullLane() {
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      const result = await checkpointReview(state.context, state.gate, state.implement)
+      const result = await checkpointReview(state.context, state.gate, state.implement, state.phases || null)
       if (!result) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint agent returned null; shipping was stopped.')
         return state
       }
-      state.checkpoint = checkpointDocument(result, state.implement, state.context, PARAMS.auto ? 'auto' : 'pending')
+      state.checkpoint = checkpointDocument(result, state.implement, state.context, PARAMS.auto ? 'auto' : 'pending', state)
       if (!await writeCheckpoint(state.checkpoint)) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint result could not be written; shipping was stopped.')
@@ -1451,7 +1848,8 @@ async function fullLane() {
         await decide(`Changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [], state.context)
+      const phasesCommitted = (state.phases || []).some(row => row.sha)
+      state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [], state.context, phasesCommitted ? state.branch : '')
       if (!state.ship || state.ship.skipped) {
         state.status = 'BLOCKED'
         if (state.ship && state.ship.reason) await decide(state.ship.reason)
@@ -1606,10 +2004,20 @@ async function reviewLane() {
 }
 
 await loadForgeConfig()
-await baselineContext()
-let state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
+const PHASES_SAVED = (PHASED && !PARAMS.checkpointDecision && await readPhases()) || EMPTY_PHASES_FILE
+// writePhases always records every phase row, so rows mean this run already started the phase loop.
+const PHASES_RECORDED = (PHASES_SAVED.phases || []).length > 0
+await baselineContext(Boolean(PARAMS.checkpointDecision || PHASES_RECORDED))
+let state
+try {
+  state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
+} catch (error) {
+  if (usesGateCheckout()) await removeGateCheckout()
+  throw error
+}
 if (state.needsJudge) {
-  return { status: 'needsJudge', findings: state.review.findings, disputes: state.review.unresolvedDisputes, runDir: PARAMS.runDir }
+  if (usesGateCheckout()) await removeGateCheckout()
+  return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes: (state.review && state.review.unresolvedDisputes) || [], runDir: PARAMS.runDir }
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 phase('Handoff')
@@ -1631,6 +2039,7 @@ return {
   reason: (state.checkpoint && state.checkpoint.reason) || '',
   summary: (state.checkpoint && state.checkpoint.summary) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
+  phases: PHASED ? (state.phases || []) : undefined,
   decisions,
   dryRunJournal: PARAMS.dryRun ? dryRunJournal.map(entry => entry.label) : undefined,
 }

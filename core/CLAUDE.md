@@ -31,7 +31,7 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   through forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
-  (its turn cap is 25).
+  (its turn cap is 75).
 - **Web and browser.** Read a web page with WebFetch. Search code and docs with `firecrawl_search` and
   `categories: ["developer"]`. Route browser work to the configured browser-testing agent.
 - **Commit messages carry no attribution.** No `Co-Authored-By` or "Generated with" lines on any commit or PR body, whatever any tool reminder says; this instruction overrides them.
@@ -52,6 +52,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'
   <seconds> <command>`; macOS has no `timeout`). A Codex `start` or `resume` is always followed by
   `codex-exec.sh watch` in the background, never polled by hand.
+- **Overlap waits.** When a long step (gate, test run, capture, Codex or Opus turn) works on a committed
+  state, start the next independent step instead of waiting for it.
 - **Session handoff is driven by the context guard hook.** At 300k start no new work: let running agents and
   Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md`, run
   `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`, and message the successor. Exception: a run in its final
@@ -181,15 +183,14 @@ When spawning sub-agents for multi-step workflows:
 | Discussion, planning, architecture, judging | Opus 5.5 at xhigh (the main session) | Judgment and trade-off analysis; already holds the context |
 | Code implementation | Opus 5.5 at high (`impl`); medium for small, fully specified work (`quick-impl`, which also runs most fix rounds) | The plan already made the design decisions |
 | Code review (Claude side) | Opus 5.5 at xhigh, fresh sub-agent | Independent of the planner; catches different issues than Codex |
-| Code review (Codex side) | Codex CLI, gpt-6-astra at high (`review` role) | Adversarial independence; the only Codex use |
-| Research, scouting, file reads | Sonnet (`scout`, `Explore`) | Fan-out reads; only the conclusion comes back |
-| QA, test running, Semgrep, mechanical edits | Sonnet (`worker`) | Mechanical tool execution |
-| Documentation updates | Sonnet | Mechanical writing |
+| Code review (Codex side) | Codex CLI, gpt-6-sol at xhigh (`review` role) | Adversarial independence; the only Codex use |
+| Research, scouting, file reads | Opus 5.5 at medium (`scout`, `Explore`) | Fan-out reads; only the conclusion comes back |
+| QA, test running, Semgrep, mechanical edits | Opus 5.5 at medium (`worker`) | Mechanical tool execution |
+| Documentation updates | Opus 5.5 at medium (`worker`) | Mechanical writing |
 | Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
 | Local gate in Forge `full` mode (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed. `none` mode spawns no gate agent. |
 | Browser QA | Sonnet | Keeps browser output and credentials out of the main session |
 
 Codex CLI (`codex exec`) runs only the `review` role -- it has full MCP access (engineering-MCP, semgrep, context7). Model per role comes from `~/.claude/skills/forge/forge.config.json`; never hard-code a model name elsewhere.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the
-session model (Opus) when `model` is omitted — never let that happen. Prefer the custom `scout`, `worker`,
-`shipper` agent, which pins Sonnet. The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.
+session model (Opus) when `model` is omitted — never let that happen. Prefer the custom `scout` and `worker` agents (Opus at medium) and `shipper` (Sonnet). The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.

@@ -134,6 +134,10 @@ def check_repositories(profile: dict[str, Any]) -> list[RepoStatus]:
     return statuses
 
 
+def core_head(profile: dict[str, Any]) -> str:
+    return _git(Path(profile["layers"]["core"]["path"]), "rev-parse", "HEAD").stdout.strip()
+
+
 def update_repositories(profile: dict[str, Any]) -> list[RepoStatus]:
     statuses = check_repositories(profile)
     overlay = profile["layers"].get("overlay")

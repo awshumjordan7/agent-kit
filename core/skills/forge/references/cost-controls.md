@@ -35,7 +35,7 @@ surfaces as a notification, never as a silent hang.
 `gate` role (runs `scripts/gate.sh`): Haiku, low effort, 3-7 spawns per run; cost is test wall-clock time, not tokens.
 
 ## Routing (2026-09-22)
-`roles.impl` runs on Claude Opus 5.5 at high effort, `roles.quick-impl` (small, fully specified work and most fix rounds) at medium, and `roles.plan-review` at xhigh. The Claude reviewer, pre-ship checkpoint, and judge run at xhigh; triage at high. `roles.review` runs on Codex gpt-6-astra at high effort, the only Codex use. On 2026-09-16 one astra plan review used about 20% of the 5-hour limit; astra is priced roughly 50x the 5.6 models. Watch per-review usage in `.state/usage.log` and move review back to gpt-5.6-sol if the limit bites.
+`roles.impl` runs on Claude Opus 5.5 at high effort, `roles.quick-impl` (small, fully specified work and most fix rounds) at medium, and `roles.plan-review` at xhigh. The Claude reviewer, pre-ship checkpoint, and judge run at xhigh; triage at high. `roles.review` runs on Codex gpt-6-sol at xhigh effort, the only Codex use. It replaced gpt-6-astra on 2026-09-22 because one astra review could use about 20% of the 5-hour limit. Watch per-review usage in `.state/usage.log`.
 
 ## Sol implementer trial (from 2026-09-15)
 

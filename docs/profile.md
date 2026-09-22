@@ -8,11 +8,15 @@ doctor settings. Schema 1 rejects unknown keys so misspelled settings fail early
 | `layers` | core checkout, optional overlay checkout, and local directory |
 | `modules` | one Boolean per shipped module |
 | `answers` | module question values; secret answers are redacted from dry runs |
-| `agents` | `model`, `maxTurns`, and optional `effort` per agent |
+| `agents` | `model`, `maxTurns`, and optional `effort` per agent; see below |
 | `forge` | provider roles, optional stages, gate commands, and workspace |
 | `ship_pr` | base branch overrides by `owner/repo` |
 | `doctor` | repository roots and Codex mirror settings |
 | `auto_update` | allow the daily hook to apply available updates |
+
+Agent settings have two sources: the agent file's frontmatter and the profile's `agents.<name>` entry. At install
+the profile wins: each `model`, `maxTurns`, or `effort` it sets replaces the frontmatter value, `null` removes the
+key, and keys it omits keep the frontmatter value.
 
 Use `install --profile FILE --yes` to replay a profile without prompts. Paths beginning with `~` expand when the
 profile is loaded. Later layer data overrides earlier values through the normal deep-merge rules. When `--home`

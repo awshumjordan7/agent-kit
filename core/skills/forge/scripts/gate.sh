@@ -20,11 +20,13 @@ only_stages=''
 only_given=false
 commit_message=''
 push=false
+sha=''
+no_stages=false
 files=()
 
 while (($#)); do
   case "$1" in
-    --repo|--run-dir|--label|--commit|--only)
+    --repo|--run-dir|--label|--commit|--only|--sha)
       (($# >= 2)) || die "gate.sh: $1 requires a value"
       case "$1" in
         --repo) repo=$2 ;;
@@ -32,6 +34,7 @@ while (($#)); do
         --label) label=$2 ;;
         --commit) commit_message=$2 ;;
         --only) only_stages=$2; only_given=true ;;
+        --sha) sha=$2 ;;
       esac
       shift 2
       ;;
@@ -52,6 +55,10 @@ while (($#)); do
       push=true
       shift
       ;;
+    --no-stages)
+      no_stages=true
+      shift
+      ;;
     *) die "gate.sh: unknown argument: $1" ;;
   esac
 done
@@ -64,6 +71,11 @@ if $only_given; then
   for requested_stage in "${requested_stages[@]}"; do
     [[ ,$all_stages, == *",$requested_stage,"* ]] || die "gate.sh: unknown --only stage: $requested_stage"
   done
+fi
+if $no_stages; then
+  $only_given && die 'gate.sh: --no-stages conflicts with --only'
+  # Matches no stage name, so every stage is skipped and reported in `skipped`.
+  only_stages='none'
 fi
 
 stage_enabled() {
@@ -79,6 +91,11 @@ if [[ -n $commit_message && $files_given != true ]]; then
 fi
 if [[ $push == true && -z $commit_message ]]; then
   die 'gate.sh: --push requires --commit'
+fi
+if [[ -n $sha ]]; then
+  [[ $sha =~ ^[0-9a-fA-F]{7,64}$ ]] || die 'gate.sh: --sha must be a commit id'
+  [[ -z $commit_message ]] || die 'gate.sh: --sha conflicts with --commit'
+  [[ $files_given == true ]] || die 'gate.sh: --sha requires --files'
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || die 'gate.sh: cannot resolve script directory'
@@ -141,7 +158,7 @@ PY
 ) || die "gate.sh: cannot resolve repository metadata: $repo"
 common_checkout=$(dirname "$common_dir")
 worktree_detected=false
-if [[ $common_dir != "$repo_git_dir" || $repo == */.claude/worktrees/* ]]; then
+if [[ $common_dir != "$repo_git_dir" || $repo == */.claude/worktrees/* || -n $sha ]]; then
   worktree_detected=true
 fi
 
@@ -247,6 +264,16 @@ setup = entry.get("setup", "")
 if not isinstance(setup, str):
     print(f"gate.sh: invalid setup config for repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
+env_files = entry.get("envFiles", [])
+if not isinstance(env_files, list) or not all(
+    isinstance(path, str)
+    and path
+    and not os.path.isabs(path)
+    and ".." not in path.replace("\\", "/").split("/")
+    for path in env_files
+):
+    print(f"gate.sh: invalid envFiles config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
 for rule in entry["testPathRules"]:
     if "command" in rule and not isinstance(rule["command"], str):
         print(f"gate.sh: invalid testPathRules command for repository: {repo}", file=sys.stderr)
@@ -344,6 +371,94 @@ if ((${#files[@]})); then
   diff_command+=(--files "${files[@]}")
 fi
 "${diff_command[@]}" >/dev/null || die 'gate.sh: cannot build diff'
+
+gate_checkout=''
+semgrep_base_rev=HEAD
+if [[ -n $sha ]]; then
+  git -C "$repo" cat-file -e "$sha^{commit}" 2>/dev/null || die "gate.sh: unknown commit: $sha"
+  gate_checkout="$run_dir/gate-checkout"
+  checkout_log="$run_dir/gate-$label-checkout.log"
+  git -C "$repo" worktree prune >"$checkout_log" 2>&1 || die "gate.sh: git worktree prune failed; see $checkout_log"
+  reuse_checkout=false
+  if [[ -d $gate_checkout ]]; then
+    checkout_top=$(git -C "$gate_checkout" rev-parse --show-toplevel 2>/dev/null) || checkout_top=''
+    checkout_common=$(git -C "$gate_checkout" rev-parse --git-common-dir 2>/dev/null) || checkout_common=''
+    if [[ -n $checkout_top && -n $checkout_common ]]; then
+      reuse_checkout=$(python3 - "$gate_checkout" "$checkout_top" "$checkout_common" "$common_dir" <<'PY'
+import os
+import sys
+
+checkout, top, common, repo_common = sys.argv[1:]
+common = common if os.path.isabs(common) else os.path.join(checkout, common)
+same_checkout = os.path.realpath(top) == os.path.realpath(checkout)
+print("true" if same_checkout and os.path.realpath(common) == repo_common else "false")
+PY
+      ) || reuse_checkout=false
+    fi
+  fi
+  # One checkout per run: moving it between SHAs keeps installed dependencies.
+  if [[ $reuse_checkout == true ]]; then
+    git -C "$gate_checkout" checkout --force --detach "$sha" >>"$checkout_log" 2>&1 \
+      || die "gate.sh: cannot move gate checkout to $sha; see $checkout_log"
+  else
+    if [[ -e $gate_checkout ]]; then
+      find "$gate_checkout" -mindepth 1 -delete && rmdir "$gate_checkout" \
+        || die "gate.sh: cannot remove stale gate checkout: $gate_checkout"
+    fi
+    git -C "$repo" worktree add --detach "$gate_checkout" "$sha" >>"$checkout_log" 2>&1 \
+      || die "gate.sh: cannot create gate checkout at $sha; see $checkout_log"
+  fi
+  python3 - "$entry_file" "$repo" "$gate_checkout" "$sha" <<'PY'
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+entry_path, source, target, sha = sys.argv[1:]
+with open(entry_path, encoding="utf-8") as handle:
+    env_files = json.load(handle).get("envFiles", [])
+for relative in env_files:
+    # A tracked copy from the primary worktree would replace the committed version being gated.
+    tracked = subprocess.run(
+        ["git", "-C", source, "ls-files", "--error-unmatch", "--", f":(literal){relative}"],
+        capture_output=True,
+    ).returncode == 0
+    in_commit = subprocess.run(
+        ["git", "-C", source, "cat-file", "-e", f"{sha}:./{relative}"],
+        capture_output=True,
+    ).returncode == 0
+    if tracked or in_commit:
+        where = f"tracked in {source}" if tracked else f"present in commit {sha}"
+        print(f"gate.sh: envFiles entry {relative} is {where}; envFiles may list only untracked files", file=sys.stderr)
+        raise SystemExit(2)
+    origin = Path(source) / relative
+    if not origin.is_file():
+        continue
+    destination = Path(target) / relative
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(origin, destination)
+    except OSError as exc:
+        print(f"gate.sh: cannot copy envFiles entry {relative}: {exc.strerror}", file=sys.stderr)
+        raise SystemExit(2)
+PY
+  (( $? == 0 )) || exit 2
+  # Semgrep compares against the run's starting commit, since HEAD in the checkout is the SHA itself.
+  semgrep_base_rev=$(python3 - "$run_dir/baseline.json" "$sha" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        head = json.load(handle).get("head") or ""
+except (OSError, json.JSONDecodeError):
+    head = ""
+print(head or f"{sys.argv[2]}^")
+PY
+  ) || die 'gate.sh: cannot read the run baseline'
+  repo=$gate_checkout
+fi
 
 config_value() {
   python3 - "$entry_file" "$1" "${2-}" <<'PY'
@@ -565,7 +680,7 @@ diff_exclude=$(config_value diffExclude '[]') || die 'gate.sh: cannot read diff 
 worktree_mode=$(config_value _worktreeMode) || die 'gate.sh: cannot read worktree mode'
 worktree_overrides=$(config_value _worktreeOverridesApplied) || die 'gate.sh: cannot read worktree config'
 
-if [[ $worktree_mode == true ]]; then
+if [[ $worktree_mode == true && $no_stages != true ]]; then
   record_command 'mode: worktree'
   if [[ $worktree_overrides != true ]]; then
     worktree_warning='warning: worktree without worktree commands; docker forms may target the main checkout'
@@ -701,9 +816,9 @@ if stage_enabled semgrep && [[ $semgrep_enabled == true ]]; then
     find "$semgrep_base_dir" -mindepth 1 -delete || die 'gate.sh: cannot clear Semgrep baseline directory'
     for file in "${semgrep_files[@]}"; do
       semgrep_paths+=" $(shell_quote "$file")"
-      if git -C "$repo" cat-file -e "HEAD:$file" 2>/dev/null; then
+      if git -C "$repo" cat-file -e "$semgrep_base_rev:$file" 2>/dev/null; then
         mkdir -p "$semgrep_base_dir/$(dirname "$file")" || die 'gate.sh: cannot create Semgrep baseline path'
-        git -C "$repo" show "HEAD:$file" >"$semgrep_base_dir/$file" || die "gate.sh: cannot read HEAD:$file"
+        git -C "$repo" show "$semgrep_base_rev:$file" >"$semgrep_base_dir/$file" || die "gate.sh: cannot read $semgrep_base_rev:$file"
         semgrep_base_paths+=" $(shell_quote "$file")"
       fi
     done
@@ -887,7 +1002,7 @@ fi
 
 result_path="$run_dir/gate-$label.json"
 diff_path="$run_dir/gate-$label.diff"
-python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" <<'PY'
+python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" "$gate_checkout" <<'PY'
 import fnmatch
 import json
 import os
@@ -907,6 +1022,7 @@ import sys
     commit_message,
     push_raw,
     only_stages_raw,
+    gate_checkout,
 ) = sys.argv[1:]
 files_given = files_given_raw == "true"
 push = push_raw == "true"
@@ -921,6 +1037,12 @@ with open(commands_path, "rb") as handle:
 
 failures = []
 warnings = []
+checkout_prefix = gate_checkout.rstrip("/") + "/" if gate_checkout else ""
+
+
+def repository_relative(text):
+    # Fixers work in the primary worktree, so gate-checkout paths must not reach them.
+    return text.replace(checkout_prefix, "") if checkout_prefix else text
 
 
 def failure_location(tool, log_text):
@@ -948,7 +1070,7 @@ with open(results_path, encoding="utf-8") as handle:
         if status == "warning":
             try:
                 with open(log_path, encoding="utf-8", errors="replace") as log:
-                    summary = log.read().strip()
+                    summary = repository_relative(log.read().strip())
             except OSError as exc:
                 summary = f"warning log unavailable: {exc}"
             warnings.append({"tool": tool, "summary": summary[-2048:]})
@@ -959,7 +1081,7 @@ with open(results_path, encoding="utf-8") as handle:
         else:
             try:
                 with open(log_path, encoding="utf-8", errors="replace") as log:
-                    log_text = log.read()
+                    log_text = repository_relative(log.read())
                 lines = log_text.splitlines(keepends=True)[-25:]
                 while lines and lines[0].strip() in {"", "|"}:
                     lines.pop(0)
@@ -1066,6 +1188,28 @@ if not failures and commit_message:
             text=True,
             check=False,
         )
+        if committed.returncode != 0:
+            rewritten = subprocess.run(
+                ["git", "-C", repo, "diff", "--quiet", "--", *stage_files],
+                check=False,
+            )
+            # A pre-commit hook that rewrote files fails the first attempt; stage its edits and retry once.
+            if rewritten.returncode == 1:
+                restaged = subprocess.run(
+                    ["git", "-C", repo, "add", "--", *stage_files],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                if restaged.returncode == 0:
+                    committed = subprocess.run(
+                        ["git", "-C", repo, "commit", "-m", commit_message, "--", *stage_files],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
         if committed.returncode != 0:
             commit_error = command_error("commit failed", committed)
 

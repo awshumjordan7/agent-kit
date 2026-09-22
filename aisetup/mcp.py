@@ -18,6 +18,10 @@ class McpError(RuntimeError):
     pass
 
 
+# `claude mcp get` probes the server's health for up to 30 seconds before it prints.
+GET_TIMEOUT_SECONDS = 45
+
+
 @dataclass(frozen=True)
 class McpPlan:
     server: McpServer
@@ -192,14 +196,14 @@ def _scope(output: str) -> str | None:
 
 
 def _run(
-    command: list[str], *, display_command: str | None = None
+    command: list[str], *, display_command: str | None = None, timeout: int = 20
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -225,32 +229,50 @@ def register_servers(
         if dry_run:
             actions.append(f"mcp: would remove {name} (module off)")
             continue
-        current = _run(["claude", "mcp", "get", name])
-        if current.returncode != 0:
-            continue
-        current_scope = _scope(current.stdout) or "user"
-        removed = _run(["claude", "mcp", "remove", name, "--scope", current_scope])
-        if removed.returncode != 0:
-            raise McpError(removed.stderr.strip() or f"could not remove MCP server {name}")
-        actions.append(f"remove {name}")
+        try:
+            actions.extend(_retire_server(name))
+        except McpError as error:
+            actions.append(_warn(name, "removed", error))
     for plan, command in zip(plans, commands, strict=True):
-        server = plan.server
         if dry_run:
             actions.append(command)
             continue
-        current = _run(["claude", "mcp", "get", server.name])
-        if current.returncode == 0 and _matches(plan, current.stdout):
-            actions.append(f"skip {server.name}")
-            continue
-        if current.returncode == 0:
-            current_scope = _scope(current.stdout) or server.scope
-            removed = _run(["claude", "mcp", "remove", server.name, "--scope", current_scope])
-            if removed.returncode != 0:
-                raise McpError(
-                    removed.stderr.strip() or f"could not remove MCP server {server.name}"
-                )
-        added = _run(add_command(plan), display_command=command)
-        if added.returncode != 0:
-            raise McpError(added.stderr.strip() or f"could not add MCP server {server.name}")
-        actions.append(f"add {server.name}")
+        try:
+            actions.append(_register_server(plan, command))
+        except McpError as error:
+            actions.append(_warn(plan.server.name, "registered", error))
     return tuple(actions)
+
+
+def _warn(name: str, action: str, error: McpError) -> str:
+    # The managed tree is already installed by now, so one unreachable server must not stop the
+    # profile write and doctor run that follow.
+    sys.stderr.write(f"mcp: warning: {name} was not {action}: {error}\n")
+    return f"warn {name}"
+
+
+def _retire_server(name: str) -> list[str]:
+    current = _run(["claude", "mcp", "get", name], timeout=GET_TIMEOUT_SECONDS)
+    if current.returncode != 0:
+        return []
+    current_scope = _scope(current.stdout) or "user"
+    removed = _run(["claude", "mcp", "remove", name, "--scope", current_scope])
+    if removed.returncode != 0:
+        raise McpError(removed.stderr.strip() or f"could not remove MCP server {name}")
+    return [f"remove {name}"]
+
+
+def _register_server(plan: McpPlan, command: str) -> str:
+    server = plan.server
+    current = _run(["claude", "mcp", "get", server.name], timeout=GET_TIMEOUT_SECONDS)
+    if current.returncode == 0 and _matches(plan, current.stdout):
+        return f"skip {server.name}"
+    if current.returncode == 0:
+        current_scope = _scope(current.stdout) or server.scope
+        removed = _run(["claude", "mcp", "remove", server.name, "--scope", current_scope])
+        if removed.returncode != 0:
+            raise McpError(removed.stderr.strip() or f"could not remove MCP server {server.name}")
+    added = _run(add_command(plan), display_command=command)
+    if added.returncode != 0:
+        raise McpError(added.stderr.strip() or f"could not add MCP server {server.name}")
+    return f"add {server.name}"
