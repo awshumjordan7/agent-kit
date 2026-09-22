@@ -27,8 +27,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 ## Delegation and context hygiene
 
 - **Routing.** A one-line edit in a file already in context: do it directly. A fully specified change
-  of up to three files: `worker`. Anything that needs code reading to decide the change: Codex through
-  forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
+  of up to three files: `worker`. Anything that needs code reading to decide the change: the Opus implementer
+  through forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
   (its turn cap is 25).
@@ -178,10 +178,10 @@ When spawning sub-agents for multi-step workflows:
 
 | Task Type | Model | Why |
 |-----------|-------|-----|
-| Discussion, planning, architecture, judging | Fable (the main session) | Judgment and trade-off analysis; already holds the context |
-| Code implementation | Codex CLI (`impl` role in `~/.claude/skills/forge/forge.config.json`) | Frontier quality; persistent threads |
-| Code review (Claude side) | Fable, fresh sub-agent | Independent of the planner; catches different issues than Codex |
-| Code review (Codex side) | Codex CLI (`review` role in `forge.config.json`) | Adversarial independence |
+| Discussion, planning, architecture, judging | Opus 5.5 at xhigh (the main session) | Judgment and trade-off analysis; already holds the context |
+| Code implementation | Opus 5.5 at xhigh (`impl` role, `claude-implementer` agent) | Strongest Claude implementer; stays in the Claude session |
+| Code review (Claude side) | Opus 5.5 at xhigh, fresh sub-agent | Independent of the planner; catches different issues than Codex |
+| Code review (Codex side) | Codex CLI, gpt-6-astra at high (`review` role) | Adversarial independence; the only Codex use |
 | Research, scouting, file reads | Sonnet (`scout`, `Explore`) | Fan-out reads; only the conclusion comes back |
 | QA, test running, Semgrep, mechanical edits | Sonnet (`worker`) | Mechanical tool execution |
 | Documentation updates | Sonnet | Mechanical writing |
@@ -189,7 +189,7 @@ When spawning sub-agents for multi-step workflows:
 | Local gate in Forge `full` mode (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed. `none` mode spawns no gate agent. |
 | Browser QA | Sonnet | Keeps browser output and credentials out of the main session |
 
-Use Codex CLI (`codex exec`) for Codex tasks -- it has full MCP access (engineering-MCP, semgrep, context7). Model per role comes from `~/.claude/skills/forge/forge.config.json`; never hard-code a model name elsewhere.
+Codex CLI (`codex exec`) runs only the `review` role -- it has full MCP access (engineering-MCP, semgrep, context7). Model per role comes from `~/.claude/skills/forge/forge.config.json`; never hard-code a model name elsewhere.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the
-session model (Fable) when `model` is omitted — never let that happen. Prefer the custom `scout`, `worker`,
-`shipper` agent, which pins Sonnet. Opus is a fallback for exhausted Fable limits, not a default. The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.
+session model (Opus) when `model` is omitted — never let that happen. Prefer the custom `scout`, `worker`,
+`shipper` agent, which pins Sonnet. The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.

@@ -10,7 +10,7 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 | Plan | main session | State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. |
 | Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. |
 | Confirm | user | Plan confirmation is skipped only in explicitly requested auto mode; separate test-table approval is never skipped. |
-| Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, optional QA, parallel Codex and Fable review plus lenses, triage, at most one fix with one scoped Fable verification, handoff. |
+| Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, optional QA, parallel Codex and Claude review plus lenses, triage, at most one fix with one scoped Claude verification, handoff. |
 
 `quick-impl` is selected only when `fullySpecified` is true and the plan names no more source files than `quickReviewThreshold`; otherwise Forge uses `impl`. Tests and documentation do not count as source files.
 
@@ -27,9 +27,9 @@ Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and
 
 ## Review panel
 
-The Codex reviewer receives the validated diff file through `codex-exec.sh --inline-diff`. The Fable reviewer and path-selected lenses read that same file with the Read tool in ranges of at most 2,000 lines. Reviewers work independently and return file-and-line findings in the shared schema.
+The Codex reviewer receives the validated diff file through `codex-exec.sh --inline-diff`. The Claude reviewer and path-selected lenses read that same file with the Read tool in ranges of at most 2,000 lines. Reviewers work independently and return file-and-line findings in the shared schema.
 
-The triage agent confirms each finding against current code. Forge runs at most one fix round on a fresh thread, followed by one fresh Fable reviewer scoped to the original findings. There is no post-fix gate, status agent, verification judge, or repeat fix round.
+The triage agent confirms each finding against current code. Forge runs at most one fix round on a fresh thread, followed by one fresh Claude reviewer scoped to the original findings. There is no post-fix gate, status agent, verification judge, or repeat fix round.
 
 ## Repository gate modes
 

@@ -28,4 +28,4 @@ Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer sum
 
 Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. A resumed build restores `checkpoint.json`, skips Implement and Gate, and continues from that decision.
 
-After the one allowed fix round, one fresh Fable reviewer checks only the original post-triage findings against the implementer's per-finding explanations and the fix diff. It returns `RESOLVED` or `UNRESOLVED` for each original item, may add no findings, and sends unresolved items directly to handoff. There is no second fix, post-fix gate, status agent, or verification judge.
+After the one allowed fix round, one fresh Claude reviewer checks only the original post-triage findings against the implementer's per-finding explanations and the fix diff. It returns `RESOLVED` or `UNRESOLVED` for each original item, may add no findings, and sends unresolved items directly to handoff. There is no second fix, post-fix gate, status agent, or verification judge.
