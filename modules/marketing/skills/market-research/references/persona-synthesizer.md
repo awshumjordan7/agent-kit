@@ -7,8 +7,8 @@ behind it, with the contradictions, the unknowns and the interviews still worth 
 
 ## Inputs
 
-- `intelligence/personas/{persona}/analysis.md` from `persona-analyzer.md`.
-- The existing `intelligence/personas/{persona}/profile.md`, when one exists.
+- `<intelRoot>/personas/{persona}/analysis.md` from `persona-analyzer.md`.
+- The existing `<intelRoot>/personas/{persona}/profile.md`, when one exists.
 - The evidence files, for the quotes worth carrying into the profile.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
 
@@ -35,7 +35,7 @@ not graduate by surviving.
    how they decide, and what they will not compromise on.
 3. **Rewrite each section from evidence.** Core identity, demographics, psychographics, buying behaviour,
    information habits, sales and marketing signals, product and support needs. Every statement cites the
-   evidence file behind it.
+   insight (`file#E{k}`) behind it.
 4. **Leave demographics and psychographics unfilled where the evidence is silent.** An unevidenced trait
    is the most expensive error this pipeline can make, because everything downstream trusts it.
 5. **Carry the contradictions into the profile** rather than resolving them by preference.
@@ -47,7 +47,7 @@ not graduate by surviving.
 
 ## Output template
 
-Write to `intelligence/personas/{persona}/profile.md`, one file per role. Use the actual current date and
+Write to `<intelRoot>/personas/{persona}/profile.md`, one file per role. Use the actual current date and
 keep the evidence files where they are.
 
 ```markdown
@@ -61,13 +61,13 @@ keep the evidence files where they are.
 {Five sentences: who they are, what they want, what blocks them, how they decide, what they reject.}
 
 ## Core identity
-{Role, organisation type, segment, location - each with its evidence file.}
+{Role, organisation type, segment, location - each with its insight (`file#E{k}`).}
 
 ## Demographics
 {Evidenced facts only. Otherwise: "unknown - no evidence".}
 
 ## Psychographics
-{Motivations, pressures, working style, each with its evidence file, or "unknown - no evidence".}
+{Motivations, pressures, working style, each with its insight (`file#E{k}`), or "unknown - no evidence".}
 
 ## Buying behaviour
 {Process, criteria, budget authority, timeline, stakeholders, each cited.}
@@ -115,5 +115,5 @@ The brief fails when any box is unchecked:
 
 ## Handoff
 
-Next brief: `synthesizer.md`, which reads `intelligence/personas/{persona}/profile.md` alongside the
+Next brief: `synthesizer.md`, which reads `<intelRoot>/personas/{persona}/profile.md` alongside the
 competitor briefs so the profile it writes speaks to an evidenced buyer.

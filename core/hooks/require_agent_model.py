@@ -40,10 +40,10 @@ HEURISTICS = (
             re.IGNORECASE,
         ),
         "worker",
-        "sonnet",
+        "opus",
     ),
 )
-DEFAULT_AGENT = ("scout", "sonnet")
+DEFAULT_AGENT = ("scout", "opus")
 
 
 def pick_agent(description: str, prompt: str) -> tuple[str, str]:

@@ -52,7 +52,7 @@ second mention before it is repeated as a number.
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/sales-intel.md`. Use the actual current date.
+Write to `<intelRoot>/competitors/{competitor}/sales-intel.md`. Use the actual current date.
 
 ```markdown
 # Sales intelligence: {competitor}
@@ -119,5 +119,5 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Next brief: `voice-of-customer.md`, which reads
-`intelligence/competitors/{competitor}/sales-intel.md` for the objections and alternatives to test
+`<intelRoot>/competitors/{competitor}/sales-intel.md` for the objections and alternatives to test
 against real customer language.

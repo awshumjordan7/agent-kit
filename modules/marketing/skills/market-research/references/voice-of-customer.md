@@ -32,14 +32,14 @@ A theme needs three independent reviews before it is reported as a pattern. One 
 
 ## Steps
 
-1. **Read the review platforms.** G2, TrustRadius and Capterra at minimum. Capture the rating, the review
+1. **Read the review platforms** (G2, TrustRadius, Capterra) at minimum. Capture the rating, the review
    count, the category placements, the recurring pros, the recurring cons, and dated quotes.
 2. **Sort the feedback into themes.** Positive themes: capability, ease of use, support, value,
    onboarding, reliability, integrations. Negative themes: missing capability, defects, support delays,
    price complaints, usability, migration pain, contract and cancellation friction.
-3. **Read the communities.** Category forums, discussion sites such as Reddit, and professional networks
-   such as LinkedIn. These carry the unfiltered version. When a site blocks scraping, work from search
-   results and say in the output that the material came from search snippets.
+3. **Read the communities:** community forums (Reddit) and professional networks (LinkedIn). These carry
+   the unfiltered version. When a site blocks scraping, work from search results and say in the output
+   that the material came from search snippets.
 4. **Pull switching evidence.** Who reviewers compared the competitor to, what made them leave, and what
    made them choose it.
 5. **Compare promise with reality.** Take each claim from `positioning.md` and find the customer evidence
@@ -49,7 +49,7 @@ A theme needs three independent reviews before it is reported as a pattern. One 
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/voice-of-customer.md`. Use the actual current date. Quote
+Write to `<intelRoot>/competitors/{competitor}/voice-of-customer.md`. Use the actual current date. Quote
 customers exactly; never tidy a quotation.
 
 ```markdown
@@ -122,5 +122,5 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Next brief: `seo-content.md`, which reads
-`intelligence/competitors/{competitor}/voice-of-customer.md` for the customer language to check against
+`<intelRoot>/competitors/{competitor}/voice-of-customer.md` for the customer language to check against
 the competitor's published content.

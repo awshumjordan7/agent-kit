@@ -7,8 +7,8 @@ recur, the assumptions it contradicts, the quality of the material, and where it
 
 ## Inputs
 
-- Every file under `intelligence/personas/{persona}/evidence/`.
-- The persona at `intelligence/personas/{persona}/profile.md`, when one exists, for the assumptions to
+- Every file under `<intelRoot>/personas/{persona}/evidence/`.
+- The persona at `<intelRoot>/personas/{persona}/profile.md`, when one exists, for the assumptions to
   test against.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
 
@@ -25,20 +25,21 @@ Grade every claim before it enters the output:
 
 Corroboration rule: a claim reaches tier 1 or tier 2 only with a dated link. Without a dated link the
 claim is tier 3 whatever its origin. Label every inference as an inference in the sentence that makes it.
-Theme strength is a count, not a judgement: three or more evidence files make a supported theme, one or
-two make an emerging theme, and a single file never makes a persona trait.
+Theme strength is a count, not a judgement. The unit is one insight section (`E{k}`) of an evidence file:
+three or more insights make a supported theme, one or two make an emerging theme, and a single insight
+never makes a persona trait.
 
 ## Steps
 
-1. **Inventory the evidence.** Read every file. Record the count, the date range, the source-type spread,
-   and any file that is incomplete or unreadable.
-2. **Extract themes.** Group similar snippets, name the recurring point, and count the distinct files
+1. **Inventory the evidence.** Read every file. Record the count of files and insights, the date range,
+   the source-type spread, and any file that is incomplete or unreadable.
+2. **Extract themes.** Group similar snippets, name the recurring point, and count the distinct insights
    behind each. Keep supported and emerging themes apart.
 3. **Map each theme to a persona section:** core identity, demographics, psychographics, buying
    behaviour, information habits, sales and marketing signals, product and support needs.
 4. **Compare with the seeded persona.** For each assumption on record: supported, contradicted, or
-   untested. Name the evidence file on both sides.
-5. **Record contradictions in full** - which files conflict, how strong each side is, and what evidence
+   untested. Name the insight (`file#E{k}`) on both sides.
+5. **Record contradictions in full** - which insights conflict, how strong each side is, and what evidence
    would resolve it. Never average two contradictory findings into one bland claim.
 6. **Pull the team-specific reads:** objections and decision patterns for sales, resonant and failed
    language for marketing, capability priorities and gaps for product, and onboarding and support needs.
@@ -48,27 +49,28 @@ two make an emerging theme, and a single file never makes a persona trait.
 
 ## Output template
 
-Write to `intelligence/personas/{persona}/analysis.md`. Use the actual current date.
+Write to `<intelRoot>/personas/{persona}/analysis.md`. Use the actual current date.
 
 ```markdown
 # Evidence analysis: {persona}
 
 **Analysis date:** {YYYY-MM-DD}
 **Evidence files:** {count}
+**Insights:** {count}
 **Date range:** {earliest} to {latest}
 
 ## Evidence inventory
-| File | Date | Source type | Quality |
+| Insight (file#E{k}) | Date | Source type | Quality |
 |---|---|---|---|
 | | | | |
 
-## Supported themes (three or more files)
-| Theme | Files | Representative quote | Persona section |
+## Supported themes (three or more insights)
+| Theme | Insights | Representative quote | Persona section |
 |---|---|---|---|
 | | | | |
 
-## Emerging themes (one or two files)
-| Theme | Files | Quote | Persona section |
+## Emerging themes (one or two insights)
+| Theme | Insights | Quote | Persona section |
 |---|---|---|---|
 | | | | |
 
@@ -89,7 +91,7 @@ Write to `intelligence/personas/{persona}/analysis.md`. Use the actual current d
 - **Support:** {onboarding needs, recurring issues, what good looks like}
 
 ## Evidence quality
-| Quality | Files | Note |
+| Quality | Insights | Note |
 |---|---|---|
 | High | | |
 | Medium | | |
@@ -101,7 +103,7 @@ Write to `intelligence/personas/{persona}/analysis.md`. Use the actual current d
 
 ## Evidence ledger
 
-Every material claim in the analysis gets one row, carried from the evidence file it came from.
+Every material claim in the analysis gets one row, carried from the insight it came from.
 
 | claim | source URL | date | tier |
 |---|---|---|---|
@@ -114,10 +116,10 @@ The brief fails when any box is unchecked:
 - [ ] Every claim in the analysis has an evidence-ledger row with a source link and a date.
 - [ ] Every inference is labelled as an inference rather than stated as fact.
 - [ ] No required section of the output template is empty and no `{placeholder}` is left unresolved.
-- [ ] No theme is reported as supported on fewer than three distinct evidence files.
+- [ ] No theme is reported as supported on fewer than three distinct insights.
 - [ ] Every contradiction is recorded rather than smoothed away.
 
 ## Handoff
 
-Next brief: `persona-synthesizer.md`, which reads `intelligence/personas/{persona}/analysis.md` and
+Next brief: `persona-synthesizer.md`, which reads `<intelRoot>/personas/{persona}/analysis.md` and
 rewrites the persona from the supported themes.
