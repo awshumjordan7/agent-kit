@@ -521,11 +521,11 @@ run_codex() {
         export SSL_CERT_FILE=/etc/ssl/cert.pem
     fi
     if [ "$1" = "start" ]; then
-        codex exec --sandbox "$SANDBOX" "${ARGS[@]}" "$(cat "$SENT_PROMPT")" \
-            </dev/null >"$LOG" 2>"$LOG.stderr" &
+        codex exec --sandbox "$SANDBOX" "${ARGS[@]}" <"$SENT_PROMPT" \
+            >"$LOG" 2>"$LOG.stderr" &
     else
-        codex exec resume "$(cat "$THREAD_FILE")" -c sandbox_mode="$SANDBOX" "${ARGS[@]}" "$(cat "$SENT_PROMPT")" \
-            </dev/null >"$LOG" 2>"$LOG.stderr" &
+        codex exec resume "$(cat "$THREAD_FILE")" -c sandbox_mode="$SANDBOX" "${ARGS[@]}" <"$SENT_PROMPT" \
+            >"$LOG" 2>"$LOG.stderr" &
     fi
     local pid=$!
     local last_size=0 stalled_for=0 size stats calls bytes thread_id
