@@ -10,7 +10,7 @@ globalThis.args = {
   projectDir: '/tmp/forge-test-project',
   repo: 'example-api',
   noShip: action !== 'dry',
-  dryRun: action !== 'codex-budget',
+  dryRun: !['codex-budget', 'codex-handoff-exhausted'].includes(action),
   dryRunFindings: 1,
   dryRunStubborn: input.dryRunStubborn === true,
   dryRunFailGate: input.dryRunFailGate || null,
@@ -29,8 +29,10 @@ globalThis.args = {
     repos: input.repos || { frontend: 'example-ui', backend: 'example-api' },
   },
 }
+let codexCalls = 0
 const runtimeAgent = async () => {
-  if (action === 'codex-budget') {
+  if (['codex-budget', 'codex-handoff-exhausted'].includes(action)) {
+    codexCalls++
     return {
       codexInvoked: true,
       threadMode: 'start',
@@ -38,7 +40,11 @@ const runtimeAgent = async () => {
       filesChanged: [],
       testsWritten: 0,
       summary: 'test result',
-      error: 'CODEX_BUDGET_EXCEEDED: test terminal error',
+      error: codexCalls > 1
+        ? 'RETRIED_TERMINAL_ERROR'
+        : action === 'codex-budget'
+          ? 'CODEX_BUDGET_EXCEEDED: test terminal error'
+          : 'CODEX_HANDOFF_EXHAUSTED CODEX_CONTEXT_HANDOFF context=120000 calls=60',
     }
   }
   return null
@@ -56,7 +62,7 @@ source = source
   .replace('export const meta =', 'const meta =')
   .replace('export const __test =', 'const __test =')
   .replace('const runtimeAgent = agent', 'globalThis.__forgeTest = __test\nconst runtimeAgent = agent')
-if (action === 'codex-budget') {
+if (['codex-budget', 'codex-handoff-exhausted'].includes(action)) {
   source = source.replace(
     'await loadForgeConfig()',
     "return await globalThis.__forgeTest.codexAgent('test prompt', { label: 'codex-budget' })\nawait loadForgeConfig()",
@@ -77,5 +83,5 @@ if (action === 'sandbox-checks') {
   }
 }
 if (action === 'dry') result = api.dryRunJournal
-if (action === 'codex-budget') result = executionResult
+if (['codex-budget', 'codex-handoff-exhausted'].includes(action)) result = executionResult
 process.stdout.write(`${JSON.stringify(result)}\n`)

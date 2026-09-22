@@ -155,6 +155,8 @@ const CODEX_RESULT = {
     codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
     threadExists: { type: 'boolean' }, filesChanged: { type: 'array', items: { type: 'string' } },
     testsWritten: { type: 'integer' }, summary: { type: 'string' }, error: { type: ['string', 'null'] },
+    handoffs: { type: 'integer', minimum: 0, default: 0 },
+    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'filesChanged', 'testsWritten', 'summary'],
 }
@@ -186,6 +188,8 @@ const CODEX_REVIEW_SCHEMA = {
   properties: {
     codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
     threadExists: { type: 'boolean' }, review: REVIEW_SCHEMA, error: { type: ['string', 'null'] },
+    handoffs: { type: 'integer', minimum: 0, default: 0 },
+    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'review'],
 }
@@ -204,6 +208,8 @@ const CODEX_FIX_SCHEMA = {
   properties: {
     codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
     threadExists: { type: 'boolean' }, fix: FIX_SCHEMA, error: { type: ['string', 'null'] },
+    handoffs: { type: 'integer', minimum: 0, default: 0 },
+    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'fix'],
 }
@@ -232,6 +238,8 @@ const VERIFY_SCHEMA = {
       },
     },
     error: { type: ['string', 'null'] },
+    handoffs: { type: 'integer', minimum: 0, default: 0 },
+    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
   },
   required: ['codexInvoked', 'threadMode', 'threadExists', 'clean', 'results', 'unresolved', 'contractViolations'],
 }
@@ -496,10 +504,10 @@ const STUBS = {
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
-    if (opts.schema === CODEX_RESULT) return { codexInvoked: true, threadMode: 'start', threadExists: true, filesChanged: ['auth/api/client.py'], testsWritten: 0, summary: 'dry-run Codex', error: '' }
-    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '' }
-    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: opts.label === 'fix-1' ? 'start' : 'resume', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: opts.label === 'fix-1' && PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: '', notes: 'dry-run fix' }, error: '' }
-    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, clean: !PARAMS.dryRunStubborn, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: PARAMS.dryRunStubborn ? 'STILL BROKEN' : 'RESOLVED', reason: finding.claim })), unresolved: PARAMS.dryRunStubborn ? dryFindings() : [], contractViolations: [], error: '' }
+    if (opts.schema === CODEX_RESULT) return { codexInvoked: true, threadMode: 'start', threadExists: true, filesChanged: ['auth/api/client.py'], testsWritten: 0, summary: 'dry-run Codex', error: '', handoffs: 0 }
+    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
+    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: opts.label === 'fix-1' ? 'start' : 'resume', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: opts.label === 'fix-1' && PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: '', notes: 'dry-run fix' }, error: '', handoffs: 0 }
+    if (opts.schema === VERIFY_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, clean: !PARAMS.dryRunStubborn, results: dryFindings().map(finding => ({ file: finding.file, line: finding.line, status: PARAMS.dryRunStubborn ? 'STILL BROKEN' : 'RESOLVED', reason: finding.claim })), unresolved: PARAMS.dryRunStubborn ? dryFindings() : [], contractViolations: [], error: '', handoffs: 0 }
     return { written: true }
   },
 }
@@ -589,12 +597,14 @@ const codexWrapper = `Read ~/.claude/skills/forge/references/codex-wrapper.md an
 async function codexAgent(prompt, opts) {
   let result = await agentT('codexWrap', prompt, opts)
   if (result) result.error = normalizedCodexError(result.error)
+  await recordCodexHandoffs(result, opts.label)
   if (result && result.codexInvoked === true && result.error) {
-    const terminalError = /^(?:CODEX_DIFF_INVALID|CODEX_BUDGET_EXCEEDED|CODEX_NO_CREDITS)\b/.test(result.error)
+    const terminalError = /^(?:CODEX_DIFF_INVALID|CODEX_BUDGET_EXCEEDED|CODEX_NO_CREDITS|CODEX_HANDOFF_EXHAUSTED|CODEX_CONTEXT_HANDOFF)\b/.test(result.error)
     if (terminalError) return result
     await decide(`${opts.label} wrapper returned an error (${result.error.slice(0, 200)}); retrying once.`)
     result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-error-retry` })
     if (result) result.error = normalizedCodexError(result.error)
+    await recordCodexHandoffs(result, opts.label)
     return result
   }
   if (result === null || result.codexInvoked === true) return result
@@ -602,7 +612,17 @@ async function codexAgent(prompt, opts) {
   await decide(`${opts.label} wrapper returned without invoking Codex (${String(result.error || 'no error text').slice(0, 200)}); retrying once.`)
   result = await agentT('codexWrap', `${prompt}\nattempt=${Date.now()}`, { ...opts, label: `${opts.label}-retry` })
   if (result) result.error = normalizedCodexError(result.error)
+  await recordCodexHandoffs(result, opts.label)
   return result
+}
+
+async function recordCodexHandoffs(result, label) {
+  const count = Math.max(0, Number((result && result.handoffs) || 0))
+  const details = (result && Array.isArray(result.handoffDetails)) ? result.handoffDetails : []
+  for (let index = 0; index < count; index++) {
+    const detail = details[index] || { contextTokens: 0, toolCalls: 0 }
+    await decide(`${label} handoff ${index + 1}: context=${detail.contextTokens} calls=${detail.toolCalls}`)
+  }
 }
 
 function normalizedCodexError(error) {
@@ -681,7 +701,7 @@ function implement() {
   const outPath = `${PARAMS.runDir}/codex-implement-final.md`
   return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
 Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. Implement only the confirmed plan and its test strategy. ${runBeforeReturningInstruction()} Do not commit, and write ${PARAMS.runDir}/implementation-summary.md. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
-Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
+Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
   { label: 'implement', phase: 'Implement', schema: CODEX_RESULT })
 }
 
@@ -805,7 +825,7 @@ ${context.standards}`
 async function codexReview(context) {
   const review = reviewerPrompt('Codex general', 'Assess every checklist item and acceptance criterion.', context, true)
   const result = await codexAgent(`You orchestrate the CODEX general review. ${codexWrapper}
-Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
+Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
   { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA })
@@ -1015,7 +1035,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase = 'Fix') {
   }
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
 Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, this confirmed file:line finding list as JSON, and the instruction to verify each claim against current code and fix only findings that are real: ${JSON.stringify(items)}. With ranged reads, include ${PARAMS.runDir}/implementation-summary.md when present and the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA })
   if (!assertCodex(result, label)) return null
   return result.fix
@@ -1033,7 +1053,7 @@ FINDINGS: ${JSON.stringify(items)}
 PUBLIC API CONTRACT:
 ${(context && context.contract) || '(none declared)'}
 FIX DIFF (capped at 12000 characters): ${diff}
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${PARAMS.runDir}/codex-verify-${round}.thread --prompt-file ${PARAMS.runDir}/verify-${round}-prompt.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-verify-${round}.jsonl --out ${PARAMS.runDir}/codex-verify-${round}-final.md. Translate without changing the verdicts.`,
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${PARAMS.runDir}/codex-verify-${round}.thread --prompt-file ${PARAMS.runDir}/verify-${round}-prompt.md --state-file ${PARAMS.runDir}/codex-state-verify-${round}.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-verify-${round}.jsonl --out ${PARAMS.runDir}/codex-verify-${round}-final.md. Translate without changing the verdicts.`,
   { label: `verify-${round}`, phase: 'Fix', schema: VERIFY_SCHEMA })
 }
 
