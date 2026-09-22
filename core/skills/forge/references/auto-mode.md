@@ -5,7 +5,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 
 ## What is skipped
 
-- The plan confirm after the tests have been separately approved. The plan artifact is still published, for the record.
+- The plan confirm after the tests have been separately approved. The plan artifact is still rendered and published (SKILL.md step 4), for the record.
 - Clarifying questions. Pick the reading closest to the ticket/spec text; log it.
 - Waiting on the user for the judge. The finding is applied (conservative default); log it.
 - Ticket approval. One ticket at most per run, and only after the JQL search finds nothing.
@@ -27,7 +27,7 @@ Every judgment call is appended as it happens (crash-safe), one line each:
 Sources: interpretation choices, judge rulings, Opus fallbacks (a Fable role returned
 nothing and was retried on Opus), skipped stages (sandbox MCP unavailable, lens returned
 null), lane-limit stops. The handoff artifact renders this as **Judgment calls**.
-Access-rule sentences are also written here and in the plan artifact before the run continues.
+Access-rule sentences are also written here and to `accessRules` in `plan-data.json`, and the plan artifact is re-rendered (SKILL.md step 4) before the run continues.
 
 ## The state — `STATUS.json`
 
