@@ -273,6 +273,7 @@ const CONTEXT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     files: { type: 'array', items: { type: 'string' } },
+    droppedPaths: { type: 'array', items: { type: 'string' } },
     preexisting: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' }, diffLines: { type: 'integer' },
     diffValid: { type: 'boolean' }, planSummary: { type: 'string' },

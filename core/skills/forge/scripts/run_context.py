@@ -28,11 +28,29 @@ def _status(repo: Path) -> tuple[list[str], list[str]]:
         entry = entries[index].decode("utf-8", "surrogateescape")
         porcelain.append(entry)
         path = entry[3:]
-        if entry[:2] in {"R ", "C ", "RM", "CM"} and index + 1 < len(entries):
+        if any(code in entry[:2] for code in "RC") and index + 1 < len(entries):
             index += 1
         paths.append(path)
         index += 1
     return porcelain, paths
+
+
+def _safe_paths(repo: Path, paths: list[str]) -> tuple[list[str], list[str]]:
+    repo_root = repo.resolve()
+    kept: list[str] = []
+    dropped: list[str] = []
+    for path in paths:
+        candidate = Path(path)
+        if not path or candidate.is_absolute() or ".." in candidate.parts:
+            dropped.append(path)
+            continue
+        try:
+            (repo_root / candidate).resolve().relative_to(repo_root)
+        except (OSError, RuntimeError, ValueError):
+            dropped.append(path)
+            continue
+        kept.append(path)
+    return list(dict.fromkeys(kept)), list(dict.fromkeys(dropped))
 
 
 def _sha256(path: Path) -> str | None:
@@ -53,7 +71,9 @@ def baseline(run_dir: Path, repo: Path) -> dict:
         "files": {path: _sha256(repo / path) for path in paths},
     }
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "baseline.json").write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    (run_dir / "baseline.json").write_text(
+        json.dumps(document, indent=2) + "\n", encoding="utf-8"
+    )
     return {"written": True}
 
 
@@ -76,22 +96,90 @@ def _section(text: str, heading: str) -> str:
     return "\n".join(lines[start + 1 : end]).strip()
 
 
-def _changed_since_baseline(repo: Path, document: dict) -> tuple[list[str], list[str]]:
+def _diff_base(repo: Path, document: dict, base: str | None) -> str:
+    if base:
+        return str(_git(repo, "merge-base", base, "HEAD")).strip()
+    return str(document.get("head") or _git(repo, "rev-parse", "HEAD")).strip()
+
+
+def _changed_since_baseline(
+    repo: Path,
+    document: dict,
+    diff_base: str,
+    all_dirty: bool = False,
+) -> tuple[list[str], list[str], list[str]]:
     _porcelain, dirty = _status(repo)
     committed = str(
-        _git(repo, "diff", "--name-only", "--diff-filter=ACMRD", document["head"], "HEAD")
+        _git(repo, "diff", "--name-only", "--diff-filter=ACMRD", diff_base, "HEAD")
     ).splitlines()
     baseline_files = document.get("files", {})
-    candidates = list(dict.fromkeys([*committed, *dirty, *baseline_files]))
+    candidates, dropped = _safe_paths(repo, [*committed, *dirty])
+    committed_set = set(committed)
     files: list[str] = []
     preexisting: list[str] = []
     for path in candidates:
         current_sha = _sha256(repo / path)
-        if path in baseline_files and current_sha == baseline_files[path]:
+        unchanged_preexisting = path in baseline_files and current_sha == baseline_files[path]
+        if not all_dirty and path not in committed_set and unchanged_preexisting:
             preexisting.append(path)
         else:
             files.append(path)
-    return files, preexisting
+    return files, preexisting, dropped
+
+
+def _build_diff(repo: Path, diff_base: str, files: list[str]) -> str:
+    if not files:
+        return ""
+    diff = str(_git(repo, "diff", "--no-ext-diff", diff_base, "--", *files))
+    for path in files:
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", path],
+            check=False,
+            capture_output=True,
+        )
+        if tracked.returncode and (repo / path).is_file():
+            addition = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "diff",
+                    "--no-index",
+                    "--no-ext-diff",
+                    "--",
+                    "/dev/null",
+                    path,
+                ],
+                cwd=repo,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            diff += addition.stdout
+    return diff
+
+
+def write_diff(
+    run_dir: Path,
+    repo: Path,
+    label: str,
+    base: str | None = None,
+    hints: list[str] | None = None,
+) -> tuple[Path, list[str], list[str], list[str]]:
+    baseline_path = run_dir / "baseline.json"
+    document = (
+        json.loads(baseline_path.read_text(encoding="utf-8"))
+        if baseline_path.is_file()
+        else {}
+    )
+    diff_base = _diff_base(repo, document, base)
+    files, preexisting, dropped = _changed_since_baseline(repo, document, diff_base)
+    _kept_hints, dropped_hints = _safe_paths(repo, hints or [])
+    dropped = list(dict.fromkeys([*dropped, *dropped_hints]))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    diff_path = run_dir / f"gate-{label}.diff"
+    diff_path.write_text(_build_diff(repo, diff_base, files), encoding="utf-8")
+    return diff_path, files, preexisting, dropped
 
 
 def context(
@@ -101,53 +189,17 @@ def context(
     label: str,
     all_dirty: bool = False,
     base: str | None = None,
+    hints: list[str] | None = None,
 ) -> dict:
     baseline_path = run_dir / "baseline.json"
     document = json.loads(baseline_path.read_text(encoding="utf-8"))
-    if all_dirty:
-        _porcelain, dirty = _status(repo)
-        files, preexisting = list(dict.fromkeys(dirty)), []
-    else:
-        files, preexisting = _changed_since_baseline(repo, document)
-    diff_base = document["head"]
-    if base:
-        diff_base = str(_git(repo, "merge-base", base, "HEAD")).strip()
-        committed = str(
-            _git(repo, "diff", "--name-only", "--diff-filter=ACMRD", diff_base, "HEAD")
-        ).splitlines()
-        files = list(dict.fromkeys([*files, *committed]))
-        preexisting = [path for path in preexisting if path not in files]
-    gate_diff = run_dir / f"gate-{label}.diff"
-    if gate_diff.is_file():
-        diff = gate_diff.read_text(encoding="utf-8", errors="replace")
-    elif files:
-        diff = str(_git(repo, "diff", "--no-ext-diff", diff_base, "--", *files))
-        for path in files:
-            tracked = subprocess.run(
-                ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", path],
-                check=False,
-                capture_output=True,
-            )
-            if tracked.returncode and (repo / path).is_file():
-                addition = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(repo),
-                        "diff",
-                        "--no-index",
-                        "--no-ext-diff",
-                        "/dev/null",
-                        path,
-                    ],
-                    cwd=repo,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                diff += addition.stdout
-    else:
-        diff = ""
+    diff_base = _diff_base(repo, document, base)
+    files, preexisting, dropped = _changed_since_baseline(
+        repo, document, diff_base, all_dirty=all_dirty
+    )
+    _kept_hints, dropped_hints = _safe_paths(repo, hints or [])
+    dropped = list(dict.fromkeys([*dropped, *dropped_hints]))
+    diff = _build_diff(repo, diff_base, files)
     run_dir.mkdir(parents=True, exist_ok=True)
     diff_path = run_dir / f"review-{label}.diff"
     diff_path.write_text(diff, encoding="utf-8")
@@ -162,6 +214,7 @@ def context(
     return {
         "files": files,
         "preexisting": preexisting,
+        "droppedPaths": dropped,
         "commandSucceeded": True,
         "diffPath": str(diff_path),
         "diffBytes": len(diff.encode("utf-8")),
@@ -197,6 +250,13 @@ def main() -> None:
     context_parser.add_argument("--label", required=True)
     context_parser.add_argument("--all-dirty", action="store_true")
     context_parser.add_argument("--base")
+    context_parser.add_argument("--files", nargs="*")
+    diff_parser = subparsers.add_parser("diff")
+    diff_parser.add_argument("--run-dir", type=Path, required=True)
+    diff_parser.add_argument("--repo", type=Path, required=True)
+    diff_parser.add_argument("--label", required=True)
+    diff_parser.add_argument("--base")
+    diff_parser.add_argument("--files", nargs="*")
     args = parser.parse_args()
     if args.command == "baseline":
         result = baseline(args.run_dir, args.repo)
@@ -208,7 +268,14 @@ def main() -> None:
             args.label,
             args.all_dirty,
             args.base,
+            args.files,
         )
+    elif args.command == "diff":
+        diff_path, _files, _preexisting, _dropped = write_diff(
+            args.run_dir, args.repo, args.label, args.base, args.files
+        )
+        sys.stdout.write(str(diff_path) + "\n")
+        return
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
 
 
