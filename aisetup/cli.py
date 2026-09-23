@@ -174,6 +174,8 @@ def _install(args: argparse.Namespace) -> int:
                 if item.action == ACTION_KEEP:
                     print(f"{item.target} ({item.status})")
             print("Settings changes:")
+            if plan.settings_status is not None:
+                print(f"settings.json: {plan.settings_status}")
             for change in plan.settings_changes:
                 detail = f" ({change.detail})" if change.detail else ""
                 print(f"{change.kind} {change.key_path}{detail}")

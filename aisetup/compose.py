@@ -49,6 +49,7 @@ class AuxiliaryFile:
     status: str | None
     action: str
     remove_kit_new: bool
+    back_up_kit_new: bool
 
 
 @dataclass(frozen=True)
@@ -510,7 +511,14 @@ def _classify_auxiliary(
             and kit_new.is_file()
             and _sha256(kit_new) == recorded_digest
         )
-        files.append(AuxiliaryFile(relative, target, status, action, remove_kit_new))
+        back_up_kit_new = (
+            action == ACTION_KEEP
+            and _is_regular_file(kit_new)
+            and _sha256(kit_new) not in (kit_digest, recorded_digest)
+        )
+        files.append(
+            AuxiliaryFile(relative, target, status, action, remove_kit_new, back_up_kit_new)
+        )
         digests[relative] = kit_digest
     return tuple(files), digests
 
@@ -585,8 +593,24 @@ def _move_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> None
             for entry in sorted(source.iterdir()):
                 move(entry, target / entry.name)
 
+    def copy(source: Path, target: Path) -> None:
+        if is_real_dir(source):
+            if target.exists() and not target.is_dir():
+                return
+            target.mkdir(parents=True, exist_ok=True)
+            for entry in sorted(source.iterdir()):
+                copy(entry, target / entry.name)
+        elif not (target.exists() or target.is_symlink()):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target, follow_symlinks=False)
+
     for relative in preserved:
-        move(backup / relative, home / relative)
+        # Under a symlinked directory the backup path is the link's external target, so moving
+        # would take the user's files out of it.
+        if any((backup / parent).is_symlink() for parent in relative.parents):
+            copy(backup / relative, home / relative)
+        else:
+            move(backup / relative, home / relative)
 
 
 def _is_regular_file(path: Path) -> bool:
@@ -608,6 +632,18 @@ def _has_identical_copy(entry: Path, home: Path, relative: Path) -> bool:
         return False
 
 
+def _has_identical_link(entry: Path, home: Path, relative: Path) -> bool:
+    live = home / relative
+    if not (entry.is_symlink() and live.is_symlink()):
+        return False
+    if any((home / parent).is_symlink() for parent in relative.parents):
+        return False
+    try:
+        return os.readlink(entry) == os.readlink(live)
+    except OSError:
+        return False
+
+
 def _prune_backup(backup: Path, home: Path, stale: Iterable[Path]) -> int:
     """Delete backup files that home holds unchanged, plus kit-owned .kit-new files.
 
@@ -620,9 +656,13 @@ def _prune_backup(backup: Path, home: Path, stale: Iterable[Path]) -> int:
         for name in filenames:
             entry = directory / name
             relative = entry.relative_to(backup)
-            if _is_regular_file(entry) and (
-                relative.as_posix() in stale_paths or _has_identical_copy(entry, home, relative)
-            ):
+            if (
+                _is_regular_file(entry)
+                and (
+                    relative.as_posix() in stale_paths
+                    or _has_identical_copy(entry, home, relative)
+                )
+            ) or _has_identical_link(entry, home, relative):
                 try:
                     entry.unlink()
                     continue
@@ -630,7 +670,17 @@ def _prune_backup(backup: Path, home: Path, stale: Iterable[Path]) -> int:
                     pass
             remaining += 1
         # os.walk lists a symlink to a directory under dirnames without descending into it.
-        remaining += sum(1 for name in dirnames if (directory / name).is_symlink())
+        for name in dirnames:
+            entry = directory / name
+            if not entry.is_symlink():
+                continue
+            if _has_identical_link(entry, home, entry.relative_to(backup)):
+                try:
+                    entry.unlink()
+                    continue
+                except OSError:
+                    pass
+            remaining += 1
         try:
             os.rmdir(directory)
         except OSError:
@@ -703,6 +753,10 @@ def _print_settings_changes(plan: InstallPlan) -> None:
             sys.stdout.write(f"{SETTINGS_PATH} conflict: {change.key_path} (local value kept)\n")
 
 
+def _timestamped_backup_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
+
 def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> None:
     for item in files:
         source = source_root / item.relative
@@ -711,14 +765,17 @@ def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> Non
         if item.action != ACTION_NONE:
             target.parent.mkdir(parents=True, exist_ok=True)
         if item.action == ACTION_REPLACE:
-            backup = target.with_name(
-                f"{target.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-            shutil.copy2(target, backup)
+            shutil.copy2(target, _timestamped_backup_path(target))
             shutil.copy2(source, target)
         elif item.action == ACTION_WRITE:
             shutil.copy2(source, target)
         elif item.action == ACTION_KEEP:
+            if kit_new.is_symlink():
+                kit_new.unlink()
+            elif item.back_up_kit_new:
+                backup = _timestamped_backup_path(kit_new)
+                shutil.copy2(kit_new, backup)
+                sys.stdout.write(f"backed up edited kit copy: {kit_new} -> {backup}\n")
             shutil.copy2(source, kit_new)
             sys.stdout.write(
                 f"kept locally modified: {target} ({item.status}; kit version in {kit_new})\n"
