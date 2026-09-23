@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from aisetup import __version__
 from aisetup.compose import ComposeError, compose_tree, install_tree, installation_paths
@@ -19,14 +19,17 @@ from aisetup.deps import (
     check_dependencies,
     format_missing_dependencies,
 )
-from aisetup.layers import resolve_layers
+from aisetup.layers import ResolvedLayers, resolve_layers
 from aisetup.manifest import ManifestError, load_layer_manifest, load_module_manifest
 from aisetup.mcp import McpError, register_servers, registration_for_layers
 from aisetup.profile import (
     ProfileError,
     apply_overlay_question_defaults,
     build_interactive_profile,
+    format_profile_path,
     load_profile,
+    profile_overrides,
+    unknown_name_warnings,
     write_profile,
 )
 from aisetup.selfcheck import print_selfcheck, run_selfcheck
@@ -100,6 +103,24 @@ def _module_manifests(repo_root: Path) -> dict[str, object]:
     }
 
 
+def _print_name_warnings(profile: dict[str, Any], resolved: ResolvedLayers) -> None:
+    known_agents = {
+        path.stem for layer in resolved.layers for path in (layer.root / "agents").glob("*.md")
+    }
+    for warning in unknown_name_warnings(profile, known_agents):
+        print(warning, file=sys.stderr)
+
+
+def _print_overrides(profile: dict[str, Any]) -> None:
+    for path, value, default in profile_overrides(profile):
+        repo_default = (
+            "no repo default" if default is ... else f"repo default: {json.dumps(default)}"
+        )
+        print(
+            f"profile override: {format_profile_path(path)} = {json.dumps(value)} ({repo_default})"
+        )
+
+
 def _install(args: argparse.Namespace) -> int:
     try:
         check_dependencies(CORE_DEPENDENCIES)
@@ -123,6 +144,7 @@ def _install(args: argparse.Namespace) -> int:
     except (ManifestError, ProfileError) as error:
         print(f"agent-kit: {error}", file=sys.stderr)
         return 4
+    _print_name_warnings(profile, resolved)
 
     try:
         if args.dry_run:
@@ -160,7 +182,7 @@ def _install(args: argparse.Namespace) -> int:
     except ComposeError as error:
         print(f"agent-kit: {error}", file=sys.stderr)
         return 5
-    except (McpError, OSError) as error:
+    except (McpError, OSError, ProfileError) as error:
         print(f"agent-kit: {error}", file=sys.stderr)
         return 6
 
@@ -225,16 +247,21 @@ def _update(args: argparse.Namespace) -> int:
                 )
                 for drift in drifts:
                     print(f"{drift.path}: drift (source: {drift.source})")
+            _print_overrides(profile)
+            _print_name_warnings(profile, resolve_layers(profile))
             return 1 if any(status.behind for status in statuses) or drifts else 0
         head_before = core_head(profile)
         update_repositories(profile)
         if core_head(profile) != head_before and os.environ.get(REEXEC_ENV) != "1":
             _reexec_update(args, Path(profile["layers"]["core"]["path"]))
+        # Reload so layer data pulled above is merged before the profile is installed and saved.
+        profile = load_profile(profile_path)
+        resolved = resolve_layers(profile)
+        _print_name_warnings(profile, resolved)
         for repo, subject in commit_subjects(profile):
             print(f"{repo}: {subject}")
         update_profile_commits(profile)
         result = install_tree(profile, args.home, args.layers_root)
-        resolved = resolve_layers(profile)
         plans, retire = registration_for_layers(resolved, profile)
         register_servers(plans, home=args.home, retire=retire)
         write_profile(args.layers_root / "profile.json", profile)

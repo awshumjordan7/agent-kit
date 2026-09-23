@@ -62,14 +62,9 @@ def render_agent_frontmatter(text: str, settings: dict[str, Any]) -> str:
         "maxTurns": settings.get("maxTurns", ...),
         "effort": settings.get("effort", ...),
     }
-    remove: set[int] = set()
     additions: list[str] = []
     for key, value in wanted.items():
-        if value is ...:
-            continue
-        if value is None:
-            if key in fields:
-                remove.add(fields[key])
+        if value is ... or value is None:
             continue
         rendered = f"{key}: {value}"
         if key in fields:
@@ -77,7 +72,5 @@ def render_agent_frontmatter(text: str, settings: dict[str, Any]) -> str:
         else:
             additions.append(rendered)
 
-    rendered_lines = [line for index, line in enumerate(lines) if index not in remove]
-    new_end = rendered_lines.index("---", 1)
-    rendered_lines[new_end:new_end] = additions
-    return "\n".join(rendered_lines) + ("\n" if text.endswith("\n") else "")
+    lines[end:end] = additions
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
