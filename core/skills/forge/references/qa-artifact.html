@@ -6,6 +6,9 @@
   fills every slot, and exits 1 when a slot is left unfilled.
 
   qa-data.json keys (placeholder in brackets):
+    summary [SUMMARY_HTML]
+                        1-3 sentences for the Summary box under the title. Missing: stderr
+                        warning, no box.
     ticket [TICKET], shortTitle [SHORT_TITLE] (2-4 words), date [DATE], tier [TIER],
     branch [BRANCH], sandboxId [SANDBOX_ID]
     previewUrl [PREVIEW_URL], rootLoginEmail [ROOT_LOGIN_EMAIL],
@@ -19,27 +22,72 @@
                         Objects {key, url, title, role}. Empty: no Jira tickets section.
     links [LINKS_HTML]  Objects {label, url} or [label, url] pairs; links table with Copy.
     contextItems [CONTEXT_ITEMS_HTML]
-                        Strings. Empty: no Useful context section.
+                        Strings or command blocks. Empty: no Useful context section.
+    groups              Optional. [{name, why?, setup: {preconditions: [str], testData?: [str],
+                        commands?: [command block], cleanup?: [str or command block]},
+                        spotCheck?}]. name matches items' screenGroup; list order is display
+                        order (riskiest first). Each group shows its Why, one Setup block and
+                        its Spot check line above its items. Items whose screenGroup has no
+                        group render last under their own label with no setup. Without groups,
+                        items group by screenGroup in first-seen order.
     qaItems [QA_ITEMS_HTML]
-                        One collapsed <details class="qa-item"> each. Required: title,
-                        ticketKey, ticketUrl, before, steps[], expected, evidence. Optional:
-                        pr (default "", shown as Unlabelled), screenGroup (default "Other"),
-                        whatChanged and why (default "", row omitted), id (default the
-                        1-based index as a string), clickPass (default absent = "not run").
-                        clickPass is {status: "PASS" | "FAIL" | "SKIP" | "PENDING", note,
-                        screenshot (path or URL, may be "")}. PENDING shows as "pending".
+                        One collapsed <details class="qa-item"> each, inside its group.
+                        Required: title, steps[], expected. Optional: ticketKey and ticketUrl
+                        (Ticket row), pr (default "", shown as Unlabelled), screenGroup
+                        (default "Other"), whatChanged, why, evidence (row omitted when ""),
+                        id (default the 1-based index), example, clickPass.
+                        why shows only when it differs from the group's why. before is
+                        deprecated: used as why when why is absent, with a stderr warning.
+                        steps entries are strings (one action, location first) or command
+                        blocks.
+                        example: {kind: "screenshot" | "terminal" | "http", capturedFrom:
+                        <path of the real capture>, ...}. screenshot: path, beforePath?,
+                        caption?; terminal: command, output, beforeOutput?; http: request,
+                        response, beforeResponse? (strings, or JSON shown indented). Dropped
+                        with a warning when capturedFrom, path or beforePath does not exist.
+                        PNG, JPEG and WebP are embedded up to 1.5 MiB each and 8 MiB per page;
+                        past a cap the caption and path show as text, with a warning. Output
+                        over 15 lines is collapsed.
+                        clickPass is the automated check: {status: "PASS" | "FAIL" | "SKIP" |
+                        "PENDING", note, screenshot (URL, or a path resolved against the data
+                        file's directory; may be "")}. It renders as an "Automated check" line
+                        and never sets the viewer's result.
+    explore             Optional {minutes: int, focus: str}. Rendered last as "Explore freely
+                        for N minutes" with id "explore" and result controls.
+    round [ROUND]       Optional string, default "1". Results are keyed by round; bump it to
+                        start a fresh set of results without deleting old ones.
     handoff             {whatChanged [WHAT_CHANGED_HTML], gateResults [GATE_RESULTS_HTML],
                         reviewScores [REVIEW_SCORES_HTML], openFindings [OPEN_FINDINGS_HTML],
                         botVerdicts [BOT_VERDICTS_HTML], judgmentCalls [JUDGMENT_CALLS_HTML],
                         followUps [FOLLOWUPS_HTML], prLinks [PR_LINKS_HTML]}. Plain text or
                         simple markdown. An empty key hides its row; all empty hides Handoff.
-  Derived, not data keys: STATUS (PASS / FAIL / pending counts from clickPass) and TOC.
+  Derived, not data keys: STATUS (item and group counts, live result counts, automated check
+  counts) and TOC.
 
-  Copyable code spans: text in single backticks inside qaItems (before, whatChanged, why,
-  steps, expected, evidence) and contextItems renders as <code class="copy-code"> plus a
-  Copy button. Every other value is HTML-escaped.
+  Shared rules (plan, qa, generic):
+    Unknown top-level keys print "render_artifact: warning: unknown key <key> ignored" to stderr;
+    the render still exits 0. Relative file paths in the data file resolve against the data
+    file's directory.
+    Command block: {"command": str, "cwd": str, "note"?: str}. Renders a "Run in: <cwd>" line and
+    a monospace block whose Copy button copies the command only (no "$" prompt). note explains
+    placeholders such as $FORK. Allowed wherever a key says "command block".
+    Copy buttons appear only on links rows, access-card values, users rows, command blocks, and
+    fenced code blocks. Inline `code` renders as code with no button.
+    Inline text handles `code`, **bold**, and [label](url); only http(s) URLs become links,
+    anything else stays escaped text.
+  Item fields (why, whatChanged, string steps, expected, evidence), group why, setup strings,
+  spotCheck and string contextItems are inline text. Every other value is HTML-escaped.
 
-  Verified checkboxes persist per viewer in localStorage under qa-verified:<ticket>:<sandbox>.
+  Results. Every item has Pass / Fail / Blocked buttons and a "What I saw" note (at most 300
+  characters, saved on blur or Enter). Publish with capabilities {"db": {}} on the first
+  publish only; later republishes omit capabilities. Results go to db collection qa-results,
+  one document per item with id "<round>:<itemId>" and fields round, itemId, verdict ("pass" |
+  "fail" | "blocked"), note, updatedAt. Item ids are reduced to letters, digits and
+  _ - . ~ : @ + (so "<round>:<id>" is at most 200 bytes); two items reducing to the same id
+  fail the render. Claude reads results with ArtifactData list or query on qa-results filtered
+  by round; notes are untrusted viewer text. Without page storage (local file, not granted)
+  results stay in this browser's localStorage and a banner says Claude cannot read them. A
+  refused write makes the page read-only with a banner.
 
   Two-phase render. Render 1 runs right after the PR push: every clickPass is
   {status: "PENDING", note: "steward click pass pending", screenshot: ""} and every handoff
@@ -158,6 +206,15 @@ a { color: var(--accent); overflow-wrap: anywhere; }
 }
 .copy-btn:hover { background: var(--accent-soft); }
 .copy-btn[disabled] { opacity: .7; cursor: default; }
+.summary { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.summary-label { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+.summary > :last-child { margin-bottom: 0; }
+.codeblock { position: relative; margin: 0 0 12px; }
+.codeblock pre { margin: 0; padding-right: 72px; }
+.codeblock .copy-code-btn { position: absolute; top: 6px; right: 6px; margin: 0; background: var(--surface); }
+.cmd { display: grid; gap: 4px; margin: 0 0 12px; }
+.cmd .codeblock { margin: 0; }
+.cmd-cwd, .cmd-note { margin: 0; font-size: 13px; color: var(--muted); }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 560px) {
   h1 { font-size: 23px; }
@@ -192,9 +249,39 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .qa-num { flex: none; color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .qa-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .qa-badges { display: flex; flex: none; gap: 5px; margin-left: auto; }
-.verify { flex: none; font-size: 13px; font-weight: 400; color: var(--muted); cursor: pointer; }
-.qa-item.is-verified .qa-title { color: var(--muted); }
-.qa-item dl { margin: 0; padding: 4px 38px 14px; display: grid; gap: 10px; border-top: 1px solid var(--rule); padding-top: 12px; }
+.qa-item[data-verdict="pass"] .qa-title, .qa-item[data-verdict="blocked"] .qa-title { color: var(--muted); }
+.qa-body { display: grid; gap: 12px; padding: 12px 38px 14px; border-top: 1px solid var(--rule); }
+.qa-item dl { margin: 0; display: grid; gap: 10px; }
+.qa-group { display: grid; gap: 8px; margin-bottom: 20px; }
+.qa-group.hidden { display: none; }
+.group-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+.group-head h3 { margin: 0; }
+.group-counts { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.group-why, .spot-check { margin: 0; }
+.setup { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; display: grid; gap: 4px; }
+.setup ul { margin: 0 0 6px; padding-left: 1.3em; }
+.setup-title { font-weight: 600; }
+.setup-label, .ba-label, .auto-label { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.verdict { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.verdict-btn { border: 1px solid var(--rule); border-radius: 4px; padding: 4px 12px; background: var(--surface); color: var(--ink); font: inherit; font-weight: 500; cursor: pointer; }
+.verdict-btn[disabled] { opacity: .6; cursor: default; }
+.verdict-btn[data-verdict="pass"][aria-pressed="true"] { border-color: var(--good); color: var(--good); background: var(--accent-soft); }
+.verdict-btn[data-verdict="fail"][aria-pressed="true"] { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
+.verdict-btn[data-verdict="blocked"][aria-pressed="true"] { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
+.verdict-note { flex: 1 1 16em; min-width: 0; border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; background: var(--surface); color: var(--ink); font: inherit; }
+.verdict-pill { text-transform: lowercase; }
+.qa-item[data-verdict="pass"] .verdict-pill { color: var(--good); }
+.qa-item[data-verdict="fail"] .verdict-pill { color: var(--bad); }
+.qa-item[data-verdict="blocked"] .verdict-pill { color: var(--warn); }
+.auto-check { font-size: 13px; color: var(--muted); border: 1px dashed var(--rule); border-radius: 4px; padding: 6px 10px; }
+.storage-banner { margin: 0 0 10px; padding: 8px 12px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); font-size: 14px; }
+.storage-banner[hidden] { display: none; }
+.shot { display: block; max-width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 4px; }
+.shot-text { margin: 0; }
+.before-after { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.before-after > div { min-width: 0; }
+.long-output > summary { cursor: pointer; color: var(--accent); font-size: 13px; margin-bottom: 6px; }
+.example-source { margin: 6px 0 0; font-size: 13px; }
 .qa-item dt { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .qa-item dd { margin: 2px 0 0; }
 .qa-item ol { margin: 0; padding-left: 1.3em; }
@@ -207,7 +294,7 @@ details.handoff[open] > summary { margin-bottom: 8px; }
   .qa-item > summary { flex-wrap: wrap; white-space: normal; }
   .qa-title { flex-basis: calc(100% - 3em); }
   .qa-badges { margin-left: 1.4em; flex-wrap: wrap; }
-  .qa-item dl { padding: 12px 14px 14px; }
+  .qa-body { padding: 12px 14px 14px; }
   .access th { width: auto; white-space: normal; }
 }
 </style>
@@ -218,6 +305,10 @@ details.handoff[open] > summary { margin-bottom: 8px; }
     <h1>{{TICKET}} - {{SHORT_TITLE}}</h1>
     <div class="meta"><span>{{DATE}}</span><span class="pill">tier: {{TIER}}</span><span class="pill">branch: {{BRANCH}}</span><span class="pill">sandbox: {{SANDBOX_ID}}</span></div>
   </header>
+
+  <!--SUMMARY_START-->
+  {{SUMMARY_HTML}}
+  <!--SUMMARY_END-->
 
   <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
 
@@ -274,9 +365,10 @@ details.handoff[open] > summary { margin-bottom: 8px; }
     <div class="qa-strip">
       <div class="qa-counts" aria-live="polite"></div>
       <div class="qa-filter-rows"></div>
-      <div class="qa-controls"><label><input type="checkbox" class="hide-verified"> Hide verified</label><button type="button" class="expand-all">Expand all</button><button type="button" class="collapse-all">Collapse all</button></div>
+      <div class="qa-controls"><label><input type="checkbox" class="hide-tested"> Hide tested</label><button type="button" class="expand-all">Expand all</button><button type="button" class="collapse-all">Collapse all</button></div>
     </div>
-    <div class="qa-items" data-ticket="{{TICKET}}" data-sandbox="{{SANDBOX_ID}}">{{QA_ITEMS_HTML}}</div>
+    <p class="storage-banner" role="status">Loading saved results...</p>
+    <div class="qa-items" data-ticket="{{TICKET}}" data-sandbox="{{SANDBOX_ID}}" data-round="{{ROUND}}">{{QA_ITEMS_HTML}}</div>
   </section>
 
   <!--HANDOFF_SECTION_START-->
@@ -346,52 +438,167 @@ details.handoff[open] > summary { margin-bottom: 8px; }
   });
   var container = document.querySelector('.qa-items');
   var items = Array.prototype.slice.call(container.querySelectorAll('.qa-item'));
-  var filters = { pr: '*', status: '*', group: '*' };
-  var hideVerified = document.querySelector('.hide-verified');
-  var storageKey = 'qa-verified:' + container.dataset.ticket + ':' + container.dataset.sandbox;
-  var restored = [];
-  try {
-    var saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
-    if (Array.isArray(saved)) { restored = saved.map(String); }
-  } catch (err) { /* persistence unavailable */ }
+  var groups = Array.prototype.slice.call(container.querySelectorAll('.qa-group'));
+  var filters = { pr: '*', group: '*', verdict: '*' };
+  var hideTested = document.querySelector('.hide-tested');
+  var banner = document.querySelector('.storage-banner');
+  var round = container.dataset.round || '1';
+  var localKey = 'qa-results:' + container.dataset.ticket + ':' + container.dataset.sandbox + ':' + round;
+  var VERDICTS = ['pass', 'fail', 'blocked'];
+  var NO_RETRY = ['invalid_argument', 'transform_error', 'resource_exhausted', 'quota_exceeded', 'revoked',
+    'not_granted', 'capability_disabled', 'capability_removed'];
+  var results = {};
+  var store = null;
+  var mode = 'loading';
+  var writing = {};
+  var queued = {};
+  var unsaved = {};
+  function showBanner(text) {
+    banner.textContent = text;
+    banner.hidden = !text;
+  }
   function labelFor(dimension, value) {
     if (dimension === 'pr' && !value) { return 'Unlabelled'; }
-    if (dimension === 'status') { return value === 'none' ? 'not run' : value.toUpperCase(); }
+    if (dimension === 'verdict') { return value.charAt(0).toUpperCase() + value.slice(1); }
     return value || 'Other';
   }
   function valuesFor(dimension) {
     return items.map(function (item) { return item.dataset[dimension] || ''; })
       .filter(function (value, index, values) { return values.indexOf(value) === index; });
   }
+  function paint(item) {
+    var saved = results[item.dataset.id] || {};
+    var verdict = VERDICTS.indexOf(saved.verdict) !== -1 ? saved.verdict : 'untested';
+    var locked = mode !== 'db' && mode !== 'local';
+    item.dataset.verdict = verdict;
+    item.querySelector('.verdict-pill').textContent = verdict;
+    item.querySelectorAll('.verdict-btn').forEach(function (btn) {
+      btn.setAttribute('aria-pressed', btn.dataset.verdict === verdict ? 'true' : 'false');
+      btn.disabled = locked;
+    });
+    var note = item.querySelector('.verdict-note');
+    if (document.activeElement !== note) { note.value = typeof saved.note === 'string' ? saved.note : ''; }
+    note.disabled = locked || verdict === 'untested';
+    note.placeholder = verdict === 'untested' ? 'Pick Pass, Fail or Blocked first' : 'What I saw';
+  }
+  function countText(list) {
+    var counts = { pass: 0, fail: 0, blocked: 0, untested: 0 };
+    list.forEach(function (item) { counts[item.dataset.verdict] += 1; });
+    return ['pass', 'fail', 'blocked', 'untested'].map(function (key) { return key + ' ' + counts[key]; }).join(' · ');
+  }
   function updateCounts() {
-    var parts = ['Total ' + items.length];
-    valuesFor('pr').forEach(function (value) {
-      var count = items.filter(function (item) { return (item.dataset.pr || '') === value; }).length;
-      parts.push(labelFor('pr', value) + ' ' + count);
+    var text = countText(items);
+    document.querySelectorAll('.verdict-counts').forEach(function (el) { el.textContent = text; });
+    document.querySelector('.qa-counts').textContent = 'Total ' + items.length + ' · ' + text;
+    groups.forEach(function (group) {
+      var list = items.filter(function (item) { return group.contains(item); });
+      group.querySelector('.group-counts').textContent = list.length + ' items: ' + countText(list);
     });
-    ['PASS', 'FAIL', 'SKIP', 'PENDING', 'none'].forEach(function (value) {
-      var count = items.filter(function (item) { return item.dataset.status === value; }).length;
-      parts.push(labelFor('status', value) + ' ' + count);
-    });
-    var verified = items.filter(function (item) { return item.querySelector('.verify-toggle').checked; }).length;
-    parts.push(verified + ' / ' + items.length + ' verified');
-    document.querySelector('.qa-counts').textContent = parts.join(' \u00b7 ');
   }
   function applyFilters() {
     items.forEach(function (item) {
       var matches = Object.keys(filters).every(function (key) {
         return filters[key] === '*' || (item.dataset[key] || '') === filters[key];
       });
-      item.classList.toggle('hidden', !matches || (hideVerified.checked && item.classList.contains('is-verified')));
+      item.classList.toggle('hidden', !matches || (hideTested.checked && item.dataset.verdict !== 'untested'));
+    });
+    groups.forEach(function (group) {
+      group.classList.toggle('hidden', !group.querySelector('.qa-item:not(.hidden)'));
     });
   }
-  function saveVerified() {
-    var ids = items.filter(function (item) { return item.querySelector('.verify-toggle').checked; })
-      .map(function (item) { return item.dataset.id; });
-    try { localStorage.setItem(storageKey, JSON.stringify(ids)); } catch (err) { /* persistence unavailable */ }
+  function refresh() {
+    items.forEach(paint);
+    updateCounts();
+    applyFilters();
   }
-  function makeFilterRow(dimension, name) {
-    var values = valuesFor(dimension);
+  function saveLocal() {
+    try { localStorage.setItem(localKey, JSON.stringify(results)); } catch (err) { showBanner('Browser storage is unavailable; results will be lost when this page reloads.'); }
+  }
+  function useLocal(reason) {
+    mode = 'local';
+    store = null;
+    try {
+      var saved = JSON.parse(localStorage.getItem(localKey) || '{}');
+      if (saved && typeof saved === 'object') { results = saved; }
+    } catch (err) { /* browser storage unavailable */ }
+    showBanner((reason ? reason + ' ' : '') + 'Results are saved in this browser only; Claude cannot read them.');
+    refresh();
+  }
+  // Retry once, after a short random delay, only for transient or unknown error codes.
+  function attempt(call, retry) {
+    return new Promise(function (resolve) { resolve(call()); }).catch(function (err) {
+      if (retry && NO_RETRY.indexOf(err && err.code) === -1) {
+        return new Promise(function (resolve) { setTimeout(resolve, 300 + Math.random() * 700); })
+          .then(function () { return attempt(call, false); });
+      }
+      throw err;
+    });
+  }
+  function writeFailed(id, err) {
+    var code = err && err.code;
+    unsaved[id] = true;
+    if (code === 'resource_exhausted') {
+      showBanner('Saving is rate limited; your last change may not be saved. Wait a moment, then change it again.');
+    } else if (NO_RETRY.indexOf(code) !== -1) {
+      mode = 'readonly';
+      showBanner('Results could not be saved (' + code + '). This page is read-only for you.');
+      refresh();
+    } else {
+      showBanner('Page storage did not answer; your last change may not be saved. Change it again to retry.');
+    }
+  }
+  function save(id) {
+    if (mode === 'local') { saveLocal(); return; }
+    if (mode !== 'db' || !results[id] || !results[id].verdict) { return; }
+    if (writing[id]) { queued[id] = true; return; }
+    var saved = results[id];
+    var body = {
+      round: round, itemId: id, verdict: saved.verdict,
+      note: (saved.note || '').slice(0, 300), updatedAt: new Date().toISOString()
+    };
+    writing[id] = true;
+    unsaved[id] = false;
+    showBanner('');
+    attempt(function () { return store.doc(round + ':' + id).set(body); }, true)
+      .catch(writeFailed.bind(null, id))
+      .then(function () {
+        writing[id] = false;
+        if (queued[id]) {
+          queued[id] = false;
+          save(id);
+        }
+      });
+  }
+  function connect() {
+    if (!window.claude || typeof window.claude.use !== 'function') {
+      useLocal('');
+      return;
+    }
+    window.claude.use('db').then(function (db) {
+      if (!db) {
+        useLocal('');
+        return;
+      }
+      var col = db.collection('qa-results');
+      return attempt(function () { return col.where('round', '==', round).limit(1000).get(); }, true).then(function (snap) {
+        results = {};
+        snap.docs.forEach(function (doc) {
+          var row = doc.data() || {};
+          if (typeof row.itemId === 'string') {
+            results[row.itemId] = { verdict: row.verdict, note: typeof row.note === 'string' ? row.note : '' };
+          }
+        });
+        store = col;
+        mode = 'db';
+        showBanner('');
+        refresh();
+      });
+    }).catch(function (err) {
+      useLocal('Page storage could not be read' + (err && err.code ? ' (' + err.code + ').' : '.'));
+    });
+  }
+  function makeFilterRow(dimension, name, fixed) {
+    var values = fixed || valuesFor(dimension);
     if (values.length < 2) { return; }
     var row = document.createElement('div');
     row.className = 'filter-row';
@@ -420,32 +627,48 @@ details.handoff[open] > summary { margin-bottom: 8px; }
     document.querySelector('.qa-filter-rows').appendChild(row);
   }
   items.forEach(function (item) {
-    var toggle = item.querySelector('.verify-toggle');
-    var verify = item.querySelector('.verify');
+    var id = item.dataset.id;
     var pr = item.querySelector('.pill.pr');
+    var note = item.querySelector('.verdict-note');
     if (pr && !pr.textContent.trim()) { pr.textContent = labelFor('pr', ''); }
-    toggle.checked = restored.indexOf(item.dataset.id) !== -1;
-    item.classList.toggle('is-verified', toggle.checked);
-    verify.addEventListener('click', function (event) { event.stopPropagation(); });
-    toggle.addEventListener('click', function (event) { event.stopPropagation(); });
-    toggle.addEventListener('change', function () {
-      item.classList.toggle('is-verified', toggle.checked);
-      saveVerified();
-      updateCounts();
-      applyFilters();
+    item.querySelectorAll('.verdict-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (mode !== 'db' && mode !== 'local') { return; }
+        var saved = results[id] || {};
+        var value = note.value.slice(0, 300);
+        if (!unsaved[id] && saved.verdict === btn.dataset.verdict && saved.note === value) { return; }
+        results[id] = { verdict: btn.dataset.verdict, note: value };
+        save(id);
+        refresh();
+      });
+    });
+    function saveNote() {
+      if (mode !== 'db' && mode !== 'local') { return; }
+      var saved = results[id] || {};
+      var value = note.value.slice(0, 300);
+      if (!unsaved[id] && (saved.note || '') === value) { return; }
+      results[id] = { verdict: saved.verdict, note: value };
+      save(id);
+    }
+    note.addEventListener('blur', saveNote);
+    note.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveNote();
+      }
     });
   });
   makeFilterRow('pr', 'PR');
-  makeFilterRow('status', 'Status');
-  makeFilterRow('group', 'Screen');
-  hideVerified.addEventListener('change', applyFilters);
+  makeFilterRow('group', 'Group');
+  makeFilterRow('verdict', 'Result', ['untested', 'pass', 'fail', 'blocked']);
+  hideTested.addEventListener('change', applyFilters);
   document.querySelector('.expand-all').addEventListener('click', function () {
     items.filter(function (item) { return !item.classList.contains('hidden'); }).forEach(function (item) { item.open = true; });
   });
   document.querySelector('.collapse-all').addEventListener('click', function () {
     items.filter(function (item) { return !item.classList.contains('hidden'); }).forEach(function (item) { item.open = false; });
   });
-  updateCounts();
-  applyFilters();
+  refresh();
+  connect();
 })();
 </script>

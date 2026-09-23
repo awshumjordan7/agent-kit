@@ -7,16 +7,36 @@
   The renderer removes this comment, then fills every slot. It exits 1 when a slot is left unfilled.
 
   data keys:
+    summary   1-3 sentences for the Summary box under the title. Missing: stderr warning, no box.
     title     Page title; defaults to the markdown's "# " title.
     eyebrow   Short label above the title, for example "Forge run report".
     status    One line for the status banner. Empty: no banner.
+    statusTone  Optional "ok" | "warn" | "fail": colours the status banner and adds the word
+              (OK, Warning, Failed) to its label. Any other value warns and renders uncoloured.
+    keyNumbers  Optional [{label, value, status?}, ...]: a strip of tiles under the Summary box.
+              status is "ok" | "warn" | "fail" and shows its word on the tile beside the colour.
+    nextSteps   Optional [str, ...]: a numbered "Next steps" box above the markdown sections.
     links     [[label, url], ...] or [{label, url}, ...]; each row gets a Copy button.
 
   The markdown supplies the sections: every "## " heading renders in order with a TOC entry.
   Markdown handled: paragraphs, "- " lists, numbered lists (as a numbered table), "### "
-  subheads, pipe tables, fenced code, `code`, and **bold**. Raw HTML is escaped.
+  subheads, pipe tables, fenced code (with a Copy button), `code`, **bold**, and [label](url)
+  links. Raw HTML is escaped.
 
-  Slots: TITLE, EYEBROW, STATUS, TOC, SECTIONS, LINKS.
+  Shared rules (plan, qa, generic):
+    Unknown top-level keys print "render_artifact: warning: unknown key <key> ignored" to stderr;
+    the render still exits 0. Relative file paths in the data file resolve against the data
+    file's directory.
+    Command block: {"command": str, "cwd": str, "note"?: str}. Renders a "Run in: <cwd>" line and
+    a monospace block whose Copy button copies the command only (no "$" prompt). note explains
+    placeholders such as $FORK. Allowed wherever a key says "command block".
+    Copy buttons appear only on links rows, access-card values, users rows, command blocks, and
+    fenced code blocks. Inline `code` renders as code with no button.
+    Inline text handles `code`, **bold**, and [label](url); only http(s) URLs become links,
+    anything else stays escaped text.
+
+  Slots: TITLE, EYEBROW, SUMMARY_HTML, KEY_NUMBERS_HTML, STATUS, STATUS_TONE, STATUS_LABEL,
+  NEXT_STEPS_HTML, TOC, SECTIONS, LINKS.
 -->
 <title>{{TITLE}}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -35,6 +55,10 @@
   --code-bg: #eceee9;
   --warn: #8a5a00;
   --warn-soft: #fbf1dc;
+  --ok: #2f6b3a;
+  --ok-soft: #e3f1e5;
+  --fail: #a33a2a;
+  --fail-soft: #f8e4df;
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -51,6 +75,10 @@
     --code-bg: #232a27;
     --warn: #e8c071;
     --warn-soft: #2e2615;
+    --ok: #8fcf9a;
+    --ok-soft: #1b2e1f;
+    --fail: #f09a8a;
+    --fail-soft: #3a211c;
   }
 }
 :root[data-theme="dark"] {
@@ -65,6 +93,10 @@
   --code-bg: #232a27;
   --warn: #e8c071;
   --warn-soft: #2e2615;
+  --ok: #8fcf9a;
+  --ok-soft: #1b2e1f;
+  --fail: #f09a8a;
+  --fail-soft: #3a211c;
 }
 * { box-sizing: border-box; }
 body {
@@ -86,6 +118,17 @@ h1 { font-size: 28px; line-height: 1.2; margin: 0; font-weight: 600; text-wrap: 
   border-radius: 6px; padding: 10px 14px; font-weight: 500;
 }
 .status b { color: var(--accent); font-weight: 600; margin-right: 6px; }
+.status.tone-ok { background: var(--ok-soft); } .status.tone-ok b { color: var(--ok); }
+.status.tone-warn { background: var(--warn-soft); } .status.tone-warn b { color: var(--warn); }
+.status.tone-fail { background: var(--fail-soft); } .status.tone-fail b { color: var(--fail); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.kpi { background: var(--surface); border: 1px solid var(--rule); border-top: 3px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: grid; gap: 2px; align-content: start; min-width: 0; }
+.kpi-label { font-size: 12px; color: var(--muted); }
+.kpi-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kpi-word { font: 500 11px/1.4 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.kpi.tone-ok { border-top-color: var(--ok); } .kpi.tone-ok .kpi-word { color: var(--ok); }
+.kpi.tone-warn { border-top-color: var(--warn); } .kpi.tone-warn .kpi-word { color: var(--warn); }
+.kpi.tone-fail { border-top-color: var(--fail); } .kpi.tone-fail .kpi-word { color: var(--fail); }
 h2 { font-size: 19px; font-weight: 600; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--rule); text-wrap: balance; }
 h3 { font-size: 16px; font-weight: 600; margin: 0 0 8px; color: var(--accent); text-wrap: balance; }
 p { margin: 0 0 12px; max-width: 72ch; }
@@ -123,6 +166,7 @@ ul.rows li::before { content: ""; position: absolute; left: 12px; top: 1.05em; w
 .links td:first-child { white-space: nowrap; }
 .links td:last-child { width: 1%; }
 .next { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.next ol.steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
 a { color: var(--accent); overflow-wrap: anywhere; }
 .copy-btn {
   font: 500 12px/1 var(--sans); color: var(--accent); background: transparent;
@@ -130,6 +174,15 @@ a { color: var(--accent); overflow-wrap: anywhere; }
 }
 .copy-btn:hover { background: var(--accent-soft); }
 .copy-btn[disabled] { opacity: .7; cursor: default; }
+.summary { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.summary-label { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+.summary > :last-child { margin-bottom: 0; }
+.codeblock { position: relative; margin: 0 0 12px; }
+.codeblock pre { margin: 0; padding-right: 72px; }
+.codeblock .copy-code-btn { position: absolute; top: 6px; right: 6px; margin: 0; background: var(--surface); }
+.cmd { display: grid; gap: 4px; margin: 0 0 12px; }
+.cmd .codeblock { margin: 0; }
+.cmd-cwd, .cmd-note { margin: 0; font-size: 13px; color: var(--muted); }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 560px) {
   h1 { font-size: 23px; }
@@ -145,9 +198,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
     <h1>{{TITLE}}</h1>
   </header>
 
+  <!--SUMMARY_START-->
+  {{SUMMARY_HTML}}
+  <!--SUMMARY_END-->
+
+  <!--KEY_NUMBERS_START-->
+  {{KEY_NUMBERS_HTML}}
+  <!--KEY_NUMBERS_END-->
+
   <!--STATUS_START-->
-  <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
+  <div class="status {{STATUS_TONE}}" role="status"><b>{{STATUS_LABEL}}</b>{{STATUS}}</div>
   <!--STATUS_END-->
+
+  <!--NEXT_STEPS_START-->
+  {{NEXT_STEPS_HTML}}
+  <!--NEXT_STEPS_END-->
 
   <nav class="toc" aria-label="Page sections">{{TOC}}</nav>
 
