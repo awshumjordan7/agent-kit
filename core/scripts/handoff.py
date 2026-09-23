@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -36,32 +39,73 @@ def _claude_pids(session_name: str) -> set[int]:
     return {int(pid) for pid in result.stdout.split()}
 
 
-def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
-    if not state_path.is_file():
-        sys.stderr.write(f"handoff.py: STATE.md not found: {state_path}\n")
-        return 1
-    if sys.platform != "darwin":
-        return 0
-    prompt = (
-        f"Read {state_path} and continue from it. "
-        "Read only that file to start; it points at everything else."
-    )
-    input_text = f"claude --name {session_name!r} --permission-mode bypassPermissions {prompt!r}"
-    try:
-        existing_pids = _claude_pids(session_name)
-    except OSError as error:
-        sys.stderr.write(f"handoff.py: failed to inspect Claude processes: {error}\n")
-        return 1
-    result = subprocess.run(
+def _open_ghostty_tab(cwd: Path, input_text: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["osascript", "-", str(cwd), input_text],
         input=APPLESCRIPT,
         check=False,
         capture_output=True,
         text=True,
     )
-    if result.returncode:
-        sys.stderr.write(f"handoff.py: failed to open Ghostty tab: {result.stderr.strip()}\n")
+
+
+def _open_windows_terminal_tab(
+    state_path: Path, session_name: str, cwd: Path, prompt: str, distro: str
+) -> subprocess.CompletedProcess[str]:
+    script = state_path.parent / f"handoff-{session_name}.sh"
+    # wt.exe splits its command line on ";" and the prompt contains one.
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"cd {shlex.quote(str(cwd))} || exit 1\n"
+        f"claude --name {shlex.quote(session_name)} --permission-mode bypassPermissions {shlex.quote(prompt)}\n"
+        "exec bash\n"
+    )
+    return subprocess.run(
+        [
+            "wt.exe", "-w", "0", "new-tab", "--title", session_name,
+            "wsl.exe", "-d", distro, "--cd", str(cwd), "--", "bash", "-l", str(script),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
+    if not state_path.is_file():
+        sys.stderr.write(f"handoff.py: STATE.md not found: {state_path}\n")
         return 1
+    prompt = (
+        f"Read {state_path} and continue from it. "
+        "Read only that file to start; it points at everything else."
+    )
+    input_text = f"claude --name {session_name!r} --permission-mode bypassPermissions {prompt!r}"
+    distro = os.environ.get("WSL_DISTRO_NAME", "")
+    on_wsl = sys.platform == "linux" and bool(distro) and shutil.which("wt.exe") is not None
+    if sys.platform != "darwin" and not on_wsl:
+        sys.stderr.write(f"handoff.py: no terminal tab opener for this platform; run: {input_text}\n")
+        return 1
+    try:
+        existing_pids = _claude_pids(session_name)
+    except OSError as error:
+        sys.stderr.write(f"handoff.py: failed to inspect Claude processes: {error}\n")
+        return 1
+    if sys.platform == "darwin":
+        result = _open_ghostty_tab(cwd, input_text)
+        if result.returncode:
+            sys.stderr.write(f"handoff.py: failed to open Ghostty tab: {result.stderr.strip()}\n")
+            return 1
+    else:
+        try:
+            result = _open_windows_terminal_tab(state_path, session_name, cwd, prompt, distro)
+        except OSError as error:
+            sys.stderr.write(f"handoff.py: failed to open Windows Terminal tab: {error}\n")
+            return 1
+        if result.returncode:
+            sys.stderr.write(
+                f"handoff.py: failed to open Windows Terminal tab: {result.stderr.strip()}\n"
+            )
+            return 1
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -84,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     if len(argv) not in {2, 3}:
         sys.stderr.write(f"{USAGE}\n")
         return 64
-    return handoff(Path(argv[0]), argv[1], Path(argv[2]) if len(argv) == 3 else Path.cwd())
+    cwd = Path(argv[2]).resolve() if len(argv) == 3 else Path.cwd()
+    return handoff(Path(argv[0]).resolve(), argv[1], cwd)
 
 
 if __name__ == "__main__":
