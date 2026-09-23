@@ -7,7 +7,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 
 - The plan confirm after the tests have been separately approved. The plan artifact is still rendered and published (SKILL.md step 4), for the record.
 - Clarifying questions. Pick the reading closest to the ticket/spec text; log it.
-- Waiting on the user for the judge. The finding is applied (conservative default); log it.
+- Waiting on the user for review-panel contradictions and uncertain triage verdicts. The finding is applied (conservative default); log it. Fix-loop items the decider rejects, defers, or cannot decide are not skipped: they stop auto runs too (see below).
 - Ticket approval. One ticket at most per run, and only after the JQL search finds nothing.
 
 ## What is never skipped

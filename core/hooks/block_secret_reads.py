@@ -119,7 +119,14 @@ AUTHORIZED_PATHS = re.compile(
 # The shell "source" shorthand is a dot standing alone between whitespace; a dot inside a file
 # name (report_issue.py) is not a reader.
 READER_NEAR_SECRET = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_PATH_SHAPES}|{SECRET_FILE_SHAPES})",
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_PATH_SHAPES})",
+    re.IGNORECASE,
+)
+
+# Secret-named data files after a reader. Matched against pattern_scan(segment),
+# so a quoted grep pattern searched in .md files does not trigger it.
+READER_NEAR_SECRET_FILE = re.compile(
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_FILE_SHAPES})",
     re.IGNORECASE,
 )
 
@@ -150,6 +157,16 @@ def word_scan(segment: str) -> str:
     """Return the segment with prose and .md names blanked for the word check."""
     scan = MD_TOKEN.sub(" ", QUOTED_PROSE.sub(" ", segment))
     return QUOTED_ANY.sub(" ", scan) if PATTERN_ONLY.match(scan) else scan
+
+
+def pattern_scan(segment: str) -> str:
+    """Return the segment with quoted patterns blanked when every target is a .md file.
+
+    Unlike word_scan, quoted prose stays: a quoted path with a space in it is
+    still a path for the file-name check.
+    """
+    scan = MD_TOKEN.sub(" ", segment)
+    return QUOTED_ANY.sub(" ", scan) if PATTERN_ONLY.match(scan) else segment
 
 
 # A redirect out of a secret file, e.g. `< .env` or `while read < .env`.
@@ -280,6 +297,8 @@ def verdict(command: str) -> str | None:
             return f"prints a stored credential {matched('secret-command', m.group(0))}"
         if m := READER_NEAR_SECRET.search(segment):
             return f"reads a credential-bearing path {matched('reader-near-secret', m.group(0))}"
+        if m := READER_NEAR_SECRET_FILE.search(pattern_scan(segment)):
+            return f"reads a credential-bearing path {matched('reader-near-secret-file', m.group(0))}"
         if m := READER_NEAR_SECRET_WORD.search(word_scan(segment)):
             return f"reads a credential-bearing path {matched('reader-near-secret-word', m.group(0))}"
         if m := REDIRECT_FROM_SECRET.search(segment):

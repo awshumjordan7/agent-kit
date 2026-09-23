@@ -3,9 +3,10 @@
 
 Actions: time offset from the first action, action type, selector, and the
 names (never the values) of any other parameters. Network: method, status,
-host, path without query, has-auth, set-cookie. Nothing else from the file is
-printed: typed and fill values, action titles, cookies, header values, query
-strings, and bodies are never shown.
+host, path without query (long token-like segments redacted), has-auth,
+set-cookie. Nothing else from the file is printed: typed and fill values,
+action titles, cookies, header values, query strings, and bodies are never
+shown.
 
 has-auth is yes when the request carries an Authorization, Proxy-Authorization,
 or Cookie header, or request cookies. set-cookie is yes when the response sets
@@ -31,6 +32,9 @@ URL_SCHEMES = {"http", "https", "ws", "wss"}
 NOT_NAME = re.compile(r"[^\w.:-]")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 METHOD = re.compile(r"[A-Z]{1,10}")
+# Reset links, magic links, and signed URLs carry their secret in a long path token.
+PATH_TOKEN = re.compile(r"[A-Za-z0-9_-]{20,}")
+CHAR_CLASSES = (re.compile(r"[a-z]"), re.compile(r"[A-Z]"), re.compile(r"[0-9]"))
 
 
 class TraceError(Exception):
@@ -75,6 +79,17 @@ def header_names(headers: object) -> set[str]:
     return {str(h.get("name", "")).lower() for h in as_list(headers) if isinstance(h, dict)}
 
 
+def redact_path(path: str) -> str:
+    """Replace long path tokens that mix at least two character classes with <redacted>."""
+
+    def mask(match: re.Match[str]) -> str:
+        token = match.group(0)
+        mixed = sum(1 for pattern in CHAR_CLASSES if pattern.search(token)) >= 2
+        return "<redacted>" if mixed else token
+
+    return PATH_TOKEN.sub(mask, path)
+
+
 def host_and_path(url: object) -> tuple[str, str]:
     if not isinstance(url, str):
         return "-", "-"
@@ -87,7 +102,7 @@ def host_and_path(url: object) -> tuple[str, str]:
     if scheme not in URL_SCHEMES:
         return "-", f"<{name_text(scheme, 12) or 'unknown'} url>"
     host = (parts.hostname or "-") + (f":{port}" if port else "")
-    return CONTROL.sub("", host)[:80], CONTROL.sub(" ", parts.path or "/")[:160]
+    return CONTROL.sub("", host)[:80], CONTROL.sub(" ", redact_path(parts.path or "/"))[:160]
 
 
 def network_row(entry: dict) -> tuple[str, str, str, str, str, str]:

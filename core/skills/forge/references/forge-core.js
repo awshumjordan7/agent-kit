@@ -486,6 +486,15 @@ function plannedSourceFiles(planText) {
   return new Set(paths.filter(isSourcePath)).size
 }
 
+// Body of a plan's `## <heading>` section, matching run_context.py's _section.
+function planSection(planText, heading) {
+  const lines = String(planText || '').split(/\r?\n/)
+  const start = lines.findIndex(line => line.trim().toLowerCase() === `## ${heading}`.toLowerCase())
+  if (start < 0) return ''
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
+  return lines.slice(start + 1, end < 0 ? lines.length : end).join('\n').trim()
+}
+
 function planPhases(planText) {
   const heading = /^###\s+Phase\s+([A-Za-z]*[0-9]+):\s*(\S.*?)\s*$/
   const lines = String(planText || '').split(/\r?\n/)
@@ -904,10 +913,17 @@ function phaseScope(phase) {
 // A PARTIAL result, or a null that did not come from the spawn cap, starts a fresh implementer
 // from the progress file; the context guard hook is what makes an implementer hand off.
 async function claudeImplement(prompt, opts, progressFile) {
+  const filesChanged = new Set()
+  const unverified = new Set()
+  const collect = value => {
+    for (const file of (value && value.filesChanged) || []) filesChanged.add(file)
+    for (const item of (value && value.unverified) || []) unverified.add(item)
+  }
   let result = await agentT('implementer', prompt, opts)
+  collect(result)
   for (let n = 1; ; n++) {
     const partial = Boolean(result && result.status === 'PARTIAL')
-    if (result && !partial) return result
+    if (result && !partial) return { ...result, filesChanged: [...filesChanged], unverified: [...unverified] }
     if (!result && capBlocked) return null
     if (n > MAX_IMPL_CONTINUATIONS) throw new Error(`Claude implementation handoff limit reached at ${opts.label}`)
     const context = partial ? /\b(\d+)k context\b/.exec(String(result.summary || '')) : null
@@ -920,6 +936,7 @@ First read the progress file, then run \`git -C ${shellQuote(PARAMS.projectDir)}
 
 Continue from the progress file; do not redo work it marks done; do not re-read files the diff shows as complete. List every file changed by this work, including earlier implementers' files, in filesChanged.`
     result = await agentT('implementer', `${prompt}\n\n${continuation}`, { ...opts, label: `${opts.label}-h${n}` })
+    collect(result)
   }
 }
 
@@ -1436,6 +1453,7 @@ async function fixLoop(opts) {
   let files = [...opts.files]
   let gateRan = false
   let reason = null
+  let unverifiedRecheck = []
   PARAMS.spawnCap += MAX_FIX_ROUNDS * (3 + (opts.commitsPerRound ? 1 : 0))
   for (let round = 1; round <= MAX_FIX_ROUNDS; round++) {
     for (const [id, item] of [...reviewOpen]) {
@@ -1484,12 +1502,12 @@ async function fixLoop(opts) {
         await decide(`${label} round ${round}: the decider chose ${entry.action} for gate item ${item.claim.slice(0, 200)}; only a passing gate closes it. ${String(entry.reason || '').slice(0, 300)}`)
       } else {
         reviewOpen.delete(entry.id)
-        disputes.push({ finding: item, reason: `decider ${entry.action}: ${entry.reason || '(no reason given)'}` })
+        disputes.push({ id: entry.id, finding: item, reason: `decider ${entry.action}: ${entry.reason || '(no reason given)'}` })
       }
     }
     for (const id of cannotDecide) {
       const item = openById.get(id)
-      disputes.push({ finding: item, reason: 'decider could not decide from current evidence' })
+      disputes.push({ id, finding: item, reason: 'decider could not decide from current evidence' })
       reviewOpen.delete(id)
     }
     const listed = new Set((spec.items || []).map(entry => entry.id))
@@ -1528,13 +1546,21 @@ async function fixLoop(opts) {
         record.gatePassed = Boolean(gate && gate.passed)
       }
       const reviewFixed = fixItems.filter(item => item.source !== 'gate' && reviewOpen.has(findingKey(item)))
-      if (reviewFixed.length) {
+      const touchedSet = new Set(touched)
+      const recheck = [...verifiedClosed.values()].filter(item => [item.file, ...(item.specFiles || [])].some(file => file && touchedSet.has(file)))
+      if (reviewFixed.length || recheck.length) {
         const verifyLabel = round === 1 ? 'verify-review' : `verify-review-${round}`
-        const touchedSet = new Set(touched)
-        const recheck = [...verifiedClosed.values()].filter(item => [item.file, ...(item.specFiles || [])].some(file => file && touchedSet.has(file)))
         const checked = [...reviewFixed, ...recheck]
         const verify = await verifyFixes(checked, fix, verifyLabel, recheck.map(item => findingKey(item)))
         record.verify = verify
+        // Items closed earlier are not reopened: a verifier that returned nothing says nothing about
+        // them, so they are reported as unverified instead of failed.
+        if (!verify || !Array.isArray(verify.results)) {
+          reason = capBlocked ? 'spawn-cap' : 'verify-null'
+          unverifiedRecheck = recheck.map(item => ({ ...item, verificationReason: `${verifyLabel} returned no usable result; not re-verified` }))
+          await decide(`${label} round ${round}: ${verifyLabel} returned no usable result; the loop stopped.`)
+          break
+        }
         const stillOpen = new Set((await unresolvedAfterVerification(checked, verify, verifyLabel)).map(item => findingKey(item)))
         for (const item of reviewFixed) {
           const id = findingKey(item)
@@ -1568,16 +1594,16 @@ async function fixLoop(opts) {
     }
     if (round === MAX_FIX_ROUNDS) reason = 'fix-cap'
   }
-  const open = [...gateOpen, ...reviewOpen.values()]
+  const open = [...gateOpen, ...reviewOpen.values(), ...unverifiedRecheck]
   if (open.length && !reason) reason = capBlocked ? 'spawn-cap' : 'fix-cap'
-  const blocked = open.length > 0 || reason === 'commit-failed'
+  const blocked = open.length > 0 || reason === 'commit-failed' || reason === 'verify-null'
   // A gate item the decider could not decide needs a ruling only while the gate still fails.
   const openDisputes = gateOpen.length ? disputes : disputes.filter(item => item.finding.source !== 'gate')
   const needsJudge = openDisputes.length > 0
   if (blocked) await decide(`${label} stopped BLOCKED (${reason}) after ${rounds.length} round(s) with ${open.length} open item(s).`)
   if (needsJudge) await decide(`${label}: ${openDisputes.length} item(s) need a human ruling: ${openDisputes.map(item => `${item.finding.file}:${item.finding.line}`).join(', ').slice(0, 500)}`)
   const touched = [...new Set(touchedFiles)]
-  const blockedFields = blocked ? { reason, open, deciderNotes } : { deciderNotes }
+  const blockedFields = blocked ? { reason, open: open.map(item => ({ id: findingKey(item), ...item })), deciderNotes } : { deciderNotes }
   if (kind === 'gate') return { gate, touchedFiles: touched, blocked, needsJudge, disputes: openDisputes, rounds, ...blockedFields }
   return {
     unresolved: open, unresolvedDisputes: openDisputes, fixesApplied: touched.length > 0, rounds,
@@ -1853,9 +1879,11 @@ async function collectPhaseGate(run, entry, allowFix) {
   let sha = entry.sha
   let fixes = 0
   const planned = PHASES.find(item => item.id === entry.id)
+  const contract = planSection(PARAMS.planText, 'Public API contract')
+  const phaseExcerpt = planned && `### Phase ${planned.id}: ${planned.title}\n${planned.text}${contract ? `\n\n## Public API contract\n${contract}` : ''}`
   const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contract: PARAMS.planText }, 'Gate', {
     first: gate,
-    planExcerpt: planned ? `### Phase ${planned.id}: ${planned.title}\n${planned.text}` : PARAMS.planText,
+    planExcerpt: phaseExcerpt || PARAMS.planText,
     run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
     afterFix: async (touched, files) => {
       fixes++
@@ -2272,8 +2300,10 @@ if (state.needsJudge) {
     ...((state.review && state.review.unresolvedDisputes) || []),
     ...((state.convergence && state.convergence.unresolvedDisputes) || []),
     ...(state.fixDisputes || []),
-  ]
-  return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, runDir: PARAMS.runDir }
+  ].map(item => ({ id: findingKey(item.finding || {}), ...item }))
+  const loop = state.convergence
+  const convergence = loop && loop.blocked ? { reason: loop.reason, open: loop.open, deciderNotes: loop.deciderNotes } : null
+  return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir }
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 phase('Handoff')
