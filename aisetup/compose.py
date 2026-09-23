@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import filecmp
 import hashlib
 import importlib.util
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import tomllib
@@ -509,26 +511,69 @@ def prepare_install(
     )
 
 
-def _restore_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> None:
-    def merge_dir(source: Path, target: Path) -> None:
-        if target.exists() and not target.is_dir():
-            return
-        target.mkdir(parents=True, exist_ok=True)
-        for entry in sorted(source.iterdir()):
-            dst = target / entry.name
-            if entry.is_dir() and not entry.is_symlink():
-                merge_dir(entry, dst)
-            elif not (dst.exists() or dst.is_symlink()):
-                shutil.copy2(entry, dst, follow_symlinks=False)
+def _move_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> None:
+    def is_real_dir(path: Path) -> bool:
+        return path.is_dir() and not path.is_symlink()
+
+    def move(source: Path, target: Path) -> None:
+        if not (target.exists() or target.is_symlink()):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, target)
+        elif is_real_dir(source) and is_real_dir(target):
+            for entry in sorted(source.iterdir()):
+                move(entry, target / entry.name)
 
     for relative in preserved:
-        source = backup / relative
-        target = home / relative
-        if source.is_dir() and not source.is_symlink():
-            merge_dir(source, target)
-        elif not (target.exists() or target.is_symlink()):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target, follow_symlinks=False)
+        move(backup / relative, home / relative)
+
+
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _has_identical_copy(entry: Path, home: Path, relative: Path) -> bool:
+    if any((home / parent).is_symlink() for parent in relative.parents):
+        return False
+    live = home / relative
+    if not _is_regular_file(live):
+        return False
+    try:
+        return filecmp.cmp(entry, live, shallow=False)
+    except OSError:
+        return False
+
+
+def _prune_backup(backup: Path, home: Path, stale: Iterable[Path]) -> int:
+    """Delete backup files that home holds unchanged, plus kit-owned .kit-new files.
+
+    Returns the number of non-directory entries left in the backup.
+    """
+    stale_paths = {relative.as_posix() for relative in stale}
+    remaining = 0
+    for dirpath, dirnames, filenames in os.walk(backup, topdown=False, followlinks=False):
+        directory = Path(dirpath)
+        for name in filenames:
+            entry = directory / name
+            relative = entry.relative_to(backup)
+            if _is_regular_file(entry) and (
+                relative.as_posix() in stale_paths or _has_identical_copy(entry, home, relative)
+            ):
+                try:
+                    entry.unlink()
+                    continue
+                except OSError:
+                    pass
+            remaining += 1
+        # os.walk lists a symlink to a directory under dirnames without descending into it.
+        remaining += sum(1 for name in dirnames if (directory / name).is_symlink())
+        try:
+            os.rmdir(directory)
+        except OSError:
+            pass
+    return remaining
 
 
 def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> ComposeResult:
@@ -551,13 +596,19 @@ def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> Comp
                 os.replace(backup, home)
             raise
         if backup is not None:
-            _restore_unmanaged(backup, home, paths.preserved)
+            _move_unmanaged(backup, home, paths.preserved)
+            remaining = _prune_backup(backup, home, paths.stale)
             sys.stdout.write(f"preserved {len(paths.preserved)} unmanaged path(s) from {backup}\n")
             sys.stdout.write(f"retired {len(paths.retired)} managed path(s)\n")
             for relative in paths.retired:
                 sys.stdout.write(f"retired: {relative}\n")
             for relative in paths.retired_modified:
                 sys.stdout.write(f"retired but locally modified: {relative}\n")
+            if backup.exists():
+                sys.stdout.write(f"backup: {backup} ({remaining} file(s))\n")
+            else:
+                sys.stdout.write(f"no files replaced; removed empty backup {backup}\n")
+                backup = None
         for relative, status in plan.kept:
             sys.stdout.write(
                 f"kept locally modified: {relative} "
