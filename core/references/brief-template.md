@@ -12,7 +12,7 @@ CAP: <max lines in the final message>. A brief cannot raise the agent file's max
 ```
 
 Every Agent prompt, the main session's and forge-core's, follows this template.
-Briefs are written before the spawn.
+Briefs are written before the spawn: the brief file's write must succeed in a tool round before the Agent call that uses it, never in the same message, where a blocked write still lets the agent start without its brief.
 They are not edited after.
 Browser steps go to the configured browser-testing agent, never to `worker`. Playwright MCP blocks file: URLs, so serve a rendered file over localhost and provide that URL.
-A brief that hands an agent a file holding cookies, tokens, headers, or typed values (a Playwright trace.zip, whose action titles and params include filled passwords; a HAR; an auth storage-state file) names a structure-only probe in KNOWN, such as `zipinfo -1 <file>` or a script that prints key names and counts only, and forbids printing raw contents or action titles from it.
+A brief that hands an agent a file holding cookies, tokens, headers, or typed values (a Playwright trace.zip, whose action titles and params include filled passwords; a HAR; an auth storage-state file) names `python3 ~/.claude/skills/forge/scripts/trace-read.py <file>` in KNOWN as the structure-only probe (it prints redacted action and network rows), or `zipinfo -1 <file>` for a file listing, and forbids printing raw contents or action titles from it.

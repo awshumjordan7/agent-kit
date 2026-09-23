@@ -34,8 +34,9 @@ Never present an estimated volume as a measured one.
 
 ## Steps
 
-1. **Map the content hub.** Use `firecrawl_map` on the blog and resource paths. Record the category
-   structure, the content types offered, and the split between gated and open material.
+1. **Map the content hub.** Use the site-mapping tool, or `firecrawl_search` + `firecrawl_scrape` when no
+   map tool exists, on the blog and resource paths. Record the category structure, the content types
+   offered, and the split between gated and open material.
 2. **Read the keyword signals without paid tools.** Indexed pages via a `site:` search, page titles, the
    homepage title tag and meta description, heading structure, and the phrases the copy repeats.
 3. **Classify the content by theme and goal.** Count pieces per theme and name the business goal each
@@ -53,7 +54,7 @@ Never present an estimated volume as a measured one.
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/seo-content.md`. Use the actual current date.
+Write to `<intelRoot>/competitors/{competitor}/seo-content.md`. Use the actual current date.
 
 ```markdown
 # SEO and content: {competitor}
@@ -123,4 +124,4 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Next brief: `internal-sources.md` when internal access exists, otherwise `synthesizer.md`. Both read
-`intelligence/competitors/{competitor}/seo-content.md`.
+`<intelRoot>/competitors/{competitor}/seo-content.md`.

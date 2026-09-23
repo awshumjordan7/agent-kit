@@ -9,7 +9,10 @@ notes, support tickets and sales notes hold first-hand customer language that no
 
 - `{competitor}` name and the alternatives it is confused with.
 - Access to whatever `{internal transcript tool}` the team uses: call recordings, meeting notes, a
-  ticket system, a customer feedback store, or a shared notes folder.
+  ticket system, a customer feedback store, or a shared notes folder. The main session checks before
+  this brief runs: ToolSearch must find a transcript, meeting-notes or call-recording tool. When it finds
+  none, skip this brief and record the gap ("internal sources: no transcript tool found") in
+  `<runDir>/STATE.md` and in the synthesizer's inputs.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
 - Depth: `quick` or `deep`. This brief runs on deep runs only, and only when access exists.
 
@@ -59,14 +62,14 @@ else is Low.
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/internal-sources.md`. Use the actual current date. Treat
+Write to `<intelRoot>/competitors/{competitor}/internal-sources.md`. Use the actual current date. Treat
 the contents as internal: it holds customer conversations.
 
 ```markdown
 # Internal sources: {competitor}
 
 **Analysis date:** {YYYY-MM-DD}
-**Tool searched:** {internal transcript tool}
+**Tool searched:** {the transcript tool ToolSearch found}
 **Date window:** {all time | from YYYY-MM-DD} and why
 **Name variations searched:** {list}
 
@@ -120,5 +123,5 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Next brief: `synthesizer.md`, which reads
-`intelligence/competitors/{competitor}/internal-sources.md` and carries each verified mention at the
+`<intelRoot>/competitors/{competitor}/internal-sources.md` and carries each verified mention at the
 tier this brief graded it.

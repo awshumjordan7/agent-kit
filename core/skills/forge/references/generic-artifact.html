@@ -1,35 +1,22 @@
 <!--
-  Forge plan artifact. Render it, never hand-fill it:
-    python3 ~/.claude/skills/forge/scripts/render_artifact.py plan \
-      --data <runDir>/plan-data.json --markdown <runDir>/plan.md --out <runDir>/plan-artifact.html
-  The main session writes plan-data.json; a worker runs the renderer, publishes, and opens the page.
+  Generic forge artifact: a markdown file plus a small data file, for any page that is not a
+  plan or a QA checklist. Render it, never hand-fill it:
+    python3 ~/.claude/skills/forge/scripts/render_artifact.py generic \
+      --data <runDir>/<name>-data.json --markdown <runDir>/<name>.md --out <runDir>/<name>.html
+  The main session writes both inputs; a worker runs the renderer, publishes, and opens the page.
   The renderer removes this comment, then fills every slot. It exits 1 when a slot is left unfilled.
 
-  plan-data.json keys:
-    ticket        Ticket key, or "" when there is none.
-    title         Page title; defaults to plan.md's "# " title.
-    lane          Forge lane (build, quick, ...); the eyebrow reads "Forge plan - <lane> lane".
-    repo, date, runDir, sandboxTier   Meta pills; an empty value is left out.
-    lenses        Review lenses, as a list or a comma string.
-    status        One line for the status banner; defaults to "Awaiting approval".
-    accessRules   List of access-rule sentences. Empty: no Access rules section.
-    planReview    {verdict, findings: [{severity, text, disposition}]}. No verdict and no
-                  findings: no Plan review section.
-    pending       [[item, state], ...] or [{item, state}, ...]. Empty: no Pending section.
-    links         [[label, url], ...] or [{label, url}, ...]; each row gets a Copy button.
-    next          The exact word the user says to start, normally "go". Empty: no callout.
-  There is no tests key: the Tests section comes from plan.md.
+  data keys:
+    title     Page title; defaults to the markdown's "# " title.
+    eyebrow   Short label above the title, for example "Forge run report".
+    status    One line for the status banner. Empty: no banner.
+    links     [[label, url], ...] or [{label, url}, ...]; each row gets a Copy button.
 
-  plan.md supplies everything else:
-    Every "## " section (summary, phases, files, criteria, risks, and any extra section)
-    renders in plan.md order with a TOC entry, except "## Tests".
-    "## Tests" renders in the fixed Tests section: its table, or its "None: <reason>" line.
-    Markdown handled: paragraphs, "- " lists, numbered lists (as a numbered table), "### "
-    subheads, pipe tables, fenced code, `code`, and **bold**. Raw HTML is escaped.
+  The markdown supplies the sections: every "## " heading renders in order with a TOC entry.
+  Markdown handled: paragraphs, "- " lists, numbered lists (as a numbered table), "### "
+  subheads, pipe tables, fenced code, `code`, and **bold**. Raw HTML is escaped.
 
-  Slots: TITLE, EYEBROW, META_HTML, STATUS, TOC, SECTIONS, TESTS_HTML, ACCESS_RULES_SECTION,
-  PLAN_REVIEW_SECTION, PENDING_SECTION, LINKS, NEXT. A *_SECTION slot is a whole
-  <section id="..." data-toc="Label"> or "".
+  Slots: TITLE, EYEBROW, STATUS, TOC, SECTIONS, LINKS.
 -->
 <title>{{TITLE}}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -156,25 +143,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   <header>
     <div class="eyebrow">{{EYEBROW}}</div>
     <h1>{{TITLE}}</h1>
-    <div class="meta">{{META_HTML}}</div>
   </header>
 
+  <!--STATUS_START-->
   <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
+  <!--STATUS_END-->
 
-  <nav class="toc" aria-label="Plan sections">{{TOC}}</nav>
-
-  {{PLAN_REVIEW_SECTION}}
-
-  {{PENDING_SECTION}}
+  <nav class="toc" aria-label="Page sections">{{TOC}}</nav>
 
   {{SECTIONS}}
-
-  <section id="tests" data-toc="Tests">
-    <h2>Tests</h2>
-    {{TESTS_HTML}}
-  </section>
-
-  {{ACCESS_RULES_SECTION}}
 
   <section id="links" data-toc="Links">
     <h2>Links</h2>
@@ -182,8 +159,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
       <tbody>{{LINKS}}</tbody>
     </table></div>
   </section>
-
-  {{NEXT}}
 </div>
 
 <script>

@@ -19,7 +19,7 @@
     "answers": {},
     "agents": {
       "worker": {"model": "opus", "maxTurns": 150, "effort": "medium"},
-      "shipper": {"model": "sonnet", "maxTurns": 50, "effort": null},
+      "shipper": {"model": "sonnet", "maxTurns": 50, "effort": "medium"},
       "claude-implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
     },
     "forge": {

@@ -24,6 +24,10 @@ KNOWN GAPS, deliberately not covered:
 Tighten only if the threat model changes; today's goal is preventing careless
 credential exposure, not defeating circumvention.
 
+Raw dumps of Playwright traces, HAR files, and auth storage-state files are
+blocked separately; scripts/trace-read.py in the forge skill prints a redacted
+view of them instead.
+
 Exit codes: 2 = block (stderr is shown to Claude), 0 = allow.
 """
 
@@ -46,7 +50,7 @@ READERS = (
 )
 
 # Commands that print a credential without naming a credential-shaped path,
-# so READERS x SECRET_PATHS cannot catch them.
+# so the reader-near-secret checks cannot catch them.
 SECRET_COMMANDS = re.compile(
     r"\bsecurity\s+find-(generic|internet)-password|"
     r"\bgh\s+auth\s+token\b|"
@@ -87,7 +91,13 @@ SECRET_BARE_WORDS = (
     r"\btokens?\b|\bapi[_-]?keys?\b"
 )
 
-SECRET_PATHS = rf"{SECRET_PATH_SHAPES}|{SECRET_BARE_WORDS}"
+# A bare word that is also a file name with a data extension (tokens.txt,
+# credentials.json). Checked for reader commands only, never in interpreter
+# heredoc bodies, where prose such as "writes credentials.json" is common.
+SECRET_FILE_SHAPES = (
+    r"(?:\b|_)(?:credentials?|secrets?|tokens?|api[_-]?keys?)[\w-]*"
+    r"\.(?:json|ya?ml|txt|ini|toml|cfg|conf|key)\b"
+)
 
 # Explicitly fine: sample/template files that carry no real values.
 ALLOWLIST = re.compile(
@@ -109,12 +119,87 @@ AUTHORIZED_PATHS = re.compile(
 # The shell "source" shorthand is a dot standing alone between whitespace; a dot inside a file
 # name (report_issue.py) is not a reader.
 READER_NEAR_SECRET = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_PATHS})",
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_PATH_SHAPES})",
     re.IGNORECASE,
 )
 
+# Secret-named data files after a reader. Matched against pattern_scan(segment),
+# so a quoted grep pattern searched in .md files does not trigger it.
+READER_NEAR_SECRET_FILE = re.compile(
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_FILE_SHAPES})",
+    re.IGNORECASE,
+)
+
+# Bare secret words after a reader. Matched against word_scan(segment), not the
+# raw segment, so .md file names and quoted prose do not trigger it.
+READER_NEAR_SECRET_WORD = re.compile(
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_BARE_WORDS})",
+    re.IGNORECASE,
+)
+
+# Quoted text with a space in it is prose (a report message, a sed script),
+# not a path. A quoted single word may still be a path: cat "secrets.yaml".
+QUOTED_PROSE = re.compile(r"'[^']*\s[^']*'|\"[^\"]*\s[^\"]*\"")
+QUOTED_ANY = re.compile(r"'[^']*'|\"[^\"]*\"")
+# A .md name only as a whole path token, so `cat {tokens.txt,x.md}` and
+# `cat tokens.txt>x.md` keep their secret-named part.
+MD_TOKEN = re.compile(r"(?<![^\s=])[\w./~@+-]*\.md(?=$|[\s;&|)])")
+# A grep/sed/awk segment left with only flags and quoted arguments once .md
+# names are removed: every target was a .md file, so its quoted pattern is
+# search text, not a path.
+PATTERN_ONLY = re.compile(
+    r"^\s*(?:grep|egrep|fgrep|rg|ag|ack|sed|awk)\b"
+    r"(?:\s+(?:-\S+|'[^']*'|\"[^\"]*\"))*\s*(?:>{1,2}\s*)?$"
+)
+
+
+def word_scan(segment: str) -> str:
+    """Return the segment with prose and .md names blanked for the word check."""
+    scan = MD_TOKEN.sub(" ", QUOTED_PROSE.sub(" ", segment))
+    return QUOTED_ANY.sub(" ", scan) if PATTERN_ONLY.match(scan) else scan
+
+
+def pattern_scan(segment: str) -> str:
+    """Return the segment with quoted patterns blanked when every target is a .md file.
+
+    Unlike word_scan, quoted prose stays: a quoted path with a space in it is
+    still a path for the file-name check.
+    """
+    scan = MD_TOKEN.sub(" ", segment)
+    return QUOTED_ANY.sub(" ", scan) if PATTERN_ONLY.match(scan) else segment
+
+
 # A redirect out of a secret file, e.g. `< .env` or `while read < .env`.
-REDIRECT_FROM_SECRET = re.compile(rf"<\s*[^\s;&|]*({SECRET_PATHS})", re.IGNORECASE)
+REDIRECT_FROM_SECRET = re.compile(rf"<\s*[^\s;&|]*({SECRET_PATH_SHAPES})", re.IGNORECASE)
+REDIRECT_FROM_SECRET_WORD = re.compile(
+    rf"<\s*(?![^\s;&|]*\.md\b)[^\s;&|]*({SECRET_BARE_WORDS})", re.IGNORECASE
+)
+
+# Raw dumps of files that hold cookies, auth headers, and typed values: a
+# Playwright trace (zipped, or the *.trace / *.network files `unzip -d` leaves),
+# a HAR, or an auth storage-state file. Only commands that
+# print bytes are blocked; cp, mv, grep, jq, zipinfo, `unzip -l`, and
+# `npx playwright show-trace` stay allowed.
+RAW_DUMP_COMMAND = re.compile(
+    r"^\s*(?:sudo\s+)?(?:"
+    r"(?:cat|head|tail|less|more|strings|xxd|od|hexdump|base64|zcat)\b|"
+    r"unzip\s+(?:-\S+\s+)*-(?-i:\w*[cp])|"
+    r"gunzip\s+(?:-\S+\s+)*-(?-i:\w*c)|"
+    r"(?:bsd)?tar\b(?=[^;&|]*\s-(?-i:\w*x))(?=[^;&|]*\s-(?-i:\w*O))"
+    r")",
+    re.IGNORECASE,
+)
+# Anchored at the end of a path token so `docker.network.yml` and `strace` do not match.
+UNZIPPED_TRACE = r"\.(?:trace|network)(?=$|[\s;&|)'\"])"
+RAW_DUMP_TARGET = re.compile(
+    rf"trace\.zip|\.har\b|/\.auth/|storage[-_]?state\w*\.json|{UNZIPPED_TRACE}", re.IGNORECASE
+)
+# `> file` is a write, not a dump, so redirect targets are removed before the path check.
+OUTPUT_REDIRECT = re.compile(r">{1,2}\s*[^\s;&|]+")
+RAW_DUMP_READ_PATH = re.compile(
+    rf"\.har\b|/\.auth/|storage[-_]?state\w*\.json|{UNZIPPED_TRACE}", re.IGNORECASE
+)
+TRACE_READER = "python3 ~/.claude/skills/forge/scripts/trace-read.py <file>"
 
 # A heredoc opener: `<<` or `<<-`, optional quoting around the terminator word.
 HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
@@ -177,6 +262,15 @@ def strip_heredoc_bodies(command: str) -> tuple[str, list[str]]:
     return "\n".join(out), interpreter_bodies
 
 
+def matched(rule: str, text: str) -> str:
+    """Name the rule and the command text it matched, never a file or variable value."""
+    fragment = " ".join(text.split())[:80]
+    return f"(rule {rule}, matched `{fragment}`)"
+
+
+SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+
+
 # Heredoc bodies are data unless a shell or interpreter on the header line
 # will execute them; strip_heredoc_bodies() applies that split before
 # segments are checked below.
@@ -186,12 +280,11 @@ def verdict(command: str) -> str | None:
     for body in interpreter_bodies:
         body = ALLOWLIST.sub(" ", body)
         body = AUTHORIZED_PATHS.sub(" ", body)
-        if INTERPRETER_BODY_SECRET.search(body):
-            return "runs code that names a credential-bearing path"
+        if m := INTERPRETER_BODY_SECRET.search(body):
+            return f"runs code that names a credential-bearing path {matched('interpreter-body-secret', m.group(0))}"
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
-    segments = re.split(r"&&|\|\||;|\||\n", command)
-    for segment in segments:
+    for segment in SEGMENT_SPLIT.split(command):
         if not segment.strip():
             continue
         # Blank out only the allowlisted paths, never the whole segment:
@@ -200,12 +293,27 @@ def verdict(command: str) -> str | None:
         segment = AUTHORIZED_PATHS.sub(" ", segment)
         if not segment.strip():
             continue
-        if SECRET_COMMANDS.search(segment):
-            return "prints a stored credential"
-        if READER_NEAR_SECRET.search(segment):
-            return "reads a credential-bearing path"
-        if REDIRECT_FROM_SECRET.search(segment):
-            return "redirects input from a credential-bearing path"
+        if m := SECRET_COMMANDS.search(segment):
+            return f"prints a stored credential {matched('secret-command', m.group(0))}"
+        if m := READER_NEAR_SECRET.search(segment):
+            return f"reads a credential-bearing path {matched('reader-near-secret', m.group(0))}"
+        if m := READER_NEAR_SECRET_FILE.search(pattern_scan(segment)):
+            return f"reads a credential-bearing path {matched('reader-near-secret-file', m.group(0))}"
+        if m := READER_NEAR_SECRET_WORD.search(word_scan(segment)):
+            return f"reads a credential-bearing path {matched('reader-near-secret-word', m.group(0))}"
+        if m := REDIRECT_FROM_SECRET.search(segment):
+            return f"redirects input from a credential-bearing path {matched('redirect-from-secret', m.group(0))}"
+        if m := REDIRECT_FROM_SECRET_WORD.search(segment):
+            return f"redirects input from a credential-bearing path {matched('redirect-from-secret-word', m.group(0))}"
+    return None
+
+
+def raw_dump_verdict(command: str) -> str | None:
+    """Return a reason to block a raw dump of a trace, HAR, or storage-state file."""
+    command, _ = strip_heredoc_bodies(command)
+    for segment in SEGMENT_SPLIT.split(command):
+        if RAW_DUMP_COMMAND.match(segment) and RAW_DUMP_TARGET.search(OUTPUT_REDIRECT.sub(" ", segment)):
+            return f"dumps a trace, HAR, or auth-state file raw {matched('raw-dump', segment)}"
     return None
 
 
@@ -312,6 +420,11 @@ _ENV_REF_ANY = (
 PYNODE_LEN_STRIP = re.compile(rf"len\(\s*(?:{_ENV_REF_ANY})\s*\)", re.IGNORECASE)
 
 
+# Code in a quoted heredoc body that hands text to a shell, where a $VAR in it
+# would be expanded and printed.
+SHELL_OUT = re.compile(r"os\.system|subprocess|popen|child_process|execSync|spawn|`", re.IGNORECASE)
+
+
 def secret_var_verdict(command: str) -> str | None:
     """Return a reason to block a command that would print a secret
     variable's value, or None to allow.
@@ -320,22 +433,31 @@ def secret_var_verdict(command: str) -> str | None:
     units: a `python3 -c "import os; print(...)"` argument routinely
     contains its own `;`, which would otherwise get cut apart by a
     unit split and hide the very thing being checked for.
+
+    When every heredoc terminator is quoted (`<<'EOF'`), the shell does not
+    expand the bodies, so they are left out of the dump checks unless they
+    shell out. An unquoted body is expanded and stays checked.
     """
-    if ENV_DUMP_BARE.search(command) or _ENV_DUMP_NONFILTER.search(command):
-        return "would dump the full environment"
-    if _ENV_DUMP_GREP_SECRET.search(command):
-        return "would print a secret-bearing variable"
-    if JQ_ENV_DUMP.search(command):
-        return "would dump the full environment"
-    if PRINTENV_SECRET.search(command) or DECLARE_P_SECRET.search(command):
-        return "would print a secret-bearing variable"
-    scrubbed = CURL_AUTH_SAFE.sub(" ", command)
-    if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and SECRET_VAR_EXPANSION.search(scrubbed):
-        return "would print a secret-bearing variable"
+    quoted = all(m.group(1) for m in HEREDOC_OPEN.finditer(command))
+    head, bodies = strip_heredoc_bodies(command) if quoted else (command, [])
+    for body in bodies:
+        if SHELL_OUT.search(body) and (m := SECRET_VAR_EXPANSION.search(body)):
+            return f"would print a secret-bearing variable {matched('heredoc-shell-out', m.group(0))}"
+    if m := ENV_DUMP_BARE.search(head) or _ENV_DUMP_NONFILTER.search(head):
+        return f"would dump the full environment {matched('env-dump', m.group(0))}"
+    if m := _ENV_DUMP_GREP_SECRET.search(head):
+        return f"would print a secret-bearing variable {matched('env-grep-secret', m.group(0))}"
+    if m := JQ_ENV_DUMP.search(head):
+        return f"would dump the full environment {matched('jq-env-dump', m.group(0))}"
+    if m := PRINTENV_SECRET.search(head) or DECLARE_P_SECRET.search(head):
+        return f"would print a secret-bearing variable {matched('printenv-secret', m.group(0))}"
+    scrubbed = CURL_AUTH_SAFE.sub(" ", head)
+    if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and (m := SECRET_VAR_EXPANSION.search(scrubbed)):
+        return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
     if PYNODE_INVOCATION.search(command):
         stripped = PYNODE_LEN_STRIP.sub(" ", command)
-        if PYNODE_SECRET_REF.search(stripped) or PYNODE_WHOLESALE.search(stripped):
-            return "would print a secret-bearing variable"
+        if m := PYNODE_SECRET_REF.search(stripped) or PYNODE_WHOLESALE.search(stripped):
+            return f"would print a secret-bearing variable {matched('interpreter-env-ref', m.group(0))}"
     return None
 
 
@@ -355,8 +477,17 @@ def path_verdict(file_path: str) -> str | None:
     """Return a reason to block a direct file read, or None to allow."""
     if ALLOWLIST.search(file_path) or AUTHORIZED_PATHS.search(file_path):
         return None
-    if re.search(SECRET_PATHS, file_path, re.IGNORECASE):
-        return "reads a credential-bearing path"
+    if re.search(SECRET_PATH_SHAPES, file_path, re.IGNORECASE):
+        return f"reads a credential-bearing path {matched('secret-path', file_path)}"
+    if not file_path.lower().endswith(".md") and re.search(SECRET_BARE_WORDS, file_path, re.IGNORECASE):
+        return f"reads a credential-bearing path {matched('secret-word', file_path)}"
+    return None
+
+
+def raw_dump_path_verdict(file_path: str) -> str | None:
+    """Return a reason to block a Read of a trace, HAR, or auth storage-state file."""
+    if RAW_DUMP_READ_PATH.search(file_path):
+        return f"reads a trace, HAR, or auth-state file raw {matched('raw-dump-read', file_path)}"
     return None
 
 
@@ -373,18 +504,23 @@ def main() -> int:
         target = tool_input.get("command") or ""
         if not isinstance(target, str):
             return 0
-        if secret_var_verdict(target):
+        if reason := secret_var_verdict(target):
             print(
-                "Blocked by block_secret_reads hook: this command would print "
-                "a secret-bearing variable. Pass secrets to programs via their "
+                f"Blocked by block_secret_reads hook: this command {reason}. "
+                "Pass secrets to programs via their "
                 "own flags/env, never through od/xxd/echo/printf or an "
                 "unfiltered env dump; if you must inspect a value's shape, "
                 "report only its length.",
                 file=sys.stderr,
             )
             return 2
+        if reason := raw_dump_verdict(target):
+            return block_raw_dump("command", reason)
         reason, noun = verdict(target), "command"
     elif tool_name in PATH_FIELDS:
+        if tool_name == "Read" and isinstance(tool_input.get("file_path"), str):
+            if reason := raw_dump_path_verdict(tool_input["file_path"]):
+                return block_raw_dump("tool call", reason)
         reason, noun = None, "tool call"
         for field in PATH_FIELDS[tool_name]:
             value = tool_input.get(field) or ""
@@ -402,6 +538,19 @@ def main() -> int:
         "under bypassPermissions, so this hook is the enforcement point for "
         "both Bash and Read. If you genuinely need a value from one, ask the "
         "user to provide it rather than printing the file.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def block_raw_dump(noun: str, reason: str) -> int:
+    print(
+        f"Blocked by block_secret_reads hook: this {noun} {reason}.\n"
+        "Traces, HAR files, and auth storage-state files hold cookies, auth "
+        "headers, and typed values. For a redacted view of actions and "
+        f"requests, run `{TRACE_READER}` (on the trace.zip, not the files "
+        "`unzip -d` extracts from it). Copying, listing (`unzip -l`, "
+        "`zipinfo`), and `npx playwright show-trace` stay allowed.",
         file=sys.stderr,
     )
     return 2

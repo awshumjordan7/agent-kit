@@ -50,7 +50,7 @@ than dressing a self-claim as a fact.
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/positioning.md`. Use the actual current date.
+Write to `<intelRoot>/competitors/{competitor}/positioning.md`. Use the actual current date.
 
 ```markdown
 # Positioning: {competitor}
@@ -121,5 +121,5 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Quick runs: next brief is `synthesizer.md`, which reads
-`intelligence/competitors/{competitor}/positioning.md`. Deep runs: next brief is `sales-intel.md`, which
+`<intelRoot>/competitors/{competitor}/positioning.md`. Deep runs: next brief is `sales-intel.md`, which
 reads the same file for the pricing and partner URLs found here.

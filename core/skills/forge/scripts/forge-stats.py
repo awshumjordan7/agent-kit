@@ -42,6 +42,8 @@ SIGNATURES = [
     ("You are the SECURITY reviewer", "lens-security"),
     ("You are the PERFORMANCE reviewer", "lens-performance"),
     ("You are the JUDGE", "judge"),
+    ("You are the Forge fix DECIDER", "decider"),
+    ("Apply only this verified fix spec", "fix"),
     ("You are the FIX agent", "fix"),
     ("You orchestrate FIX VERIFICATION", "verify-wrapper"),
     ("You collect changed file paths", "changed-files-wrapper"),

@@ -44,9 +44,12 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Every sub-agent prompt follows `~/.claude/references/brief-template.md`.** Write the brief before
   the spawn; do not edit it after.
 - **Artifacts are worker-made.** Every artifact of any kind is produced by a worker from a template
-  plus a data file the main session writes; the main session never writes artifact HTML. Every
-  artifact is glanceable: tables over prose, copyable credentials, a links section, no changelog or
-  update prose.
+  plus a data file the main session writes; the main session never writes artifact HTML. The
+  templates are `plan-artifact.html`, `qa-artifact.html`, and `generic-artifact.html` in
+  `~/.claude/skills/forge/references/`; the one renderer is
+  `python3 ~/.claude/skills/forge/scripts/render_artifact.py {plan|qa|generic} --data <json> [--markdown <md>] --out <html>`.
+  No worker writes its own renderer. Every artifact is glanceable: tables over prose, copyable
+  credentials, a links section, no changelog or update prose.
 - **Bash output stays small.** A command expected to print more than ~5 KB writes to a file in the
   run dir and returns `tail` or `grep` of it. Never `cat` a file over 200 lines; use ranged `sed -n`.
 - **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'

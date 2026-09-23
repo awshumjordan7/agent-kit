@@ -46,7 +46,7 @@ inference as an inference in the sentence that makes it.
 
 ## Output template
 
-Write to `intelligence/personas/{persona}/profile.md`. Use the actual current date.
+Write to `<intelRoot>/personas/{persona}/profile.md`. Use the actual current date.
 
 ```markdown
 # Persona: {persona}
@@ -123,5 +123,5 @@ The brief fails when any box is unchecked:
 
 ## Handoff
 
-Next brief: `evidence-collector.md`, which reads `intelligence/personas/{persona}/profile.md` and files
+Next brief: `evidence-collector.md`, which reads `<intelRoot>/personas/{persona}/profile.md` and files
 evidence against the assumptions listed there.

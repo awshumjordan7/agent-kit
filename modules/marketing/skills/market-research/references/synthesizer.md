@@ -7,9 +7,9 @@ behind them, the contradictions, and the questions still open.
 
 ## Inputs
 
-- Every brief written for this competitor under `intelligence/competitors/{competitor}/`.
+- Every brief written for this competitor under `<intelRoot>/competitors/{competitor}/`.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
-- `intelligence/personas/{persona}/profile.md` on a deep run where the persona track also ran.
+- `<intelRoot>/personas/{persona}/profile.md` on a deep run where the persona track also ran.
 - Depth: `quick` or `deep`.
 - A `{company}` product-context file when one was supplied.
 
@@ -54,7 +54,7 @@ Medium confidence or better, or it ships marked "needs validation".
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/profile.md`. Quick profiles carry the summary, the
+Write to `<intelRoot>/competitors/{competitor}/profile.md`. Quick profiles carry the summary, the
 positioning and pricing tables, the top three strengths and weaknesses, and the sources. Deep profiles
 carry every section below.
 
@@ -119,5 +119,5 @@ The brief fails when any box is unchecked:
 ## Handoff
 
 Next brief: `content-pipeline/references/modes.md`, which reads
-`intelligence/competitors/{competitor}/profile.md` at the render stage of the `content-pipeline` skill.
+`<intelRoot>/competitors/{competitor}/profile.md` at the render stage of the `content-pipeline` skill.
 This is the last brief in the market-research competitor track.

@@ -5,9 +5,9 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 
 ## What is skipped
 
-- The plan confirm after the tests have been separately approved. The plan artifact is still published, for the record.
+- The plan confirm after the tests have been separately approved. The plan artifact is still rendered and published (SKILL.md step 4), for the record.
 - Clarifying questions. Pick the reading closest to the ticket/spec text; log it.
-- Waiting on the user for the judge. The finding is applied (conservative default); log it.
+- Waiting on the user for review-panel contradictions and uncertain triage verdicts. The finding is applied (conservative default); log it. Fix-loop items the decider rejects, defers, or cannot decide are not skipped: they stop auto runs too (see below).
 - Ticket approval. One ticket at most per run, and only after the JQL search finds nothing.
 
 ## What is never skipped
@@ -15,7 +15,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 - Test-table approval. Auto starts only after the user explicitly approves the table or its `None: <reason>`.
 - The local gate and the sandbox gate.
 - Scope limits. A run that needs a materially different plan stops with the evidence and reason.
-- Progress-based convergence. Two judged rounds without progress stop with the failure list and resume pointers in `STATE.md`; eight total rounds is the safety ceiling.
+- The capped fix loop. It stops BLOCKED at `MAX_FIX_ROUNDS` (2) rounds, or earlier when a round shrinks neither the open review set nor the failing gate count, with the open items and decider notes in the handoff. Review items the decider rejects, defers, or cannot decide still stop for a human ruling.
 - Bot-review triage stops for the user. Auto never addresses bot findings by itself.
 
 ## The trail — `decisions.md`
@@ -27,7 +27,7 @@ Every judgment call is appended as it happens (crash-safe), one line each:
 Sources: interpretation choices, judge rulings, Opus fallbacks (a Fable role returned
 nothing and was retried on Opus), skipped stages (sandbox MCP unavailable, lens returned
 null), lane-limit stops. The handoff artifact renders this as **Judgment calls**.
-Access-rule sentences are also written here and in the plan artifact before the run continues.
+Access-rule sentences are also written here and to `accessRules` in `plan-data.json`, and the plan artifact is re-rendered (SKILL.md step 4) before the run continues.
 
 ## The state — `STATUS.json`
 

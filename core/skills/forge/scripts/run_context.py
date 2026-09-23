@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -135,6 +136,20 @@ def _section(text: str, heading: str) -> str:
     return "\n".join(lines[start + 1 : end]).strip()
 
 
+_CRITERION = re.compile(r"^(?:[-*](?: \[[ xX]\])?|\d+[.)])\s+")
+
+
+def _criteria(section: str) -> list[str]:
+    items: list[str] = []
+    for line in section.splitlines():
+        marker = _CRITERION.match(line.lstrip())
+        if marker:
+            items.append(line.lstrip()[marker.end() :].strip())
+        elif items and line[:1] in " \t" and line.strip():
+            items[-1] += " " + line.strip()
+    return items
+
+
 def _diff_base(repo: Path, document: dict, base: str | None) -> str:
     if base:
         return str(_git(repo, "merge-base", base, "HEAD")).strip()
@@ -260,11 +275,7 @@ def context(
         "diffLines": len(diff.splitlines()),
         "diffValid": diff_valid,
         "planSummary": _section(plan, "Summary") or plan[:4000],
-        "criteria": [
-            line.removeprefix("- [ ] ").removeprefix("- ").strip()
-            for line in _section(plan, "Acceptance Criteria").splitlines()
-            if line.strip().startswith("-")
-        ],
+        "criteria": _criteria(_section(plan, "Acceptance Criteria")),
         "checklist": (references / "review-checklist.md").read_text(encoding="utf-8"),
         "standards": (references / "code-standards.md").read_text(encoding="utf-8"),
         "testPaths": list(dict.fromkeys(tests)) or ["tests/unit"],

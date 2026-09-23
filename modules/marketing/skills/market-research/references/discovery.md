@@ -11,7 +11,7 @@ company, its products, its audience, its pricing signals, and its public proof.
   of the brief then runs once per confirmed competitor.
 - `{company}`, `{product}` and `{audience}` as the skill resolved them.
 - Depth: `quick` or `deep`.
-- The existing `intelligence/competitors/{competitor}/discovery.md`, when one exists, so this run records
+- The existing `<intelRoot>/competitors/{competitor}/discovery.md`, when one exists, so this run records
   what changed rather than restating it.
 
 ## Evidence and confidence
@@ -33,19 +33,19 @@ Medium needs one strong tier 2 source or several tier 3 sources; everything else
 ## Steps
 
 0. **Seed the competitor list when none was supplied.** From the business idea, write the category words
-   `{audience}` would search, then read those search results, the matching category pages on G2,
-   TrustRadius and Capterra, and the "alternatives" pages of the obvious incumbents. Return five to eight
-   candidates, each with a name, a website and one line on why it competes with `{company} {product}`,
-   ranked by overlap. The ranking is an inference; mark it as one. Hand the list back for confirmation and
-   run the steps below only on the competitors that come back confirmed.
+   `{audience}` would search, then read those search results, the matching category pages on review
+   platforms (G2, TrustRadius, Capterra), and the "alternatives" pages of the obvious incumbents. Return
+   five to eight candidates, each with a name, a website and one line on why it competes with
+   `{company} {product}`, ranked by overlap. The ranking is an inference; mark it as one. Hand the list
+   back for confirmation and run the steps below only on the competitors that come back confirmed.
 1. **Check for a prior run.** Read the existing discovery file if there is one and note its date. Focus
    this run on what has appeared since.
 2. **Map the site.** Use the site-mapping tool on the competitor website. Save the URL of the homepage,
    about page, pricing page, product and feature pages, partner or reseller page, careers page, blog or
    resource centre, customer stories, and the demo or contact page.
-3. **Find third-party sources.** Search review platforms (G2, TrustRadius, Capterra), category forums,
-   professional networks such as LinkedIn, community threads such as Reddit, and trade publications that
-   cover `{audience}`. Record one URL per source, not a summary.
+3. **Find third-party sources.** Search review platforms (G2, TrustRadius, Capterra), professional
+   networks (LinkedIn), community forums (Reddit), and trade publications that cover `{audience}`.
+   Record one URL per source, not a summary.
 4. **Collect company context.** Founding date, headquarters, approximate headcount, funding status, named
    leadership, and the market segments they say they serve. Each fact gets a source.
 5. **Note the first impressions.** What the site claims the category is, who it speaks to, and where it
@@ -58,7 +58,7 @@ competitor is a listed company. Skip either when the source is unavailable and s
 
 ## Output template
 
-Write to `intelligence/competitors/{competitor}/discovery.md`. Use the actual current date; never copy a
+Write to `<intelRoot>/competitors/{competitor}/discovery.md`. Use the actual current date; never copy a
 date from an example.
 
 ```markdown
@@ -129,6 +129,6 @@ The brief fails when any box is unchecked:
 
 ## Handoff
 
-Next brief: `positioning.md`, which reads `intelligence/competitors/{competitor}/discovery.md` for the
+Next brief: `positioning.md`, which reads `<intelRoot>/competitors/{competitor}/discovery.md` for the
 prioritised URL list. On a deep run the same file also seeds `sales-intel.md`, `voice-of-customer.md`,
 `seo-content.md` and `internal-sources.md`.

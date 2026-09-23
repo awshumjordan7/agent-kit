@@ -1,208 +1,275 @@
 <!--
-  Rendered by a worker from <runDir>/qa-data.json; the main session writes the data file
-  and never edits the HTML.
-  Page placeholders -> qa-data.json key:
-    TICKET                -> ticket
-    SHORT_TITLE            -> shortTitle (2-4 words)
-    DATE                   -> date
-    TIER                   -> tier
-    BRANCH                 -> branch
-    SANDBOX_ID              -> sandboxId
-    PREVIEW_URL             -> previewUrl
-    ROOT_LOGIN_EMAIL         -> rootLoginEmail
-    ROOT_LOGIN_PASSWORD      -> rootLoginPassword
-    ADMIN_CREDS              -> adminCreds
-    USERS_ROWS_HTML          -> one row per item in users[] (role, email, note); users[] is
-                                 optional and defaults to [] (Users card omitted when empty).
-                                 The card is wrapped in USERS_SECTION_START / USERS_SECTION_END
-                                 HTML comment markers in the template; the render script drops
-                                 everything between them (markers included) when users[] is
-                                 empty, otherwise fills USERS_ROWS_HTML and strips just the two
-                                 marker comments.
-    JIRA_TICKET_ROWS_HTML    -> one row per item in jiraTickets[] (key, url, title, role)
-    LINKS_HTML               -> one <li> per item in links[] (label, url)
-    CONTEXT_ITEMS_HTML       -> one <li> per string in contextItems[]; backtick spans render as
-                                 copyable code (see "Copyable code spans" below)
-    QA_ITEMS_HTML            -> one <details> per item in qaItems[]
-                                 Required: title, ticketKey, ticketUrl, before, steps[], expected,
-                                 evidence. Optional: pr (default "" = unlabelled), screenGroup
-                                 (default "Other"), whatChanged (functional + visual change;
-                                 default "" = row omitted), why
-                                 (default "" = row omitted), clickPass (default absent = not run),
-                                 and id (default = 1-based index as a string).
-                                 clickPass is {status: "PASS" | "FAIL" | "SKIP" | "PENDING", note:
-                                 string, screenshot: string (path or URL, may be "")}; omit its
-                                 row when absent and omit its link when screenshot is "". PENDING
-                                 pill text is "pending", muted grey (reuses the skip/none colour);
-                                 the summary strip counts pending separately from SKIP.
-                                 Backtick spans in before, steps[], expected, and evidence render
-                                 as copyable code (see "Copyable code spans" below).
-    WHAT_CHANGED_HTML        -> handoff.whatChanged
-    GATE_RESULTS_HTML        -> handoff.gateResults
-    REVIEW_SCORES_HTML       -> handoff.reviewScores
-    OPEN_FINDINGS_HTML       -> handoff.openFindings
-    BOT_VERDICTS_HTML        -> handoff.botVerdicts
-    JUDGMENT_CALLS_HTML      -> handoff.judgmentCalls
-    FOLLOWUPS_HTML           -> handoff.followUps
-    PR_LINKS_HTML            -> handoff.prLinks
-  Access card rows. Each button's data-copy is filled once with the row's placeholder; the
-  inline script copies that value into the visible cell (and into href, for Preview URL):
-    <tr class="copy-row"><th>Preview URL</th><td><a class="copy-value" data-role="value"
-    href="#" target="_blank" rel="noopener"></a></td><td><button type="button" class="copy-btn"
-    data-copy="{{PREVIEW_URL}}">Copy</button></td></tr>
-    <tr class="copy-row"><th>Login email</th><td><span class="copy-value" data-role="value">
-    </span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_EMAIL}}">
-    Copy</button></td></tr>
-  (Password and Admin creds rows repeat the Login email markup with ROOT_LOGIN_PASSWORD and
-  ADMIN_CREDS.)
-  Users card, directly after the Access card. Omitted entirely when users[] is empty. One row
-  per item in users[] (role, email, note optional). The row reuses the Access card's
-  copy-row class so the same script fills the value and wires the button; no credential
-  column of any kind:
-    <tr class="copy-row"><td>{{role}}</td><td><span class="copy-value" data-role="value"></span></td>
-    <td><button type="button" class="copy-btn" data-copy="{{email}}">Copy</button></td>
-    <td>{{note}}</td></tr>
-  Jira ticket row markup, one per item in jiraTickets[]:
-    <tr><td><a href="{{url}}">{{key}}</a></td><td>{{title}}</td><td>{{role}}</td></tr>
-  Copyable code spans: any text wrapped in single backticks inside qaItems[] (before, steps[],
-  expected, evidence) or contextItems[] renders as
-  <code class="copy-code">text</code><button type="button" class="copy-btn copy-code-btn"
-  data-copy="text">Copy</button>, with the code text HTML-escaped first. One delegated click
-  handler copies the button's data-copy and reuses the Access card's copy feedback (swap the
-  label to "Copied" and disable briefly).
-  QA item markup, one per item in qaItems[]; N is the 1-based index. Omit the What changed and Why
-  pairs when empty. Omit Click pass when clickPass is absent and its screenshot link when empty.
-  Use status-none/not run when clickPass is absent; otherwise use the lowercase status in the
-  class and the uppercase status as the label. data-status carries the clickPass status verbatim
-  in uppercase (PASS, FAIL, SKIP, PENDING), or `none` when absent; the pill class uses the
-  lowercase form. PENDING is the one exception to "uppercase status as the label": its pill text
-  is the lowercase word "pending", not "PENDING".
-  Items are collapsed by default (no open attribute):
-    <details class="qa-item" data-id="{{id}}" data-pr="{{pr}}" data-group="{{screenGroup}}" data-status="{{clickPass.status or 'none'}}">
-    <summary><span class="qa-num">{{N}}.</span> <span class="qa-title">{{TITLE}}</span>
-    <span class="qa-badges"><span class="pill pr">{{pr}}</span><span class="pill group">{{screenGroup}}</span><span class="pill status status-pass|status-fail|status-skip|status-pending|status-none">PASS|FAIL|SKIP|pending|not run</span></span>
-    <label class="verify"><input type="checkbox" class="verify-toggle"> verified</label></summary>
-    <dl><dt>Ticket</dt><dd><a href="{{ticketUrl}}">{{KEY}}</a></dd>
-    <dt>Before</dt><dd>{{before}}</dd>
-    <dt>What changed</dt><dd>{{whatChanged}}</dd>
-    <dt>Why</dt><dd>{{why}}</dd>
-    <dt>Steps</dt><dd><ol><li>{{step}}</li>...</ol></dd>
-    <dt>Expected</dt><dd>{{expected}}</dd>
-    <dt>Click pass</dt><dd>{{clickPass.status}} - {{clickPass.note}} <a href="{{clickPass.screenshot}}">screenshot</a></dd>
-    <dt>Evidence</dt><dd>{{evidence}}</dd>
-    </dl></details>
-  Two-phase render. Render 1 happens right after the PR push: every clickPass is
-  {status: "PENDING", note: "steward click pass pending", screenshot: ""} and every handoff.*
-  key is empty. Render 2 happens at handoff: the same file is replaced with the steward's
-  PASS/FAIL rows and the filled-in handoff content.
+  Forge QA checklist. Render it, never hand-fill it:
+    python3 ~/.claude/skills/forge/scripts/render_artifact.py qa \
+      --data <runDir>/qa-data.json --out <runDir>/qa-artifact.html
+  The main session or the qaDraft worker writes qa-data.json; the renderer removes this comment,
+  fills every slot, and exits 1 when a slot is left unfilled.
+
+  qa-data.json keys (placeholder in brackets):
+    ticket [TICKET], shortTitle [SHORT_TITLE] (2-4 words), date [DATE], tier [TIER],
+    branch [BRANCH], sandboxId [SANDBOX_ID]
+    previewUrl [PREVIEW_URL], rootLoginEmail [ROOT_LOGIN_EMAIL],
+    rootLoginPassword [ROOT_LOGIN_PASSWORD], adminCreds [ADMIN_CREDS]
+                        Access card rows, each with a Copy button; "" until the sandbox exists.
+    users [USERS_ROWS_HTML]
+                        Optional, default []. Objects {role, email, note?}; one copyable row
+                        each. Never a password, token, or any credential column. Empty: the
+                        block between USERS_SECTION_START and USERS_SECTION_END is dropped.
+    jiraTickets [JIRA_TICKET_ROWS_HTML]
+                        Objects {key, url, title, role}. Empty: no Jira tickets section.
+    links [LINKS_HTML]  Objects {label, url} or [label, url] pairs; links table with Copy.
+    contextItems [CONTEXT_ITEMS_HTML]
+                        Strings. Empty: no Useful context section.
+    qaItems [QA_ITEMS_HTML]
+                        One collapsed <details class="qa-item"> each. Required: title,
+                        ticketKey, ticketUrl, before, steps[], expected, evidence. Optional:
+                        pr (default "", shown as Unlabelled), screenGroup (default "Other"),
+                        whatChanged and why (default "", row omitted), id (default the
+                        1-based index as a string), clickPass (default absent = "not run").
+                        clickPass is {status: "PASS" | "FAIL" | "SKIP" | "PENDING", note,
+                        screenshot (path or URL, may be "")}. PENDING shows as "pending".
+    handoff             {whatChanged [WHAT_CHANGED_HTML], gateResults [GATE_RESULTS_HTML],
+                        reviewScores [REVIEW_SCORES_HTML], openFindings [OPEN_FINDINGS_HTML],
+                        botVerdicts [BOT_VERDICTS_HTML], judgmentCalls [JUDGMENT_CALLS_HTML],
+                        followUps [FOLLOWUPS_HTML], prLinks [PR_LINKS_HTML]}. Plain text or
+                        simple markdown. An empty key hides its row; all empty hides Handoff.
+  Derived, not data keys: STATUS (PASS / FAIL / pending counts from clickPass) and TOC.
+
+  Copyable code spans: text in single backticks inside qaItems (before, whatChanged, why,
+  steps, expected, evidence) and contextItems renders as <code class="copy-code"> plus a
+  Copy button. Every other value is HTML-escaped.
+
+  Verified checkboxes persist per viewer in localStorage under qa-verified:<ticket>:<sandbox>.
+
+  Two-phase render. Render 1 runs right after the PR push: every clickPass is
+  {status: "PENDING", note: "steward click pass pending", screenshot: ""} and every handoff
+  key is "". Render 2 runs at handoff: the same file is re-rendered from qa-data.json with the
+  steward's PASS/FAIL rows and the handoff text.
 -->
 <title>{{TICKET}} {{SHORT_TITLE}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-  :root { --ground:#F2F4F7; --surface:#FFFFFF; --surface-2:#E9EDF2; --ink:#1C2128; --ink-2:#4B5563; --muted:#6B7480; --line:#D6DCE4; --steel:#2F5D8A; --ember:#C8501E; --ember-soft:#FBE7DC; --code:#EEF1F5; --link:#1A56DB; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ground:#14171C; --surface:#1C2129; --surface-2:#232A34; --ink:#E6E9EE; --ink-2:#B6BEC9; --muted:#8E98A5; --line:#2C333D; --steel:#7FAEE0; --ember:#F07A3E; --ember-soft:#3A2419; --code:#10131A; --link:#8AB4F8; } }
-  :root[data-theme="dark"] { --ground:#14171C; --surface:#1C2129; --surface-2:#232A34; --ink:#E6E9EE; --ink-2:#B6BEC9; --muted:#8E98A5; --line:#2C333D; --steel:#7FAEE0; --ember:#F07A3E; --ember-soft:#3A2419; --code:#10131A; --link:#8AB4F8; }
-  body { margin:0; background:var(--ground); color:var(--ink); font-family: Georgia, "Source Serif 4", serif; font-size:17px; line-height:1.55; }
-  a, a:visited { color:var(--link); text-decoration-color:var(--line); } a:hover { text-decoration-color:var(--link); }
-  h1,h2,h3 { font-family: "Helvetica Neue", Arial, sans-serif; margin:0; line-height:1.15; text-wrap:balance; }
-  h1 { font-size:2.2rem; } h2 { font-size:1.35rem; } h3 { font-size:1.05rem; }
-  code { font-family: ui-monospace, Menlo, monospace; font-size:0.85em; background:var(--code); padding:0.1em 0.35em; border-radius:3px; }
-  .page { max-width:900px; margin:0 auto; padding:0 clamp(16px,4vw,40px) 80px; }
-  header { padding:48px 0 24px; border-bottom:2px solid var(--ink); display:grid; gap:12px; }
-  .meta { display:flex; flex-wrap:wrap; gap:8px 20px; color:var(--muted); font-size:0.9rem; font-family:"Helvetica Neue",Arial,sans-serif; }
-  .eyebrow { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); }
-  section { padding-top:36px; display:grid; gap:12px; }
-  .prose { max-width:66ch; display:grid; gap:12px; color:var(--ink-2); }
-  .prose p { margin:0; }
-  ul,ol { margin:0; padding-left:1.3em; display:grid; gap:6px; color:var(--ink-2); }
-  .table-wrap { overflow-x:auto; border:1px solid var(--line); background:var(--surface); }
-  table { border-collapse:collapse; width:100%; font-size:0.92rem; }
-  th,td { text-align:left; vertical-align:top; padding:9px 12px; border-bottom:1px solid var(--line); }
-  th { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.74rem; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); white-space:nowrap; }
-  tr:last-child td, tr:last-child th { border-bottom:none; }
-  .pill { display:inline-block; font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; padding:2px 8px; border-radius:2px; background:var(--surface-2); color:var(--ink-2); }
-  .copy-value { font-family: ui-monospace, Menlo, monospace; font-size:0.88em; word-break:break-all; color:var(--ink); }
-  .copy-btn { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.78rem; font-weight:700; padding:5px 12px; border:1px solid var(--steel); background:var(--surface); color:var(--steel); border-radius:3px; cursor:pointer; white-space:nowrap; }
-  .copy-btn:hover { background:var(--surface-2); }
-  .copy-btn[disabled] { opacity:0.7; cursor:default; }
-  .copy-code-btn { font-size:0.68rem; padding:1px 6px; margin-left:4px; vertical-align:middle; }
-  .qa-strip { position:sticky; top:0; z-index:2; display:grid; gap:6px; padding:8px 0; background:var(--ground); font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.78rem; }
-  .qa-counts,.qa-filter-rows,.filter-row,.qa-controls { display:flex; align-items:center; flex-wrap:wrap; gap:5px 8px; }
-  .qa-counts { color:var(--ink-2); }
-  .filter-label { min-width:48px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; }
-  .chip { border:1px solid var(--line); border-radius:999px; padding:3px 9px; background:var(--surface); color:var(--ink-2); font:inherit; cursor:pointer; }
-  .chip[aria-pressed="true"] { border-color:var(--ember); background:var(--ember-soft); color:var(--ink); }
-  .qa-controls button { border:1px solid var(--steel); border-radius:3px; padding:3px 9px; background:var(--surface); color:var(--steel); font:inherit; font-weight:700; cursor:pointer; }
-  .qa-controls label { margin-right:auto; }
-  .qa-items { display:grid; gap:10px; }
-  .qa-item { background:var(--surface); border:1px solid var(--line); padding:0; }
-  .qa-item.hidden { display:none; }
-  .qa-item > summary { display:flex; align-items:center; gap:7px; min-width:0; padding:11px 14px; white-space:nowrap; list-style:none; }
-  .qa-item > summary::-webkit-details-marker { display:none; }
-  .qa-item > summary::before { content:"\25B8"; color:var(--muted); }
-  .qa-item[open] > summary::before { content:"\25BE"; }
-  .qa-num { flex:none; color:var(--muted); }
-  .qa-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-  .qa-badges { display:flex; flex:none; gap:5px; margin-left:auto; }
-  .status-pass { color:var(--steel); } .status-fail { color:var(--ember); } .status-skip,.status-none,.status-pending { color:var(--muted); }
-  .verify { flex:none; font-size:0.78rem; font-weight:400; color:var(--ink-2); cursor:pointer; }
-  .qa-item.is-verified .qa-title { color:var(--muted); }
-  .qa-item dl { margin:0; padding:4px 38px 14px; display:grid; gap:10px; }
-  .qa-item dt { font-family:"Helvetica Neue",Arial,sans-serif; font-size:0.72rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
-  .qa-item dd { margin:2px 0 0; color:var(--ink-2); }
-  .qa-item ol { margin:0; }
-  details { background:var(--surface); border:1px solid var(--line); padding:10px 14px; }
-  summary { font-family:"Helvetica Neue",Arial,sans-serif; font-size:1.05rem; font-weight:700; cursor:pointer; }
-  details[open] summary { margin-bottom:8px; }
-  .qa-item[open] > summary { margin-bottom:0; }
+:root {
+  --ground: #f4f5f2;
+  --surface: #ffffff;
+  --ink: #1c2321;
+  --muted: #5a6560;
+  --rule: #dce1dc;
+  --accent: #34539c;
+  --accent-soft: #e6ebf6;
+  --code-bg: #eceee9;
+  --warn: #8a5a00;
+  --warn-soft: #fbf1dc;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #121614;
+    --surface: #1a1f1d;
+    --ink: #e2e7e3;
+    --muted: #9aa59f;
+    --rule: #2c3431;
+    --accent: #93acec;
+    --accent-soft: #1f2840;
+    --code-bg: #232a27;
+    --warn: #e8c071;
+    --warn-soft: #2e2615;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #121614;
+  --surface: #1a1f1d;
+  --ink: #e2e7e3;
+  --muted: #9aa59f;
+  --rule: #2c3431;
+  --accent: #93acec;
+  --accent-soft: #1f2840;
+  --code-bg: #232a27;
+  --warn: #e8c071;
+  --warn-soft: #2e2615;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 15px/1.6 var(--sans);
+  padding: 0 16px;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 32px 64px; display: grid; gap: 28px; min-width: 0; }
+.wrap > * { min-width: 0; }
+header { display: grid; gap: 6px; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: 28px; line-height: 1.2; margin: 0; font-weight: 600; text-wrap: balance; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; color: var(--muted); font-size: 13px; }
+.pill { display: inline-block; font: 500 11px/1.4 var(--mono); letter-spacing: .04em; padding: 2px 8px; border-radius: 4px; background: var(--code-bg); color: var(--ink); }
+.status {
+  background: var(--accent-soft); color: var(--ink);
+  border-radius: 6px; padding: 10px 14px; font-weight: 500;
+}
+.status b { color: var(--accent); font-weight: 600; margin-right: 6px; }
+h2 { font-size: 19px; font-weight: 600; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--rule); text-wrap: balance; }
+h3 { font-size: 16px; font-weight: 600; margin: 0 0 8px; color: var(--accent); text-wrap: balance; }
+p { margin: 0 0 12px; max-width: 72ch; }
+.muted { color: var(--muted); }
+.warn { color: var(--warn); }
+code {
+  font-family: var(--mono); font-size: .86em; background: var(--code-bg);
+  padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere;
+}
+pre { margin: 0 0 12px; padding: 10px 12px; background: var(--code-bg); border-radius: 6px; overflow-x: auto; }
+pre code { padding: 0; background: none; overflow-wrap: normal; white-space: pre; }
+.tbl { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; margin-bottom: 12px; }
+.tbl:last-child { margin-bottom: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+tbody tr:last-child td { border-bottom: 0; }
+th { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--ground); }
+td:first-child { font-weight: 500; }
+.review td:first-child { width: 14%; }
+.review td:last-child { width: 24%; color: var(--muted); }
+.pending th { background: var(--warn-soft); color: var(--warn); }
+.pending td:last-child { color: var(--warn); width: 34%; }
+table.numbered td.num { width: 3em; color: var(--accent); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+table.numbered td:last-child { font-weight: 400; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
+section { scroll-margin-top: 16px; min-width: 0; }
+ul.rows { list-style: none; margin: 0 0 12px; padding: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+ul.rows li { padding: 8px 12px 8px 26px; border-bottom: 1px solid var(--rule); position: relative; }
+ul.rows li:last-child { border-bottom: 0; }
+ul.rows li::before { content: ""; position: absolute; left: 12px; top: 1.05em; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.sub { display: grid; gap: 4px; margin-bottom: 18px; }
+.sub:last-child { margin-bottom: 0; }
+.links td:first-child { white-space: nowrap; }
+.links td:last-child { width: 1%; }
+.next { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+a { color: var(--accent); overflow-wrap: anywhere; }
+.copy-btn {
+  font: 500 12px/1 var(--sans); color: var(--accent); background: transparent;
+  border: 1px solid var(--rule); border-radius: 4px; padding: 5px 9px; cursor: pointer; white-space: nowrap;
+}
+.copy-btn:hover { background: var(--accent-soft); }
+.copy-btn[disabled] { opacity: .7; cursor: default; }
+button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 560px) {
+  h1 { font-size: 23px; }
+  th, td { padding: 7px 9px; }
+  .review td:first-child, .review td:last-child { width: auto; }
+  .links td:first-child { white-space: normal; }
+}
+:root { --good: #2f6b3a; --bad: #a33a2a; --bad-soft: #f8e4df; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --good: #8fcf9a; --bad: #f09a8a; --bad-soft: #3a211c; } }
+:root[data-theme="dark"] { --good: #8fcf9a; --bad: #f09a8a; --bad-soft: #3a211c; }
+.access th { width: 9em; white-space: nowrap; font: 500 11px/1.3 var(--mono); }
+.access td:last-child, .users td:nth-child(3) { width: 1%; }
+.copy-value { font-family: var(--mono); font-size: .88em; word-break: break-all; color: var(--ink); }
+.copy-code-btn { font-size: 11px; padding: 2px 6px; margin-left: 4px; vertical-align: middle; }
+.status .status-pass, .status .status-fail { margin: 0; }
+.status-pass { color: var(--good); } .status-fail { color: var(--bad); } .status-skip, .status-none, .status-pending { color: var(--muted); }
+.qa-strip { position: sticky; top: 0; z-index: 2; display: grid; gap: 6px; padding: 8px 0; margin-bottom: 10px; background: var(--ground); font-size: 13px; }
+.qa-counts, .qa-filter-rows, .filter-row, .qa-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; }
+.qa-counts { color: var(--muted); font-variant-numeric: tabular-nums; }
+.filter-label { min-width: 48px; color: var(--muted); font: 500 11px/1.3 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.chip { border: 1px solid var(--rule); border-radius: 999px; padding: 3px 10px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; }
+.chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.qa-controls button { border: 1px solid var(--rule); border-radius: 4px; padding: 3px 9px; background: var(--surface); color: var(--accent); font: inherit; font-weight: 500; cursor: pointer; }
+.qa-controls label { margin-right: auto; }
+.qa-items { display: grid; gap: 8px; }
+.qa-item { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+.qa-item.hidden { display: none; }
+.qa-item > summary { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 14px; white-space: nowrap; list-style: none; cursor: pointer; font-weight: 500; }
+.qa-item > summary::-webkit-details-marker { display: none; }
+.qa-item > summary::before { content: "\25B8"; color: var(--muted); }
+.qa-item[open] > summary::before { content: "\25BE"; }
+.qa-num { flex: none; color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.qa-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.qa-badges { display: flex; flex: none; gap: 5px; margin-left: auto; }
+.verify { flex: none; font-size: 13px; font-weight: 400; color: var(--muted); cursor: pointer; }
+.qa-item.is-verified .qa-title { color: var(--muted); }
+.qa-item dl { margin: 0; padding: 4px 38px 14px; display: grid; gap: 10px; border-top: 1px solid var(--rule); padding-top: 12px; }
+.qa-item dt { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.qa-item dd { margin: 2px 0 0; }
+.qa-item ol { margin: 0; padding-left: 1.3em; }
+details.handoff { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; }
+details.handoff + details.handoff { margin-top: 8px; }
+details.handoff > summary { font-weight: 600; cursor: pointer; }
+details.handoff[open] > summary { margin-bottom: 8px; }
+.context li { overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .qa-item > summary { flex-wrap: wrap; white-space: normal; }
+  .qa-title { flex-basis: calc(100% - 3em); }
+  .qa-badges { margin-left: 1.4em; flex-wrap: wrap; }
+  .qa-item dl { padding: 12px 14px 14px; }
+  .access th { width: auto; white-space: normal; }
+}
 </style>
-<div class="page">
+
+<div class="wrap">
   <header>
-    <span class="eyebrow">Manual QA checklist</span>
+    <div class="eyebrow">Manual QA checklist</div>
     <h1>{{TICKET}} - {{SHORT_TITLE}}</h1>
     <div class="meta"><span>{{DATE}}</span><span class="pill">tier: {{TIER}}</span><span class="pill">branch: {{BRANCH}}</span><span class="pill">sandbox: {{SANDBOX_ID}}</span></div>
   </header>
-  <section>
+
+  <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
+
+  <nav class="toc" aria-label="QA sections">{{TOC}}</nav>
+
+  <section id="access" data-toc="Access">
     <h2>Access card</h2>
-    <div class="table-wrap">
-      <table>
-        <tbody>
-          <tr class="copy-row"><th>Preview URL</th><td><a class="copy-value" data-role="value" href="#" target="_blank" rel="noopener"></a></td><td><button type="button" class="copy-btn" data-copy="{{PREVIEW_URL}}">Copy</button></td></tr>
-          <tr class="copy-row"><th>Login email</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_EMAIL}}">Copy</button></td></tr>
-          <tr class="copy-row"><th>Password</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_PASSWORD}}">Copy</button></td></tr>
-          <tr class="copy-row"><th>Admin creds</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ADMIN_CREDS}}">Copy</button></td></tr>
-        </tbody>
-      </table>
-    </div>
+    <div class="tbl"><table class="access">
+      <tbody>
+        <tr class="copy-row"><th>Preview URL</th><td><a class="copy-value" data-role="value" href="#" target="_blank" rel="noopener"></a></td><td><button type="button" class="copy-btn" data-copy="{{PREVIEW_URL}}">Copy</button></td></tr>
+        <tr class="copy-row"><th>Login email</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_EMAIL}}">Copy</button></td></tr>
+        <tr class="copy-row"><th>Password</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ROOT_LOGIN_PASSWORD}}">Copy</button></td></tr>
+        <tr class="copy-row"><th>Admin creds</th><td><span class="copy-value" data-role="value"></span></td><td><button type="button" class="copy-btn" data-copy="{{ADMIN_CREDS}}">Copy</button></td></tr>
+      </tbody>
+    </table></div>
   </section>
+
   <!--USERS_SECTION_START-->
-  <section>
+  <section id="users" data-toc="Users">
     <h2>Users</h2>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Role</th><th>Email</th><th>Copy</th><th>Note</th></tr></thead>
-        <tbody>{{USERS_ROWS_HTML}}</tbody>
-      </table>
-    </div>
+    <div class="tbl"><table class="users">
+      <thead><tr><th>Role</th><th>Email</th><th>Copy</th><th>Note</th></tr></thead>
+      <tbody>{{USERS_ROWS_HTML}}</tbody>
+    </table></div>
   </section>
   <!--USERS_SECTION_END-->
-  <section>
+
+  <!--JIRA_SECTION_START-->
+  <section id="jira" data-toc="Jira tickets">
     <h2>Jira tickets</h2>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Ticket</th><th>Title</th><th>Role in run</th></tr></thead>
-        <tbody>{{JIRA_TICKET_ROWS_HTML}}</tbody>
-      </table>
-    </div>
+    <div class="tbl"><table>
+      <thead><tr><th>Ticket</th><th>Title</th><th>Role in run</th></tr></thead>
+      <tbody>{{JIRA_TICKET_ROWS_HTML}}</tbody>
+    </table></div>
   </section>
-  <section>
+  <!--JIRA_SECTION_END-->
+
+  <section id="links" data-toc="Links">
     <h2>Links</h2>
-    <ul>{{LINKS_HTML}}</ul>
+    <div class="tbl"><table class="links">
+      <tbody>{{LINKS_HTML}}</tbody>
+    </table></div>
   </section>
-  <section>
+
+  <!--CONTEXT_SECTION_START-->
+  <section id="context" data-toc="Useful context">
     <h2>Useful context</h2>
-    <ul>{{CONTEXT_ITEMS_HTML}}</ul>
+    <ul class="rows context">{{CONTEXT_ITEMS_HTML}}</ul>
   </section>
-  <section>
+  <!--CONTEXT_SECTION_END-->
+
+  <section id="qa-items" data-toc="QA items">
     <h2>QA items</h2>
     <div class="qa-strip">
       <div class="qa-counts" aria-live="polite"></div>
@@ -211,17 +278,20 @@
     </div>
     <div class="qa-items" data-ticket="{{TICKET}}" data-sandbox="{{SANDBOX_ID}}">{{QA_ITEMS_HTML}}</div>
   </section>
-  <section>
+
+  <!--HANDOFF_SECTION_START-->
+  <section id="handoff" data-toc="Handoff">
     <h2>Handoff</h2>
-    <details><summary>What changed</summary><div class="prose">{{WHAT_CHANGED_HTML}}</div></details>
-    <details><summary>Gate results</summary><div class="prose">{{GATE_RESULTS_HTML}}</div></details>
-    <details><summary>Review scores</summary><div class="prose">{{REVIEW_SCORES_HTML}}</div></details>
-    <details><summary>Open findings</summary><div class="prose">{{OPEN_FINDINGS_HTML}}</div></details>
-    <details><summary>Bot review verdicts</summary><div class="prose">{{BOT_VERDICTS_HTML}}</div></details>
-    <details><summary>Judgment calls</summary><div class="prose">{{JUDGMENT_CALLS_HTML}}</div></details>
-    <details><summary>Follow-ups</summary><div class="prose">{{FOLLOWUPS_HTML}}</div></details>
-    <details><summary>PR links</summary><div class="prose">{{PR_LINKS_HTML}}</div></details>
+    <!--WHAT_CHANGED_START--><details class="handoff"><summary>What changed</summary><div class="prose">{{WHAT_CHANGED_HTML}}</div></details><!--WHAT_CHANGED_END-->
+    <!--GATE_RESULTS_START--><details class="handoff"><summary>Gate results</summary><div class="prose">{{GATE_RESULTS_HTML}}</div></details><!--GATE_RESULTS_END-->
+    <!--REVIEW_SCORES_START--><details class="handoff"><summary>Review scores</summary><div class="prose">{{REVIEW_SCORES_HTML}}</div></details><!--REVIEW_SCORES_END-->
+    <!--OPEN_FINDINGS_START--><details class="handoff"><summary>Open findings</summary><div class="prose">{{OPEN_FINDINGS_HTML}}</div></details><!--OPEN_FINDINGS_END-->
+    <!--BOT_VERDICTS_START--><details class="handoff"><summary>Bot review verdicts</summary><div class="prose">{{BOT_VERDICTS_HTML}}</div></details><!--BOT_VERDICTS_END-->
+    <!--JUDGMENT_CALLS_START--><details class="handoff"><summary>Judgment calls</summary><div class="prose">{{JUDGMENT_CALLS_HTML}}</div></details><!--JUDGMENT_CALLS_END-->
+    <!--FOLLOWUPS_START--><details class="handoff"><summary>Follow-ups</summary><div class="prose">{{FOLLOWUPS_HTML}}</div></details><!--FOLLOWUPS_END-->
+    <!--PR_LINKS_START--><details class="handoff"><summary>PR links</summary><div class="prose">{{PR_LINKS_HTML}}</div></details><!--PR_LINKS_END-->
   </section>
+  <!--HANDOFF_SECTION_END-->
 </div>
 <script>
 (function () {
@@ -261,7 +331,7 @@
     });
   });
   document.addEventListener('click', function (event) {
-    var btn = event.target.closest ? event.target.closest('.copy-code-btn') : null;
+    var btn = event.target.closest ? event.target.closest('.copy-code-btn, .copy-link-btn') : null;
     if (!btn) { return; }
     var text = btn.getAttribute('data-copy') || '';
     copyText(text).then(function () {
