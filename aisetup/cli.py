@@ -252,16 +252,22 @@ def _update(args: argparse.Namespace) -> int:
             statuses = check_repositories(profile)
             for status in statuses:
                 print(status.as_json())
-            drifts = check_content(profile, args.home)
-            if drifts:
+            try:
+                items = check_content(profile, args.home, args.layers_root)
+            except ComposeError as error:
+                print(f"agent-kit: {error}", file=sys.stderr)
+                return 5
+            drift_count = sum(1 for item in items if item.drift)
+            if items:
                 print(
-                    f"Managed content: {len(drifts)} managed file(s) differ from the composed tree"
+                    f"Managed content: {drift_count} drift item(s), "
+                    f"{len(items) - drift_count} local edit(s) kept"
                 )
-                for drift in drifts:
-                    print(f"{drift.path}: drift (source: {drift.source})")
+                for item in items:
+                    print(item.line())
             _print_overrides(profile)
             _print_name_warnings(profile, resolve_layers(profile))
-            return 1 if any(status.behind for status in statuses) or drifts else 0
+            return 1 if any(status.behind for status in statuses) or drift_count else 0
         head_before = core_head(profile)
         update_repositories(profile)
         if core_head(profile) != head_before and os.environ.get(REEXEC_ENV) != "1":

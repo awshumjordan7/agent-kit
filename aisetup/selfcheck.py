@@ -59,12 +59,12 @@ def _agent_owner(resolved_layers: ResolvedLayers, filename: str) -> str:
 
 
 def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
-    from aisetup.compose import ComposeError, compose_tree
+    from aisetup.compose import KEPT_STATUSES, ComposeError, compose_tree
     from aisetup.layers import resolve_layers
     from aisetup.manifest import ManifestError
     from aisetup.mcp import McpError, _matches, registration_for_layers
     from aisetup.profile import ProfileError, load_profile
-    from aisetup.update import check_content
+    from aisetup.update import ContentDrift, check_content
 
     home = home.expanduser()
     layers_root = layers_root.expanduser()
@@ -145,20 +145,26 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
         results.append(_skip("installed_agents_match", "valid profile unavailable"))
         results.append(_skip("mcp_registered_set", "valid profile unavailable"))
     else:
+        items: list[ContentDrift] = []
         try:
-            drift = check_content(profile, home)
+            items = check_content(profile, home, layers_root)
         except (ComposeError, OSError) as error:
             results.append(_result("managed_content", False, str(home), str(error)))
         else:
-            paths = ", ".join(item.path for item in drift) or "composed tree matches"
+            drift = [item.line() for item in items if item.drift]
             results.append(
                 _result(
                     "managed_content",
                     not drift,
-                    paths,
+                    ", ".join(drift) or "composed tree matches",
                     None if not drift else "managed files differ",
                 )
             )
+        kept_agents = {
+            Path(item.path).name
+            for item in items
+            if item.path.startswith("agents/") and item.status in KEPT_STATUSES
+        }
 
         try:
             resolved = resolve_layers(profile)
@@ -168,7 +174,9 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
                 mismatches = []
                 for expected in sorted((composed / "agents").glob("*.md")):
                     installed = home / "agents" / expected.name
-                    if installed.is_file() and installed.read_bytes() == expected.read_bytes():
+                    if expected.name in kept_agents or (
+                        installed.is_file() and installed.read_bytes() == expected.read_bytes()
+                    ):
                         continue
                     mismatches.append(
                         f"{expected.name} (owning layer: {_agent_owner(resolved, expected.name)})"
@@ -178,7 +186,8 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
                 _result("installed_agents_match", False, str(home / "agents"), str(error))
             )
         else:
-            evidence = ", ".join(mismatches) or "installed agents match composed layers"
+            kept = [f"kept locally modified: {name}" for name in sorted(kept_agents)]
+            evidence = ", ".join(mismatches + kept) or "installed agents match composed layers"
             results.append(
                 _result(
                     "installed_agents_match",

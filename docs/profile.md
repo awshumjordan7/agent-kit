@@ -31,4 +31,6 @@ profile is loaded. Later layer data overrides earlier values through the normal 
 points somewhere other than `~/.claude`, MCP registration and the self-check's MCP list probe are skipped because
 the Claude CLI writes user-scoped servers to the default home.
 
-On later installs, files that are no longer managed are retired when unchanged and preserved with a notice when locally modified.
+On later installs, files that are no longer managed are retired when unchanged and preserved with a notice when
+locally modified. Managed files you edited are kept, with the kit version written beside them as `<file>.kit-new`.
+`settings.json` keeps your keys through a three-way merge against `~/.ai-setup/settings.base.json`.
