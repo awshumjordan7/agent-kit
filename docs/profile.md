@@ -15,9 +15,9 @@ doctor settings. Schema 1 rejects unknown keys so misspelled settings fail early
 | `auto_update` | allow the daily hook to apply available updates |
 
 Agent settings have two sources: the agent file's frontmatter and the profile's `agents.<name>` entry. At install
-the profile wins: each `model`, `maxTurns`, or `effort` it sets replaces the frontmatter value. A `null` value or an
-omitted key means no override: the repo default from `core/profile.default.json` applies when one exists, otherwise
-the frontmatter value stays.
+the profile wins: each `model`, `maxTurns`, or `effort` it sets replaces the frontmatter value. An omitted key, or a
+`null` `maxTurns` or `effort`, means no override: the repo default from `core/profile.default.json` applies when one
+exists, otherwise the frontmatter value stays. `model` cannot be `null`; it must be a string.
 
 `install` and `update` save only overrides under `agents` and `forge`: a value equal to the repo default is left out
 of `profile.json`, so later default changes reach every update. Other sections are saved in full. If a pruned save
