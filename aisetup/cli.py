@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from aisetup import __version__
-from aisetup.compose import ACTION_KEEP, ComposeError, install_tree, prepare_install
+from aisetup.compose import (
+    ACTION_KEEP,
+    CODEX_CONFIG_PATH,
+    ComposeError,
+    install_tree,
+    prepare_install,
+)
 from aisetup.denylist import load_entries, scan_tree
 from aisetup.deps import (
     CORE_DEPENDENCIES,
@@ -172,13 +178,18 @@ def _install(args: argparse.Namespace) -> int:
                 print(f"{path} ({status})")
             for item in plan.auxiliary:
                 if item.action == ACTION_KEEP:
-                    print(f"{item.target} ({item.status})")
+                    reason = f"; key merge skipped: {item.reason}" if item.reason else ""
+                    print(f"{item.target} ({item.status}{reason})")
             print("Settings changes:")
             if plan.settings_status is not None:
                 print(f"settings.json: {plan.settings_status}")
             for change in plan.settings_changes:
                 detail = f" ({change.detail})" if change.detail else ""
                 print(f"{change.kind} {change.key_path}{detail}")
+            if plan.codex_config is not None:
+                for change in plan.codex_config.changes:
+                    detail = f" ({change.detail})" if change.detail else ""
+                    print(f"{CODEX_CONFIG_PATH} {change.kind} {change.key_path}{detail}")
             print("MCP commands:")
             plans, retire = registration_for_layers(resolved, profile)
             for command in register_servers(plans, home=args.home, dry_run=True, retire=retire):

@@ -7,8 +7,8 @@ CLI. Some modules also require Node.js, Codex, or GitHub CLI.
 ## Install
 
 ```sh
-git clone https://github.com/awshumjordan7/agent-kit.git ~/agent-kit
-cd ~/agent-kit
+git clone https://github.com/awshumjordan7/agent-kit.git ~/Projects/personal/agent-kit
+cd ~/Projects/personal/agent-kit
 python3 install.py install --yes
 ```
 
