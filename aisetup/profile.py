@@ -48,10 +48,7 @@ DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
 CODEX_DOCTOR_KEYS = {"agents_md", "exclude_sections", "exclude_bullets"}
 METRICS_KEYS = {"since", "until", "timezone", "transcripts"}
 CODEX_ROLE_DEFAULTS = {
-    "impl": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"},
-    "quick-impl": {"provider": "codex", "model": "gpt-5.6-luna", "effort": "high"},
-    "review": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"},
-    "plan-review": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"},
+    "review": {"provider": "codex", "model": "gpt-6-sol", "effort": "xhigh"},
 }
 
 

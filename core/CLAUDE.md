@@ -187,13 +187,13 @@ When spawning sub-agents for multi-step workflows:
 | Code implementation | Opus 5.5 at high (`impl`); medium for small, fully specified work (`quick-impl`, which also runs most fix rounds) | The plan already made the design decisions |
 | Code review (Claude side) | Opus 5.5 at xhigh, fresh sub-agent | Independent of the planner; catches different issues than Codex |
 | Code review (Codex side) | Codex CLI, gpt-6-sol at xhigh (`review` role) | Adversarial independence; the only Codex use |
-| Research, scouting, file reads | Opus 5.5 at medium (`scout`, `Explore`) | Fan-out reads; only the conclusion comes back |
+| Research, scouting, file reads | Opus 5.5 at medium (`scout`) | Fan-out reads; only the conclusion comes back |
 | QA, test running, Semgrep, mechanical edits | Opus 5.5 at medium (`worker`) | Mechanical tool execution |
 | Documentation updates | Opus 5.5 at medium (`worker`) | Mechanical writing |
 | Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
 | Local gate in Forge `full` mode (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed. `none` mode spawns no gate agent. |
 | Browser QA | Sonnet | Keeps browser output and credentials out of the main session |
 
-Codex CLI (`codex exec`) runs only the `review` role -- it has full MCP access (engineering-MCP, semgrep, context7). Model per role comes from `~/.claude/skills/forge/forge.config.json`; never hard-code a model name elsewhere.
+Codex CLI (`codex exec`) runs only the `review` role -- it runs without MCP access. Models for the configurable forge roles come from `~/.claude/skills/forge/forge.config.json`; never hard-code them elsewhere.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the
 session model (Opus) when `model` is omitted — never let that happen. Prefer the custom `scout` and `worker` agents (Opus at medium) and `shipper` (Sonnet). The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.

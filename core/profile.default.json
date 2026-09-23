@@ -25,9 +25,9 @@
     "forge": {
       "roles": {
         "impl": {"provider": "claude", "model": "opus", "effort": "high"},
-        "quick-impl": {"provider": "claude", "model": "opus", "effort": "high"},
-        "review": {"provider": "claude", "model": "opus", "effort": "high"},
-        "plan-review": {"provider": "claude", "model": "opus", "effort": "high"}
+        "quick-impl": {"provider": "claude", "model": "opus", "effort": "medium"},
+        "review": {"provider": "codex", "model": "gpt-6-sol", "effort": "xhigh"},
+        "plan-review": {"provider": "claude", "model": "opus", "effort": "xhigh"}
       },
       "stages": {"sandbox": false, "ff_review": false, "qa_login": false},
       "thresholds": {"quickReviewThreshold": 8},
