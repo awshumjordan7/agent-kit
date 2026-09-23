@@ -60,6 +60,8 @@ Top-level `roles` selects provider, model, and effort:
 
 The implementation provider comes from `roles`: `provider: claude` uses the `claude-implementer` agent, and `provider: codex` uses `codex-exec.sh`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
 
+To run an already confirmed plan, follow `references/implement-mode.md`.
+
 ## Optional stages
 
 Core ships optional stages disabled. An overlay may supply and enable:
@@ -73,7 +75,7 @@ Core ships optional stages disabled. An overlay may supply and enable:
 
 - The user confirms the plan before implementation.
 - The user separately approves the plan's test table, or its `None: <reason>`, before implementation.
-- Gate behavior is repository-specific: `gate.mode` defaults to `full`; `none` spawns no gate agent and runs no tests, lint, typecheck, migrations, Semgrep, or parity commands. Personal repositories use `none` and have no tests.
+- Gate behavior is repository-specific: `gate.mode` defaults to `full`; `none` runs no gate stages: no tests, lint, typecheck, migrations, Semgrep, or parity commands. Phase commits still go through `gate.sh --no-stages`. Personal repositories use `none` and have no tests.
 - In `full` mode, the local gate must pass before shipping. In a multi-phase run, every phase gate and the final gate over all run files must pass before the pre-ship checkpoint.
 - Every build run pauses at a pre-ship checkpoint: a fresh reviewer summarizes the change and recommends ship, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without a sandbox stage stops the run before shipping.
 - Every review finding is triaged against current code before a fixer runs.

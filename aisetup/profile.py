@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import getpass
 import json
+import re
+import sys
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,9 +49,10 @@ STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}
 DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
 CODEX_DOCTOR_KEYS = {"agents_md", "exclude_sections", "exclude_bullets"}
 METRICS_KEYS = {"since", "until", "timezone", "transcripts"}
-CODEX_ROLE_DEFAULTS = {
-    "review": {"provider": "codex", "model": "gpt-6-sol", "effort": "xhigh"},
-}
+FORGE_ROLE_NAMES = ("impl", "quick-impl", "review", "plan-review")
+OVERRIDE_KEYS = ("agents", "forge")
+NULLABLE_AGENT_KEYS = ("maxTurns", "effort")
+PLAIN_PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def _unknown(data: dict[str, Any], allowed: set[str], context: str) -> None:
@@ -246,6 +249,15 @@ def load_profile(path: Path) -> dict[str, Any]:
         local = Path(layers["local"]).expanduser()
         if not local.is_absolute():
             layers["local"] = str((path.parent / local).resolve())
+    defaults = profile_defaults(profile)
+    _strip_agent_nulls(profile)
+    profile = deep_merge(defaults, profile)
+    validate_profile(profile)
+    _expand_profile_paths(profile)
+    return profile
+
+
+def profile_defaults(profile: dict[str, Any]) -> dict[str, Any]:
     core_path = profile.get("layers", {}).get("core", {}).get("path", ".")
     if not isinstance(core_path, str):
         raise ProfileError("profile.layers.core.path must be a string")
@@ -253,16 +265,120 @@ def load_profile(path: Path) -> dict[str, Any]:
     if not repo_root.is_absolute():
         repo_root = (Path.cwd() / repo_root).resolve()
     defaults, _ = load_recommended_profile(repo_root)
-    supplied_roles = profile.get("forge", {}).get("roles")
-    modules = deep_merge(defaults.get("modules", {}), profile.get("modules", {}))
-    if modules.get("codex", False) and supplied_roles is None:
-        roles = defaults.setdefault("forge", {}).setdefault("roles", {})
-        defaults["forge"]["roles"] = deep_merge(roles, CODEX_ROLE_DEFAULTS)
-    defaults = _apply_layer_data(defaults, profile, repo_root)
-    profile = deep_merge(defaults, profile)
-    validate_profile(profile)
-    _expand_profile_paths(profile)
-    return profile
+    return _apply_layer_data(defaults, profile, repo_root)
+
+
+def _strip_agent_nulls(profile: dict[str, Any]) -> None:
+    agents = profile.get("agents")
+    if not isinstance(agents, dict):
+        return
+    for agent in agents.values():
+        if isinstance(agent, dict):
+            for key in NULLABLE_AGENT_KEYS:
+                if key in agent and agent[key] is None:
+                    del agent[key]
+
+
+def _prune_defaults(supplied: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    pruned: dict[str, Any] = {}
+    for key, value in supplied.items():
+        if key not in defaults:
+            pruned[key] = deepcopy(value)
+        elif isinstance(value, dict) and isinstance(defaults[key], dict):
+            nested = _prune_defaults(value, defaults[key])
+            if nested:
+                pruned[key] = nested
+        elif value != defaults[key]:
+            pruned[key] = deepcopy(value)
+    return pruned
+
+
+def _first_difference(left: Any, right: Any, path: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key in [*left, *(key for key in right if key not in left)]:
+            if key not in left or key not in right:
+                return (*path, key)
+            found = _first_difference(left[key], right[key], (*path, key))
+            if found is not None:
+                return found
+        return None
+    return None if left == right else path
+
+
+def format_profile_path(path: tuple[str, ...]) -> str:
+    text = ""
+    for segment in path:
+        if PLAIN_PATH_SEGMENT.fullmatch(segment):
+            text += f".{segment}" if text else segment
+        else:
+            text += f"[{json.dumps(segment, ensure_ascii=False)}]"
+    return text
+
+
+def saved_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...] | None]:
+    """Return the profile to save and, when pruning would change the next load, the first path
+    that would differ (the returned profile is then unpruned)."""
+    full = deepcopy(profile)
+    _strip_agent_nulls(full)
+    overrides = _prune_defaults(
+        {key: full[key] for key in OVERRIDE_KEYS if key in full}, profile_defaults(full)
+    )
+    pruned = {
+        key: value
+        for key, value in full.items()
+        if key not in OVERRIDE_KEYS or key in overrides
+    }
+    pruned.update(overrides)
+    reloaded = deep_merge(profile_defaults(pruned), pruned)
+    difference = _first_difference(
+        {key: reloaded.get(key) for key in OVERRIDE_KEYS},
+        {key: full.get(key) for key in OVERRIDE_KEYS},
+    )
+    if difference is not None:
+        return full, difference
+    return pruned, None
+
+
+def _collect_overrides(
+    path: tuple[str, ...],
+    value: Any,
+    default: Any,
+    found: list[tuple[tuple[str, ...], Any, Any]],
+) -> None:
+    if isinstance(value, dict) and (isinstance(default, dict) or (default is ... and value)):
+        for key, item in value.items():
+            nested_default = default.get(key, ...) if isinstance(default, dict) else ...
+            _collect_overrides((*path, key), item, nested_default, found)
+    elif value != default:
+        found.append((path, value, default))
+
+
+def profile_overrides(profile: dict[str, Any]) -> list[tuple[tuple[str, ...], Any, Any]]:
+    """Return (path, value, default) for each leaf under agents and forge that differs from the
+    repo default; default is Ellipsis when the repo has none."""
+    full = deepcopy(profile)
+    _strip_agent_nulls(full)
+    defaults = profile_defaults(full)
+    found: list[tuple[tuple[str, ...], Any, Any]] = []
+    for key in OVERRIDE_KEYS:
+        if key in full:
+            _collect_overrides((key,), full[key], defaults.get(key, ...), found)
+    return found
+
+
+def unknown_name_warnings(profile: dict[str, Any], known_agents: set[str]) -> list[str]:
+    warnings = [
+        f"agent-kit: warning: profile.agents.{name} matches no agent file"
+        for name in profile.get("agents", {})
+        if name not in known_agents
+    ]
+    role_names = ", ".join(FORGE_ROLE_NAMES)
+    warnings.extend(
+        f"agent-kit: warning: profile.forge.roles.{name} is not a forge role ({role_names})"
+        for name in profile.get("forge", {}).get("roles", {})
+        if name not in FORGE_ROLE_NAMES
+    )
+    return warnings
 
 
 def load_recommended_profile(repo_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -356,9 +472,6 @@ def build_interactive_profile(
                     raise ProfileError(f"invalid choice for {name}.{question.id}: {value}")
             profile["answers"][f"{name}.{question.id}"] = value
 
-    if profile["modules"].get("codex", False):
-        profile["forge"]["roles"] = deep_merge(profile["forge"]["roles"], CODEX_ROLE_DEFAULTS)
-
     if not yes:
         for dotted_key, recommendation in recommendations.items():
             if not dotted_key.startswith("agents.") and dotted_key != "auto_update":
@@ -411,7 +524,13 @@ def installed_profile(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_profile(path: Path, profile: dict[str, Any]) -> None:
+    saved, difference = saved_profile(profile)
+    if difference is not None:
+        print(
+            f"agent-kit: warning: profile not pruned: {format_profile_path(difference)}",
+            file=sys.stderr,
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(mode=0o600, exist_ok=True)
     path.chmod(0o600)
-    path.write_text(json.dumps(installed_profile(profile), indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(installed_profile(saved), indent=2) + "\n", encoding="utf-8")
