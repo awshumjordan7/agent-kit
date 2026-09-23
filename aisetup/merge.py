@@ -59,7 +59,7 @@ def deep_merge(
 
 
 def _identity(value: Any) -> str:
-    return json.dumps(value, sort_keys=True)
+    return json.dumps(value, sort_keys=True, default=str)
 
 
 def _same(left: Any, right: Any) -> bool:

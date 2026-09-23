@@ -10,7 +10,7 @@ import stat
 import sys
 import tempfile
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +21,7 @@ from aisetup.manifest import ManifestError
 from aisetup.merge import KIND_CONFLICT, KIND_KIT, SettingsChange, deep_merge, merge_settings
 from aisetup.profile import load_recommended_profile, profile_render_context
 from aisetup.render import RenderError, render_agent_frontmatter, render_text
+from aisetup.tomlwrite import TomlWriteError, dumps as toml_dumps
 
 
 class ComposeError(RuntimeError):
@@ -50,6 +51,15 @@ class AuxiliaryFile:
     action: str
     remove_kit_new: bool
     back_up_kit_new: bool
+    content: bytes | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CodexConfigMerge:
+    status: str | None
+    changes: tuple[SettingsChange, ...]
+    base: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,7 @@ class InstallPlan:
     settings_changes: tuple[SettingsChange, ...]
     settings_base: dict[str, Any]
     settings_status: str | None
+    codex_config: CodexConfigMerge | None
 
 
 DEFAULT_DIRECTORIES = ("hooks", "agents", "skills", "references", "scripts")
@@ -72,10 +83,14 @@ COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.pyd")
 MANAGED_PATHS_VERSION = 1
 MANAGED_PATHS_FILENAME = "managed-paths.json"
 SETTINGS_BASE_FILENAME = "settings.base.json"
+CODEX_CONFIG_BASE_FILENAME = "codex-config.base.json"
 KIT_NEW_SUFFIX = ".kit-new"
 SETTINGS_PATH = "settings.json"
 CODE_STANDARDS_PATH = "skills/forge/references/code-standards.md"
 CODEX_AGENTS_PATH = ".codex/AGENTS.md"
+CODEX_CONFIG_PATH = ".codex/config.toml"
+FALLBACK_COMMENTS = "the live file has comments, which a rewrite would drop"
+FALLBACK_UNSUPPORTED = "the live file holds a value the TOML writer cannot write"
 
 STATUS_MISSING = "missing"
 STATUS_KIT_UPDATE = "kit update pending"
@@ -416,8 +431,10 @@ def _settings_text(settings: dict[str, Any]) -> str:
     return json.dumps(settings, indent=2) + "\n"
 
 
-def _load_settings_base(layers_root: Path) -> dict[str, Any] | None:
-    path = layers_root.expanduser() / SETTINGS_BASE_FILENAME
+def _load_settings_base(
+    layers_root: Path, filename: str = SETTINGS_BASE_FILENAME
+) -> dict[str, Any] | None:
+    path = layers_root.expanduser() / filename
     if not path.is_file():
         return None
     try:
@@ -431,8 +448,10 @@ def _load_settings_base(layers_root: Path) -> dict[str, Any] | None:
     return base
 
 
-def _write_settings_base(layers_root: Path, settings: dict[str, Any]) -> None:
-    path = layers_root.expanduser() / SETTINGS_BASE_FILENAME
+def _write_settings_base(
+    layers_root: Path, settings: dict[str, Any], filename: str = SETTINGS_BASE_FILENAME
+) -> None:
+    path = layers_root.expanduser() / filename
     temporary = path.with_suffix(".tmp")
     temporary.unlink(missing_ok=True)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -441,23 +460,64 @@ def _write_settings_base(layers_root: Path, settings: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _merge_live_settings(
-    ours: dict[str, Any], live: Path, layers_root: Path, recorded_digest: str | None
-) -> tuple[dict[str, Any], tuple[SettingsChange, ...], str | None]:
+def _merge_live_file(
+    ours: dict[str, Any],
+    live: Path,
+    layers_root: Path,
+    recorded_digest: str | None,
+    base_filename: str,
+    parse: Callable[[str], Any],
+) -> tuple[dict[str, Any], tuple[SettingsChange, ...], str | None, dict[str, Any] | None]:
+    """Three-way merge of a live file; also returns the parsed live data when it parsed."""
     if not live.is_file():
-        return ours, (), STATUS_MISSING
+        return ours, (), STATUS_MISSING, None
     try:
-        theirs = json.loads(live.read_text(encoding="utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        return ours, (), STATUS_INVALID
+        theirs = parse(live.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError, tomllib.TOMLDecodeError):
+        return ours, (), STATUS_INVALID, None
     if not isinstance(theirs, dict):
-        return ours, (), STATUS_INVALID
-    base = _load_settings_base(layers_root)
+        return ours, (), STATUS_INVALID, None
+    base = _load_settings_base(layers_root, base_filename)
     if base is None:
         # Without the previous kit render, a live file still matching the record is that render.
         base = theirs if _sha256(live) == recorded_digest else {}
     merged, changes = merge_settings(base, ours, theirs)
-    return merged, tuple(changes), None
+    return merged, tuple(changes), None, theirs
+
+
+def _merge_live_settings(
+    ours: dict[str, Any], live: Path, layers_root: Path, recorded_digest: str | None
+) -> tuple[dict[str, Any], tuple[SettingsChange, ...], str | None]:
+    merged, changes, status, _ = _merge_live_file(
+        ours, live, layers_root, recorded_digest, SETTINGS_BASE_FILENAME, json.loads
+    )
+    return merged, changes, status
+
+
+def _classify_codex_config(
+    source: Path, target: Path, layers_root: Path, kit_digest: str, recorded_digest: str | None
+) -> tuple[str | None, bytes | None, str | None, CodexConfigMerge | None]:
+    """Return the status, merged bytes to write, fallback reason, and key-level merge result."""
+    try:
+        kit = tomllib.loads(source.read_text(encoding="utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise ComposeError(f"cannot parse kit {CODEX_CONFIG_PATH}: {error}") from error
+    merged, changes, status, theirs = _merge_live_file(
+        kit, target, layers_root, recorded_digest, CODEX_CONFIG_BASE_FILENAME, tomllib.loads
+    )
+    content: bytes | None = None
+    reason: str | None = None
+    if status is None:
+        if "#" in target.read_text(encoding="utf-8"):
+            reason = FALLBACK_COMMENTS
+        elif merged != theirs:
+            try:
+                content = toml_dumps(merged).encode("utf-8")
+            except TomlWriteError:
+                reason = FALLBACK_UNSUPPORTED
+    if reason is not None:
+        return classify_file(target, kit_digest, recorded_digest), None, reason, None
+    return status, content, None, CodexConfigMerge(status, changes, kit)
 
 
 def _auxiliary_action(status: str | None) -> str:
@@ -485,12 +545,13 @@ def _rerender_derived(staging: Path, auxiliary: Path, kept_claude_md: Path) -> N
 
 
 def _classify_auxiliary(
-    auxiliary: Path, user_home: Path, previous: dict[str, str]
-) -> tuple[tuple[AuxiliaryFile, ...], dict[str, str]]:
+    auxiliary: Path, user_home: Path, previous: dict[str, str], layers_root: Path
+) -> tuple[tuple[AuxiliaryFile, ...], dict[str, str], CodexConfigMerge | None]:
     files: list[AuxiliaryFile] = []
     digests: dict[str, str] = {}
+    codex_config: CodexConfigMerge | None = None
     if not auxiliary.is_dir():
-        return (), digests
+        return (), digests, codex_config
     for source in sorted(auxiliary.rglob("*")):
         if not source.is_file():
             continue
@@ -498,11 +559,20 @@ def _classify_auxiliary(
         target = user_home / relative
         kit_digest = _sha256(source)
         recorded_digest = previous.get(relative)
+        content: bytes | None = None
+        reason: str | None = None
         if relative == CODEX_AGENTS_PATH:
             status = _derived_status(target, kit_digest)
+        elif relative == CODEX_CONFIG_PATH:
+            status, content, reason, codex_config = _classify_codex_config(
+                source, target, layers_root, kit_digest, recorded_digest
+            )
         else:
             status = classify_file(target, kit_digest, recorded_digest)
-        action = _auxiliary_action(status)
+        if status is None and content is not None:
+            action = ACTION_REPLACE
+        else:
+            action = _auxiliary_action(status)
         kit_new = _kit_new_path(target)
         remove_kit_new = (
             action != ACTION_KEEP
@@ -517,10 +587,19 @@ def _classify_auxiliary(
             and _sha256(kit_new) not in (kit_digest, recorded_digest)
         )
         files.append(
-            AuxiliaryFile(relative, target, status, action, remove_kit_new, back_up_kit_new)
+            AuxiliaryFile(
+                relative,
+                target,
+                status,
+                action,
+                remove_kit_new,
+                back_up_kit_new,
+                content,
+                reason,
+            )
         )
         digests[relative] = kit_digest
-    return tuple(files), digests
+    return tuple(files), digests, codex_config
 
 
 def prepare_install(
@@ -560,8 +639,8 @@ def prepare_install(
             relative: kit_digests.get(relative) or _sha256(staging / relative)
             for relative in result.files
         }
-        auxiliary_files, auxiliary_digests = _classify_auxiliary(
-            auxiliary, home.parent, previous_auxiliary
+        auxiliary_files, auxiliary_digests, codex_config = _classify_auxiliary(
+            auxiliary, home.parent, previous_auxiliary, layers_root
         )
         # Runs after the keep substitution so regenerated .kit-new files count as staged.
         paths = installation_paths(home, staging, layers_root)
@@ -578,6 +657,7 @@ def prepare_install(
         settings_changes=settings_changes,
         settings_base=result.settings,
         settings_status=settings_status,
+        codex_config=codex_config,
     )
 
 
@@ -726,31 +806,41 @@ def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> Comp
                 f"kept locally modified: {relative} "
                 f"({status}; kit version in {relative}{KIT_NEW_SUFFIX})\n"
             )
-        _print_settings_changes(plan)
+        _print_key_changes(SETTINGS_PATH, "JSON", plan.settings_status, plan.settings_changes)
         _install_auxiliary(auxiliary, plan.auxiliary)
+        if plan.codex_config is not None:
+            _print_key_changes(
+                CODEX_CONFIG_PATH, "TOML", plan.codex_config.status, plan.codex_config.changes
+            )
         _write_managed_record(layers_root, plan.digests, plan.auxiliary_digests)
         _write_settings_base(layers_root, plan.settings_base)
+        # A fallback leaves codex_config unset, so the parked kit change stays pending.
+        if plan.codex_config is not None:
+            _write_settings_base(
+                layers_root, plan.codex_config.base, CODEX_CONFIG_BASE_FILENAME
+            )
         return ComposeResult(plan.files, plan.settings, backup)
     finally:
         if work.exists():
             shutil.rmtree(work)
 
 
-def _print_settings_changes(plan: InstallPlan) -> None:
-    if plan.settings_status == STATUS_INVALID:
+def _print_key_changes(
+    label: str, file_format: str, status: str | None, changes: Iterable[SettingsChange]
+) -> None:
+    if status == STATUS_INVALID:
         sys.stdout.write(
-            f"{SETTINGS_PATH}: invalid JSON replaced by the kit version (old copy in backup)\n"
+            f"{label}: invalid {file_format} replaced by the kit version (old copy in backup)\n"
         )
-    if plan.settings_status is not None:
+    if status is not None:
         return
-    applied = sum(1 for change in plan.settings_changes if change.kind == KIND_KIT)
-    kept = len(plan.settings_changes) - applied
-    sys.stdout.write(
-        f"{SETTINGS_PATH}: {applied} kit change(s) applied, {kept} local value(s) kept\n"
-    )
-    for change in plan.settings_changes:
+    changes = tuple(changes)
+    applied = sum(1 for change in changes if change.kind == KIND_KIT)
+    kept = len(changes) - applied
+    sys.stdout.write(f"{label}: {applied} kit change(s) applied, {kept} local value(s) kept\n")
+    for change in changes:
         if change.kind == KIND_CONFLICT:
-            sys.stdout.write(f"{SETTINGS_PATH} conflict: {change.key_path} (local value kept)\n")
+            sys.stdout.write(f"{label} conflict: {change.key_path} (local value kept)\n")
 
 
 def _timestamped_backup_path(path: Path) -> Path:
@@ -762,11 +852,16 @@ def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> Non
         source = source_root / item.relative
         target = item.target
         kit_new = _kit_new_path(target)
+        if item.reason is not None:
+            sys.stdout.write(f"{target}: key merge skipped: {item.reason}\n")
         if item.action != ACTION_NONE:
             target.parent.mkdir(parents=True, exist_ok=True)
         if item.action == ACTION_REPLACE:
             shutil.copy2(target, _timestamped_backup_path(target))
-            shutil.copy2(source, target)
+            if item.content is not None:
+                target.write_bytes(item.content)
+            else:
+                shutil.copy2(source, target)
         elif item.action == ACTION_WRITE:
             shutil.copy2(source, target)
         elif item.action == ACTION_KEEP:

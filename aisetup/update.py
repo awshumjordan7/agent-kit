@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from aisetup.compose import (
+    CODEX_CONFIG_PATH,
     SETTINGS_PATH,
     STATUS_KIT_UPDATE,
     STATUS_LOCALLY_MODIFIED,
@@ -118,15 +119,19 @@ def check_content(profile: dict[str, Any], home: Path, layers_root: Path) -> lis
                     ContentDrift(
                         str(item.target),
                         item.status,
+                        item.reason,
                         drift=item.status != STATUS_LOCALLY_MODIFIED,
                     )
                 )
         if plan.settings_status is not None:
             drifts.append(ContentDrift(SETTINGS_PATH, plan.settings_status))
-        for change in plan.settings_changes:
+        key_changes = [(SETTINGS_PATH, change) for change in plan.settings_changes]
+        if plan.codex_config is not None:
+            key_changes += [(CODEX_CONFIG_PATH, change) for change in plan.codex_config.changes]
+        for label, change in key_changes:
             status, is_drift = SETTINGS_CHANGE_STATUS[change.kind]
             drifts.append(
-                ContentDrift(f"{SETTINGS_PATH} {change.key_path}", status, change.detail, is_drift)
+                ContentDrift(f"{label} {change.key_path}", status, change.detail, is_drift)
             )
         for relative in plan.paths.retired:
             drifts.append(ContentDrift(relative.as_posix(), "retired"))
