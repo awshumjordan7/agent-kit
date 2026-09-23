@@ -49,9 +49,6 @@ STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}
 DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
 CODEX_DOCTOR_KEYS = {"agents_md", "exclude_sections", "exclude_bullets"}
 METRICS_KEYS = {"since", "until", "timezone", "transcripts"}
-CODEX_ROLE_DEFAULTS = {
-    "review": {"provider": "codex", "model": "gpt-6-sol", "effort": "xhigh"},
-}
 FORGE_ROLE_NAMES = ("impl", "quick-impl", "review", "plan-review")
 OVERRIDE_KEYS = ("agents", "forge")
 NULLABLE_AGENT_KEYS = ("maxTurns", "effort")
@@ -268,11 +265,6 @@ def profile_defaults(profile: dict[str, Any]) -> dict[str, Any]:
     if not repo_root.is_absolute():
         repo_root = (Path.cwd() / repo_root).resolve()
     defaults, _ = load_recommended_profile(repo_root)
-    supplied_roles = profile.get("forge", {}).get("roles")
-    modules = deep_merge(defaults.get("modules", {}), profile.get("modules", {}))
-    if modules.get("codex", False) and supplied_roles is None:
-        roles = defaults.setdefault("forge", {}).setdefault("roles", {})
-        defaults["forge"]["roles"] = deep_merge(roles, CODEX_ROLE_DEFAULTS)
     return _apply_layer_data(defaults, profile, repo_root)
 
 
@@ -337,8 +329,6 @@ def saved_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, .
         if key not in OVERRIDE_KEYS or key in overrides
     }
     pruned.update(overrides)
-    # The codex review role is injected only when forge.roles is absent, so the defaults are
-    # rebuilt from the pruned profile rather than reused.
     reloaded = deep_merge(profile_defaults(pruned), pruned)
     difference = _first_difference(
         {key: reloaded.get(key) for key in OVERRIDE_KEYS},
@@ -481,9 +471,6 @@ def build_interactive_profile(
                 if question.type == "choice" and value not in question.choices:
                     raise ProfileError(f"invalid choice for {name}.{question.id}: {value}")
             profile["answers"][f"{name}.{question.id}"] = value
-
-    if profile["modules"].get("codex", False):
-        profile["forge"]["roles"] = deep_merge(profile["forge"]["roles"], CODEX_ROLE_DEFAULTS)
 
     if not yes:
         for dotted_key, recommendation in recommendations.items():
