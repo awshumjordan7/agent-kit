@@ -18,7 +18,14 @@ from typing import Any
 
 from aisetup.layers import Layer, ResolvedLayers, layer_data, load_json, resolve_layers
 from aisetup.manifest import ManifestError
-from aisetup.merge import KIND_CONFLICT, KIND_KIT, SettingsChange, deep_merge, merge_settings
+from aisetup.merge import (
+    KIND_CONFLICT,
+    KIND_KIT,
+    SettingsChange,
+    _identity,
+    deep_merge,
+    merge_settings,
+)
 from aisetup.profile import load_recommended_profile, profile_render_context
 from aisetup.render import RenderError, render_agent_frontmatter, render_text
 from aisetup.tomlwrite import TomlWriteError, dumps as toml_dumps
@@ -507,10 +514,11 @@ def _classify_codex_config(
     )
     content: bytes | None = None
     reason: str | None = None
-    if status is None:
+    # _identity keeps TOML types apart: plain == treats True as 1 and 1.0 as 1.
+    if status is None and _identity(merged) != _identity(theirs):
         if "#" in target.read_text(encoding="utf-8"):
             reason = FALLBACK_COMMENTS
-        elif merged != theirs:
+        else:
             try:
                 content = toml_dumps(merged).encode("utf-8")
             except TomlWriteError:

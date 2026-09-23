@@ -13,7 +13,8 @@ Install and update merge `~/.codex/config.toml` key by key, the same way as `set
 the previous install is kept in `~/.ai-setup/codex-config.base.json` (mode 0600). A key the kit changed gets the
 new kit value. A key you or Codex changed or added, such as `projects.<path>.trust_level` or `tui.*`, keeps its
 local value. When both changed the same key, the local value stays and the key path is reported as a conflict.
-Arrays merge as whole values. Output lists key paths only, never values.
+Arrays merge as whole values, except arrays at `permissions.allow`, `permissions.deny`, `permissions.ask`, and
+`hooks.<name>`, which merge element by element as in `settings.json`. Output lists key paths only, never values.
 
 When the merge changes nothing, the file is not touched. Otherwise the old file is copied to
 `config.toml.backup.<timestamp>` and the merged data is written. The rewrite does not keep blank lines or custom
@@ -27,6 +28,9 @@ The merge is skipped, and the whole-file rule applies instead, in two cases:
 Then the live file is kept, the kit version goes to `config.toml.kit-new`, and the reason is printed. The base file
 is left as it was, so the kit change is applied on a later install once the cause is removed. A live file that is
 not valid TOML is backed up and replaced by the kit version.
+
+Keep the kit file `modules/codex/codex/config.toml` free of comments. A fresh or replaced live file is a copy of
+it, and a `#` in the live file turns off the key merge on every later install.
 
 `update --check` lists config.toml key changes prefixed with `.codex/config.toml`. A pending kit change counts as
 drift; a kept local value does not.
