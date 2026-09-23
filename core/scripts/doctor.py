@@ -33,6 +33,8 @@ do not edit here; edit CLAUDE.md and run `doctor.py --fix`.
 CODEX_HEADER = (
     "<!-- Generated from ~/.claude/CLAUDE.md by `doctor.py --fix`; edit CLAUDE.md, not this file. -->\n\n"
 )
+# Codex reads its global AGENTS.md only from $CODEX_HOME, and install always writes it here.
+CODEX_AGENTS_MD = "~/.codex/AGENTS.md"
 DEFAULT_CONFIG: dict[str, Any] = {
     "models": {"codex_version": "5.6", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
     "ignore": {"globs": ["skills/synced/**"]},
@@ -41,7 +43,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Codex reads its global AGENTS.md on every run, so it mirrors CLAUDE.md minus the
     # sections that only mean something inside Claude Code.
     "codex": {
-        "agents_md": "~/.codex/AGENTS.md",
         "exclude_sections": ["Model Routing (Sub-Agents)"],
         "exclude_bullets": ["Use `planner` for feature planning", "memory & auto-memory"],
     },
@@ -449,8 +450,7 @@ def expected_codex_agents(ctx: Context) -> tuple[str | None, str | None]:
     return CODEX_HEADER + "\n".join(kept).strip() + "\n", None
 
 def check_codex_agents_sync(ctx: Context) -> list[Finding]:
-    codex = ctx.config.get("codex", {})
-    target = ctx.home_path(str(codex.get("agents_md", "~/.codex/AGENTS.md")))
+    target = ctx.home_path(CODEX_AGENTS_MD)
     expected, error = expected_codex_agents(ctx)
     if error is not None or expected is None:
         return [finding("FAIL", "codex-agents-sync", ctx, "CLAUDE.md", error or "cannot generate")]
