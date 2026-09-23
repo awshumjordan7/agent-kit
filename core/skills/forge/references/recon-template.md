@@ -1,6 +1,6 @@
 # Recon — <feature name>
 
-Written by the main session (Sonnet scouts do the reading) before the plan for a
+Written by the main session (`scout` agents do the reading) before the plan for a
 build-lane run. Its one job: make sure the plan reuses what already exists instead of
 inventing a parallel version of it. Read by the plan step, the Codex plan review, and
 the reviewers.

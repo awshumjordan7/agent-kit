@@ -106,7 +106,7 @@ tokens bill at 2x input.
   https://learn.chatgpt.com/docs/code-review?surface=app
 - Sub-agents exist (`multi_agent`, `agents.default_subagent_model`, per-spawn model) and could
   push reading onto a cheaper model, but a regression on per-subagent model selection was open
-  at the time and each sub-agent is another billed session. Not adopted; Sonnet scouts and the
+  at the time and each sub-agent is another billed session. Not adopted; `scout` agents and the
   excerpt pack do the reading on the Claude side.
   https://learn.chatgpt.com/docs/agent-configuration/subagents
 - The out-of-credits error text: "Your workspace is out of credits. Ask your workspace owner

@@ -11,7 +11,8 @@ OUTPUT: <exact shape; written with the Write tool to the named path, never inlin
 CAP: <max lines in the final message>. A brief cannot raise the agent file's maxTurns; split the brief instead.
 ```
 
-Every Agent prompt, the main session's and forge-core's, follows this template.
+Every Agent prompt the main session writes follows this template.
+Forge-internal agents (reviewer, triage, judge) get their prompts from forge and return their schema in the final message instead of writing an OUTPUT file.
 Briefs are written before the spawn: the brief file's write must succeed in a tool round before the Agent call that uses it, never in the same message, where a blocked write still lets the agent start without its brief.
 They are not edited after.
 Browser steps go to the configured browser-testing agent, never to `worker`. Playwright MCP blocks file: URLs, so serve a rendered file over localhost and provide that URL.
