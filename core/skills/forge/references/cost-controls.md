@@ -28,8 +28,8 @@ surfaces as a notification, never as a silent hang.
 - The "out of credits" error kills that session at once with `CODEX_NO_CREDITS`; after billing
   is fixed, a later start can retry normally.
 - Every run prints `CODEX_OK … tool_calls= tool_output_kb= tokens_in= tokens_cached= tokens_out=`
-  and appends a line to `.state/usage.log`. `codex-exec.sh stats --log <events.jsonl>` and
-  `scripts/codex-log-stats.py <events.jsonl>` report the same for any log after the fact.
+  and appends a line to `.state/usage.log`. `codex-exec.sh stats --log <events.jsonl>`
+  reports the same for any log after the fact.
 
 ## Local gate role
 `gate` role (runs `scripts/gate.sh`): Haiku, low effort, 3-7 spawns per run; cost is test wall-clock time, not tokens.
