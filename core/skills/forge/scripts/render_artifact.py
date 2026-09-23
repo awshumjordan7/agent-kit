@@ -13,6 +13,7 @@ Relative file paths inside a data file resolve against the data file's directory
 """
 
 import argparse
+import base64
 import html
 import json
 import re
@@ -36,7 +37,7 @@ KNOWN_KEYS = {
     "qa": {
         "summary", "ticket", "shortTitle", "date", "tier", "branch", "sandboxId", "previewUrl",
         "rootLoginEmail", "rootLoginPassword", "adminCreds", "users", "jiraTickets", "links",
-        "contextItems", "qaItems", "handoff",
+        "contextItems", "qaItems", "handoff", "groups", "explore", "round",
     },
     "generic": {"summary", "title", "eyebrow", "status", "links"},
 }
@@ -424,61 +425,272 @@ def generic_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str
     return slots, {"STATUS": bool(status), "SUMMARY": bool(slots["SUMMARY_HTML"])}
 
 
-def qa_item_html(idx: int, item: dict, base: Path) -> str:
-    click = item.get("clickPass")
-    status = str(click.get("status", "PENDING")).upper() if click else "none"
-    label = "pending" if status == "PENDING" else (status if click else "not run")
-    group = item.get("screenGroup") or "Other"
-    rows = [
-        f'<dt>Ticket</dt><dd><a href="{esc(item.get("ticketUrl", ""))}">{esc(item.get("ticketKey", ""))}</a></dd>',
-        f'<dt>Before</dt><dd>{inline(item.get("before", ""))}</dd>',
-    ]
-    if item.get("whatChanged"):
-        rows.append(f'<dt>What changed</dt><dd>{inline(item["whatChanged"])}</dd>')
-    if item.get("why"):
-        rows.append(f'<dt>Why</dt><dd>{inline(item["why"])}</dd>')
-    steps = "".join(f"<li>{inline(s)}</li>" for s in item.get("steps") or [])
-    rows.append(f"<dt>Steps</dt><dd><ol>{steps}</ol></dd>")
-    rows.append(f'<dt>Expected</dt><dd>{inline(item.get("expected", ""))}</dd>')
-    if click:
-        shot = str(click.get("screenshot") or "")
-        if shot and not is_web_url(shot):
-            shot = str(data_path(shot, base))
-        shot_link = f' <a href="{esc(shot)}">screenshot</a>' if shot else ""
-        rows.append(f'<dt>Click pass</dt><dd>{esc(status)} - {esc(click.get("note", ""))}{shot_link}</dd>')
-    rows.append(f'<dt>Evidence</dt><dd>{inline(item.get("evidence", ""))}</dd>')
+DB_ID_BAD_RE = re.compile(r"[^A-Za-z0-9_\-.~:@+]")
+DB_ID_MAX_BYTES = 200
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+MAX_IMAGE_BYTES = 1_572_864
+MAX_PAGE_IMAGE_BYTES = 8 * 1_048_576
+COLLAPSE_LINES = 15
+VERDICT_CONTROLS = (
+    '<div class="verdict" role="group" aria-label="Result">'
+    '<button type="button" class="verdict-btn" data-verdict="pass" aria-pressed="false">Pass</button>'
+    '<button type="button" class="verdict-btn" data-verdict="fail" aria-pressed="false">Fail</button>'
+    '<button type="button" class="verdict-btn" data-verdict="blocked" aria-pressed="false">Blocked</button>'
+    '<input type="text" class="verdict-note" maxlength="300" placeholder="What I saw" aria-label="What I saw">'
+    "</div>"
+)
+
+
+def qa_round(data: dict) -> str:
+    raw = str(data.get("round") or "1")
+    value = DB_ID_BAD_RE.sub("-", raw)
+    if len(value) > 100:
+        raise InputError(f"round {raw!r} is longer than 100 characters")
+    return value
+
+
+def qa_ids(items: list[dict], round_id: str, has_explore: bool) -> list[str]:
+    """Item ids limited to the page-storage id charset, so "<round>:<id>" is one valid document id."""
+    limit = DB_ID_MAX_BYTES - len(round_id) - 1
+    ids: list[str] = []
+    seen: dict[str, str] = {"explore": "the explore item"} if has_explore else {}
+    for idx, item in enumerate(items, start=1):
+        raw = str(item.get("id") or idx)
+        sid = DB_ID_BAD_RE.sub("-", raw)[:limit]
+        if sid in seen:
+            raise InputError(f"qaItems id {raw!r} and {seen[sid]} both become {sid!r}; give each item a distinct id")
+        seen[sid] = f"id {raw!r}"
+        ids.append(sid)
+    return ids
+
+
+def pre_block(text: object, collapse: bool = True) -> str:
+    body = text if isinstance(text, str) else json.dumps(text, indent=2)
+    pre = f"<pre><code>{esc(body)}</code></pre>"
+    lines = body.count("\n") + 1
+    if collapse and lines > COLLAPSE_LINES:
+        return f'<details class="long-output"><summary>Show all {lines} lines</summary>{pre}</details>'
+    return pre
+
+
+class ImageBudget:
+    def __init__(self) -> None:
+        self.used = 0
+
+    def embed(self, path: Path, caption: str) -> str:
+        mime = IMAGE_TYPES.get(path.suffix.lower())
+        size = path.stat().st_size
+        reason = ""
+        if not mime:
+            reason = f"{path.suffix or 'no extension'} is not PNG, JPEG or WebP"
+        elif size > MAX_IMAGE_BYTES:
+            reason = f"{size} bytes is over the {MAX_IMAGE_BYTES}-byte image cap"
+        elif self.used + size > MAX_PAGE_IMAGE_BYTES:
+            reason = f"the page already holds {self.used} bytes of images (cap {MAX_PAGE_IMAGE_BYTES})"
+        if reason:
+            warn(f"screenshot {path} not embedded: {reason}")
+            label = f"{esc(caption)} " if caption else ""
+            return f'<p class="shot-text">{label}<span class="muted">({esc(path)})</span></p>'
+        self.used += size
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f'<img class="shot" src="data:{mime};base64,{data}" alt="{esc(caption or path.name)}">'
+
+
+def before_after(before: str, after: str) -> str:
+    if not before:
+        return after
     return (
-        f'<details class="qa-item" data-id="{esc(item.get("id", str(idx)))}" data-pr="{esc(item.get("pr", ""))}" '
-        f'data-group="{esc(group)}" data-status="{esc(status)}">'
-        f'<summary><span class="qa-num">{idx}.</span> <span class="qa-title">{esc(item.get("title", ""))}</span>'
-        f'<span class="qa-badges"><span class="pill pr">{esc(item.get("pr", ""))}</span>'
-        f'<span class="pill group">{esc(group)}</span>'
-        f'<span class="pill status status-{esc(status.lower())}">{esc(label)}</span></span>'
-        f'<label class="verify"><input type="checkbox" class="verify-toggle"> verified</label></summary>'
-        f'<dl>{"".join(rows)}</dl></details>'
+        f'<div class="before-after"><div><div class="ba-label">Before</div>{before}</div>'
+        f'<div><div class="ba-label">After</div>{after}</div></div>'
     )
 
 
-def qa_status(items: list[dict]) -> str:
-    counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "PENDING": 0, "none": 0}
+def example_html(item_id: str, example: object, base: Path, images: ImageBudget) -> str:
+    """Render a captured example, or "" (with a warning) when it cannot be shown truthfully."""
+    if not isinstance(example, dict):
+        warn(f"item {item_id}: example must be an object; dropped")
+        return ""
+    kind = example.get("kind")
+    captured = str(example.get("capturedFrom") or "")
+    if not captured or not data_path(captured, base).exists():
+        warn(f"item {item_id}: example dropped, capturedFrom {captured or '(missing)'} does not exist")
+        return ""
+    source = f'<p class="example-source muted">Captured from <code>{esc(data_path(captured, base))}</code></p>'
+    if kind == "screenshot":
+        paths = {key: str(example.get(key) or "") for key in ("path", "beforePath")}
+        if not paths["path"]:
+            warn(f"item {item_id}: screenshot example has no path; dropped")
+            return ""
+        for key, value in paths.items():
+            if value and not data_path(value, base).is_file():
+                warn(f"item {item_id}: example dropped, {key} {value} does not exist")
+                return ""
+        caption = str(example.get("caption") or "")
+        after = images.embed(data_path(paths["path"], base), caption)
+        before = images.embed(data_path(paths["beforePath"], base), caption) if paths["beforePath"] else ""
+        body = before_after(before, after)
+        if caption:
+            body += f'<p class="muted">{inline(caption)}</p>'
+    elif kind == "terminal":
+        body = pre_block(example.get("command", ""), collapse=False)
+        before = pre_block(example["beforeOutput"]) if example.get("beforeOutput") else ""
+        body += before_after(before, pre_block(example.get("output", "")))
+    elif kind == "http":
+        body = pre_block(example.get("request", ""), collapse=False)
+        before = pre_block(example["beforeResponse"]) if example.get("beforeResponse") else ""
+        body += before_after(before, pre_block(example.get("response", "")))
+    else:
+        warn(f"item {item_id}: example kind {kind!r} is not screenshot, terminal or http; dropped")
+        return ""
+    return f"<dt>Example</dt><dd>{body}{source}</dd>"
+
+
+def automated_check(click: dict, base: Path) -> str:
+    status = str(click.get("status", "PENDING")).upper()
+    label = "pending" if status == "PENDING" else status
+    shot = str(click.get("screenshot") or "")
+    if shot and not is_web_url(shot):
+        shot = str(data_path(shot, base))
+    shot_link = f' <a href="{esc(shot)}">screenshot</a>' if shot else ""
+    note = f" - {esc(click['note'])}" if click.get("note") else ""
+    return (
+        f'<div class="auto-check"><span class="auto-label">Automated check</span> '
+        f'<span class="status-{esc(status.lower())}">{esc(label)}</span>{note}{shot_link}</div>'
+    )
+
+
+def item_shell(idx: object, item_id: str, title: str, pr: str, group: str, body: str) -> str:
+    return (
+        f'<details class="qa-item" data-id="{esc(item_id)}" data-pr="{esc(pr)}" data-group="{esc(group)}" '
+        f'data-verdict="untested">'
+        f'<summary><span class="qa-num">{esc(idx)}.</span> <span class="qa-title">{esc(title)}</span>'
+        f'<span class="qa-badges"><span class="pill pr">{esc(pr)}</span>'
+        f'<span class="pill verdict-pill">untested</span></span></summary>'
+        f'<div class="qa-body">{VERDICT_CONTROLS}{body}</div></details>'
+    )
+
+
+def qa_item_html(idx: int, item_id: str, item: dict, group_why: str, base: Path, images: ImageBudget) -> str:
+    group = item.get("screenGroup") or "Other"
+    click = item.get("clickPass")
+    rows = []
+    if item.get("ticketKey") or item.get("ticketUrl"):
+        rows.append(
+            f'<dt>Ticket</dt><dd><a href="{esc(item.get("ticketUrl", ""))}">{esc(item.get("ticketKey", ""))}</a></dd>'
+        )
+    why = str(item.get("why") or "").strip()
+    if not why and str(item.get("before") or "").strip():
+        why = str(item["before"]).strip()
+    if why and why != group_why.strip():
+        rows.append(f"<dt>Why</dt><dd>{inline(why)}</dd>")
+    if item.get("whatChanged"):
+        rows.append(f'<dt>What changed</dt><dd>{inline(item["whatChanged"])}</dd>')
+    steps = "".join(f"<li>{text_or_command(s)}</li>" for s in item.get("steps") or [])
+    rows.append(f"<dt>Steps</dt><dd><ol>{steps}</ol></dd>")
+    rows.append(f'<dt>Expected</dt><dd>{inline(item.get("expected", ""))}</dd>')
+    if "example" in item:
+        rows.append(example_html(item_id, item["example"], base, images))
+    if item.get("evidence"):
+        rows.append(f'<dt>Evidence</dt><dd>{inline(item["evidence"])}</dd>')
+    auto = automated_check(click, base) if click else ""
+    return item_shell(idx, item_id, str(item.get("title", "")), str(item.get("pr", "")), group,
+                      f'{auto}<dl>{"".join(rows)}</dl>')
+
+
+def setup_html(setup: object) -> str:
+    if not isinstance(setup, dict):
+        return ""
+    parts = []
+    for key, label in (("preconditions", "Before you start"), ("testData", "Test data")):
+        values = setup.get(key) or []
+        if values:
+            parts.append(f'<div class="setup-label">{label}</div><ul>' + "".join(f"<li>{inline(v)}</li>" for v in values) + "</ul>")
+    commands = setup.get("commands") or []
+    if commands:
+        parts.append('<div class="setup-label">Commands</div>' + "".join(command_block(c) for c in commands))
+    cleanup = setup.get("cleanup") or []
+    if cleanup:
+        parts.append('<div class="setup-label">Cleanup</div><ul>' + "".join(f"<li>{text_or_command(c)}</li>" for c in cleanup) + "</ul>")
+    return f'<div class="setup"><div class="setup-title">Setup</div>{"".join(parts)}</div>' if parts else ""
+
+
+def qa_group_html(name: str, group: dict | None, items_html: str) -> str:
+    why = f'<p class="group-why"><b>Why:</b> {inline(group["why"])}</p>' if group and group.get("why") else ""
+    setup = setup_html(group.get("setup")) if group else ""
+    spot = (
+        f'<p class="spot-check"><b>Spot check:</b> {inline(group["spotCheck"])}</p>'
+        if group and group.get("spotCheck") else ""
+    )
+    return (
+        f'<div class="qa-group" data-group="{esc(name)}"><div class="group-head"><h3>{esc(name)}</h3>'
+        f'<span class="group-counts"></span></div>{why}{setup}{spot}<div class="qa-items-list">{items_html}</div></div>'
+    )
+
+
+def explore_html(explore: object) -> str:
+    if not isinstance(explore, dict) or not isinstance(explore.get("minutes"), int):
+        raise InputError('explore must be {"minutes": int, "focus": str}')
+    minutes = explore["minutes"]
+    title = f"Explore freely for {minutes} minute{'' if minutes == 1 else 's'}"
+    body = f'<dl><dt>Focus</dt><dd>{inline(explore.get("focus", ""))}</dd></dl>'
+    return qa_group_html("Explore", None, item_shell("E", "explore", title, "", "Explore", body))
+
+
+def qa_groups_html(data: dict, items: list[dict], ids: list[str], base: Path) -> tuple[str, int]:
+    groups = [g for g in data.get("groups") or [] if isinstance(g, dict) and g.get("name")]
+    by_name = {str(g["name"]): g for g in groups}
+    order = [str(g["name"]) for g in groups]
     for item in items:
-        click = item.get("clickPass")
-        key = str(click.get("status", "PENDING")).upper() if click else "none"
-        counts[key] = counts.get(key, 0) + 1
-    parts = [
-        f'<span class="status-pass">PASS {counts["PASS"]}</span>',
-        f'<span class="status-fail">FAIL {counts["FAIL"]}</span>',
-        f"pending {counts['PENDING']}",
-    ]
-    if counts["SKIP"]:
-        parts.append(f"SKIP {counts['SKIP']}")
-    if counts["none"]:
-        parts.append(f"not run {counts['none']}")
-    return f"{len(items)} items: " + " &middot; ".join(parts)
+        name = str(item.get("screenGroup") or "Other")
+        if name not in order:
+            order.append(name)
+    images = ImageBudget()
+    deprecated = sum(1 for i in items if not str(i.get("why") or "").strip() and str(i.get("before") or "").strip())
+    if deprecated:
+        warn(f"{deprecated} qaItems use the deprecated key before; rename it to why")
+    out = []
+    num = 0
+    shown = 0
+    for name in order:
+        group = by_name.get(name)
+        group_why = str(group.get("why") or "") if group else ""
+        members = [(i, item) for i, item in enumerate(items) if str(item.get("screenGroup") or "Other") == name]
+        if not members:
+            continue
+        parts = []
+        for i, item in members:
+            num += 1
+            parts.append(qa_item_html(num, ids[i], item, group_why, base, images))
+        shown += 1
+        out.append(qa_group_html(name, group, "".join(parts)))
+    if "explore" in data:
+        out.append(explore_html(data["explore"]))
+    return "".join(out), shown
+
+
+def qa_status(items: list[dict], groups: int, has_explore: bool) -> str:
+    total = len(items) + (1 if has_explore else 0)
+    text = (
+        f'{total} items in {groups} group{"" if groups == 1 else "s"}: '
+        f'<span class="verdict-counts">untested {total}</span>'
+    )
+    checks = [str(i["clickPass"].get("status", "PENDING")).upper() for i in items if i.get("clickPass")]
+    ran = [c for c in checks if c != "PENDING"]
+    if ran:
+        text += (
+            f' &middot; automated checks: <span class="status-pass">PASS {ran.count("PASS")}</span>, '
+            f'<span class="status-fail">FAIL {ran.count("FAIL")}</span>'
+        )
+        if ran.count("SKIP"):
+            text += f", SKIP {ran.count('SKIP')}"
+    return text
 
 
 def qa_slots(data: dict, _markdown: str, base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     items = data.get("qaItems") or []
+    round_id = qa_round(data)
+    ids = qa_ids(items, round_id, "explore" in data)
+    items_html, group_count = qa_groups_html(data, items, ids, base)
     users = data.get("users") or []
     jira = data.get("jiraTickets") or []
     context = data.get("contextItems") or []
@@ -499,7 +711,8 @@ def qa_slots(data: dict, _markdown: str, base: Path) -> tuple[dict[str, str], di
         "ROOT_LOGIN_EMAIL": esc(data.get("rootLoginEmail", "")),
         "ROOT_LOGIN_PASSWORD": esc(data.get("rootLoginPassword", "")),
         "ADMIN_CREDS": esc(data.get("adminCreds", "")),
-        "STATUS": qa_status(items),
+        "ROUND": esc(round_id),
+        "STATUS": qa_status(items, group_count, "explore" in data),
         "SUMMARY_HTML": data_summary(data),
         "USERS_ROWS_HTML": "".join(
             f'<tr class="copy-row"><td>{esc(u.get("role", ""))}</td><td><span class="copy-value" data-role="value"></span></td>'
@@ -514,7 +727,7 @@ def qa_slots(data: dict, _markdown: str, base: Path) -> tuple[dict[str, str], di
         ),
         "LINKS_HTML": link_rows(data.get("links")),
         "CONTEXT_ITEMS_HTML": "".join(f"<li>{text_or_command(c)}</li>" for c in context),
-        "QA_ITEMS_HTML": "".join(qa_item_html(i, item, base) for i, item in enumerate(items, start=1)),
+        "QA_ITEMS_HTML": items_html,
     }
     keep = {
         "USERS_SECTION": bool(users), "JIRA_SECTION": bool(jira), "CONTEXT_SECTION": bool(context),
