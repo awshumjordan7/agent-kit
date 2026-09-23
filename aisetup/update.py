@@ -8,8 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aisetup.compose import compose_tree
+from aisetup.compose import (
+    SETTINGS_PATH,
+    STATUS_KIT_UPDATE,
+    STATUS_LOCALLY_MODIFIED,
+    STATUS_MISSING,
+    compose_tree,
+    prepare_install,
+)
 from aisetup.manifest import load_overlay_manifest
+from aisetup.merge import KIND_CONFLICT, KIND_KIT, KIND_USER
 
 
 class UpdateError(RuntimeError):
@@ -39,7 +47,20 @@ class RepoStatus:
 @dataclass(frozen=True)
 class ContentDrift:
     path: str
-    source: str
+    status: str
+    detail: str | None = None
+    drift: bool = True
+
+    def line(self) -> str:
+        detail = f" ({self.detail})" if self.detail else ""
+        return f"{self.path}: {self.status}{detail}"
+
+
+SETTINGS_CHANGE_STATUS = {
+    KIND_KIT: ("kit change pending", True),
+    KIND_CONFLICT: ("conflict (local value kept)", True),
+    KIND_USER: ("local value kept", False),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -50,33 +71,69 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def check_content(profile: dict[str, Any], home: Path) -> list[ContentDrift]:
+def check_content(profile: dict[str, Any], home: Path, layers_root: Path) -> list[ContentDrift]:
+    home = home.expanduser()
     with tempfile.TemporaryDirectory(prefix="agent-kit-check-") as temporary:
-        composed = Path(temporary) / "claude"
-        result = compose_tree(profile, composed)
-        drifts: list[ContentDrift] = []
+        staging = Path(temporary) / "claude"
+        plan = prepare_install(profile, home, staging, Path(temporary) / "auxiliary", layers_root)
         agent_overrides = profile.get("agents", {})
         without_agent_overrides = Path(temporary) / "without-agent-overrides"
         if agent_overrides:
             compose_tree({**profile, "agents": {}}, without_agent_overrides)
-        for relative in result.files:
-            if relative == "settings.json" and (home / relative).is_file():
-                continue
-            expected = composed / relative
+
+        def source(relative: str) -> str | None:
+            if not relative.startswith("agents/"):
+                return None
             installed = home / relative
-            if installed.is_file() and _sha256(installed) == _sha256(expected):
-                continue
-            agent_name = Path(relative).stem if relative.startswith("agents/") else ""
-            source = (
-                "profile.agents override"
-                if agent_name
-                and agent_name in agent_overrides
+            unoverridden = without_agent_overrides / relative
+            if (
+                Path(relative).stem in agent_overrides
                 and installed.is_file()
-                and (without_agent_overrides / relative).is_file()
-                and _sha256(installed) == _sha256(without_agent_overrides / relative)
-                else "unknown"
+                and unoverridden.is_file()
+                and _sha256(installed) == _sha256(unoverridden)
+            ):
+                return "source: profile.agents override"
+            return "source: unknown"
+
+        drifts: list[ContentDrift] = []
+        kept = dict(plan.kept)
+        for relative in plan.files:
+            if relative == SETTINGS_PATH:
+                continue
+            status = kept.get(relative)
+            if status is None:
+                installed = home / relative
+                if not installed.is_file():
+                    status = STATUS_MISSING
+                elif _sha256(installed) != _sha256(staging / relative):
+                    status = STATUS_KIT_UPDATE
+                else:
+                    continue
+            drifts.append(
+                ContentDrift(relative, status, source(relative), status != STATUS_LOCALLY_MODIFIED)
             )
-            drifts.append(ContentDrift(relative, source))
+        for item in plan.auxiliary:
+            if item.status is not None:
+                drifts.append(
+                    ContentDrift(
+                        str(item.target),
+                        item.status,
+                        drift=item.status != STATUS_LOCALLY_MODIFIED,
+                    )
+                )
+        if plan.settings_status is not None:
+            drifts.append(ContentDrift(SETTINGS_PATH, plan.settings_status))
+        for change in plan.settings_changes:
+            status, is_drift = SETTINGS_CHANGE_STATUS[change.kind]
+            drifts.append(
+                ContentDrift(f"{SETTINGS_PATH} {change.key_path}", status, change.detail, is_drift)
+            )
+        for relative in plan.paths.retired:
+            drifts.append(ContentDrift(relative.as_posix(), "retired"))
+        for relative in plan.paths.retired_modified:
+            drifts.append(
+                ContentDrift(relative.as_posix(), "retired but locally modified", drift=False)
+            )
         return drifts
 
 

@@ -21,18 +21,24 @@ python3 install.py update
 python3 install.py doctor --selfcheck --json
 ```
 
-`install --dry-run` prints the planned files, settings, redacted MCP commands, and unmanaged paths that will be
-preserved without writing them. Existing Claude files are backed up before replacement, and paths not managed by
-agent-kit are copied into the new home. The backup retains both managed and unmanaged files. When `--home` is not
+`install --dry-run` prints the planned files, preserved unmanaged paths, kept files, settings changes by key path,
+and redacted MCP commands without writing them. A managed file you edited is kept: install prints `kept locally
+modified` and writes the kit version beside it as `<file>.kit-new`. `settings.json` is merged three ways against the
+previous kit render in `~/.ai-setup/settings.base.json`, so keys set by you or Claude Code stay, kit changes apply,
+and your value wins a conflict. The previous home becomes a backup, unmanaged paths are moved back into the new
+home, and the backup keeps only files that were replaced or retired; an empty backup is removed. When `--home` is not
 the default `~/.claude`, install and update skip MCP registration because the Claude CLI always writes user-scoped
 servers to the default home. `update` fetches configured layer repositories, replays the profile, and runs doctor.
 
 ## Update
 
-`python3 install.py update --check` reports repositories that are behind and compares every managed file with
-the composed tree. Content drift is identified as a profile agent override or an unknown source, and either
-repository lag or managed-content drift makes the check exit 1. `python3 install.py update` fetches, composes,
-installs, reconciles declared MCP servers, and runs doctor.
+`python3 install.py update --check` reports repositories that are behind and compares managed content with what an
+install would write. Files report `missing`, `kit update pending`, `unrecorded`, `conflict`, or `locally modified`
+(agent files also name a profile agent override or an unknown source); settings key paths report `kit change pending`,
+`conflict (local value kept)`, or `local value kept`; `settings.json` itself can be `missing` or `invalid`; retired
+paths report `retired` or `retired but locally modified`. Kept local edits are listed but pass; repository lag or any
+other item makes the check exit 1. `python3 install.py update` fetches, composes, installs, reconciles declared MCP
+servers, and runs doctor.
 
 ## Windows 10 and 11 (WSL2)
 
