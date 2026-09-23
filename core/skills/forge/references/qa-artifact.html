@@ -452,6 +452,7 @@ details.handoff[open] > summary { margin-bottom: 8px; }
   var mode = 'loading';
   var writing = {};
   var queued = {};
+  var unsaved = {};
   function showBanner(text) {
     banner.textContent = text;
     banner.hidden = !text;
@@ -477,7 +478,8 @@ details.handoff[open] > summary { margin-bottom: 8px; }
     });
     var note = item.querySelector('.verdict-note');
     if (document.activeElement !== note) { note.value = typeof saved.note === 'string' ? saved.note : ''; }
-    note.disabled = locked;
+    note.disabled = locked || verdict === 'untested';
+    note.placeholder = verdict === 'untested' ? 'Pick Pass, Fail or Blocked first' : 'What I saw';
   }
   function countText(list) {
     var counts = { pass: 0, fail: 0, blocked: 0, untested: 0 };
@@ -510,7 +512,7 @@ details.handoff[open] > summary { margin-bottom: 8px; }
     applyFilters();
   }
   function saveLocal() {
-    try { localStorage.setItem(localKey, JSON.stringify(results)); } catch (err) { /* browser storage unavailable */ }
+    try { localStorage.setItem(localKey, JSON.stringify(results)); } catch (err) { showBanner('Browser storage is unavailable; results will be lost when this page reloads.'); }
   }
   function useLocal(reason) {
     mode = 'local';
@@ -532,12 +534,11 @@ details.handoff[open] > summary { margin-bottom: 8px; }
       throw err;
     });
   }
-  function writeFailed(err) {
+  function writeFailed(id, err) {
     var code = err && err.code;
+    unsaved[id] = true;
     if (code === 'resource_exhausted') {
       showBanner('Saving is rate limited; your last change may not be saved. Wait a moment, then change it again.');
-    } else if (code === 'quota_exceeded') {
-      showBanner('Page storage is full; new results cannot be saved.');
     } else if (NO_RETRY.indexOf(code) !== -1) {
       mode = 'readonly';
       showBanner('Results could not be saved (' + code + '). This page is read-only for you.');
@@ -556,8 +557,10 @@ details.handoff[open] > summary { margin-bottom: 8px; }
       note: (saved.note || '').slice(0, 300), updatedAt: new Date().toISOString()
     };
     writing[id] = true;
+    unsaved[id] = false;
+    showBanner('');
     attempt(function () { return store.doc(round + ':' + id).set(body); }, true)
-      .catch(writeFailed)
+      .catch(writeFailed.bind(null, id))
       .then(function () {
         writing[id] = false;
         if (queued[id]) {
@@ -633,7 +636,7 @@ details.handoff[open] > summary { margin-bottom: 8px; }
         if (mode !== 'db' && mode !== 'local') { return; }
         var saved = results[id] || {};
         var value = note.value.slice(0, 300);
-        if (saved.verdict === btn.dataset.verdict && saved.note === value) { return; }
+        if (!unsaved[id] && saved.verdict === btn.dataset.verdict && saved.note === value) { return; }
         results[id] = { verdict: btn.dataset.verdict, note: value };
         save(id);
         refresh();
@@ -643,7 +646,7 @@ details.handoff[open] > summary { margin-bottom: 8px; }
       if (mode !== 'db' && mode !== 'local') { return; }
       var saved = results[id] || {};
       var value = note.value.slice(0, 300);
-      if ((saved.note || '') === value) { return; }
+      if (!unsaved[id] && (saved.note || '') === value) { return; }
       results[id] = { verdict: saved.verdict, note: value };
       save(id);
     }

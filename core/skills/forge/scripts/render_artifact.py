@@ -557,10 +557,9 @@ VERDICT_CONTROLS = (
 
 def qa_round(data: dict) -> str:
     raw = str(data.get("round") or "1")
-    value = DB_ID_BAD_RE.sub("-", raw)
-    if len(value) > 100:
-        raise InputError(f"round {raw!r} is longer than 100 characters")
-    return value
+    if len(raw) > 100 or DB_ID_BAD_RE.search(raw):
+        raise InputError(f"round {raw!r} must be at most 100 letters, digits or _ - . ~ : @ +")
+    return raw
 
 
 def qa_ids(items: list[dict], round_id: str, has_explore: bool) -> list[str]:
@@ -689,9 +688,9 @@ def qa_item_html(idx: int, item_id: str, item: dict, group_why: str, base: Path,
     click = item.get("clickPass")
     rows = []
     if item.get("ticketKey") or item.get("ticketUrl"):
-        rows.append(
-            f'<dt>Ticket</dt><dd><a href="{esc(item.get("ticketUrl", ""))}">{esc(item.get("ticketKey", ""))}</a></dd>'
-        )
+        url = str(item.get("ticketUrl") or "")
+        key = esc(item.get("ticketKey") or url)
+        rows.append(f"<dt>Ticket</dt><dd>{web_link(url, key) if is_web_url(url) else key}</dd>")
     why = str(item.get("why") or "").strip()
     if not why and str(item.get("before") or "").strip():
         why = str(item["before"]).strip()
@@ -752,8 +751,8 @@ def explore_html(explore: object) -> str:
 
 def qa_groups_html(data: dict, items: list[dict], ids: list[str], base: Path) -> tuple[str, int]:
     groups = [g for g in data.get("groups") or [] if isinstance(g, dict) and g.get("name")]
-    by_name = {str(g["name"]): g for g in groups}
-    order = [str(g["name"]) for g in groups]
+    by_name = {str(g["name"]): g for g in reversed(groups)}
+    order = list(dict.fromkeys(str(g["name"]) for g in groups))
     for item in items:
         name = str(item.get("screenGroup") or "Other")
         if name not in order:
