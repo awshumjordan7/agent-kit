@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from aisetup import __version__
-from aisetup.compose import ComposeError, compose_tree, install_tree, installation_paths
+from aisetup.compose import ACTION_KEEP, ComposeError, install_tree, prepare_install
 from aisetup.denylist import load_entries, scan_tree
 from aisetup.deps import (
     CORE_DEPENDENCIES,
@@ -149,22 +149,32 @@ def _install(args: argparse.Namespace) -> int:
     try:
         if args.dry_run:
             with tempfile.TemporaryDirectory(prefix="agent-kit-dry-run-") as temporary:
-                destination = Path(temporary) / "claude"
-                result = compose_tree(profile, destination)
-                paths = installation_paths(args.home, destination, args.layers_root)
+                plan = prepare_install(
+                    profile,
+                    args.home,
+                    Path(temporary) / "claude",
+                    Path(temporary) / "auxiliary",
+                    args.layers_root,
+                )
             print("Planned files:")
-            for path in result.files:
+            for path in plan.files:
                 print(path)
             print("Preserved (unmanaged):")
-            for path in paths.preserved:
+            for path in plan.paths.preserved:
                 print(path)
             print("Retired (managed):")
-            for path in paths.retired:
+            for path in plan.paths.retired:
                 print(path)
-            for path in paths.retired_modified:
+            for path in plan.paths.retired_modified:
                 print(f"retired but locally modified: {path}")
+            print("Kept (locally modified):")
+            for path, status in plan.kept:
+                print(f"{path} ({status})")
+            for item in plan.auxiliary:
+                if item.action == ACTION_KEEP:
+                    print(f"{item.target} ({item.status})")
             print("Merged settings:")
-            print(json.dumps(result.settings, indent=2))
+            print(json.dumps(plan.settings, indent=2))
             print("MCP commands:")
             plans, retire = registration_for_layers(resolved, profile)
             for command in register_servers(plans, home=args.home, dry_run=True, retire=retire):
