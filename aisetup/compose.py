@@ -771,7 +771,9 @@ def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> Non
             shutil.copy2(source, target)
         elif item.action == ACTION_KEEP:
             if kit_new.is_symlink():
-                kit_new.unlink()
+                backup = _timestamped_backup_path(kit_new)
+                os.replace(kit_new, backup)
+                sys.stdout.write(f"backed up kit copy link: {kit_new} -> {backup}\n")
             elif item.back_up_kit_new:
                 backup = _timestamped_backup_path(kit_new)
                 shutil.copy2(kit_new, backup)
