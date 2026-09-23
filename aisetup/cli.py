@@ -173,8 +173,10 @@ def _install(args: argparse.Namespace) -> int:
             for item in plan.auxiliary:
                 if item.action == ACTION_KEEP:
                     print(f"{item.target} ({item.status})")
-            print("Merged settings:")
-            print(json.dumps(plan.settings, indent=2))
+            print("Settings changes:")
+            for change in plan.settings_changes:
+                detail = f" ({change.detail})" if change.detail else ""
+                print(f"{change.kind} {change.key_path}{detail}")
             print("MCP commands:")
             plans, retire = registration_for_layers(resolved, profile)
             for command in register_servers(plans, home=args.home, dry_run=True, retire=retire):

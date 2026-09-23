@@ -18,7 +18,7 @@ from typing import Any
 
 from aisetup.layers import Layer, ResolvedLayers, layer_data, load_json, resolve_layers
 from aisetup.manifest import ManifestError
-from aisetup.merge import deep_merge
+from aisetup.merge import KIND_CONFLICT, KIND_KIT, SettingsChange, deep_merge, merge_settings
 from aisetup.profile import load_recommended_profile, profile_render_context
 from aisetup.render import RenderError, render_agent_frontmatter, render_text
 
@@ -60,6 +60,9 @@ class InstallPlan:
     digests: dict[str, str]
     auxiliary: tuple[AuxiliaryFile, ...]
     auxiliary_digests: dict[str, str]
+    settings_changes: tuple[SettingsChange, ...]
+    settings_base: dict[str, Any]
+    settings_status: str | None
 
 
 DEFAULT_DIRECTORIES = ("hooks", "agents", "skills", "references", "scripts")
@@ -67,6 +70,7 @@ COMPILED_SUFFIXES = {".pyc", ".pyo", ".pyd"}
 COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.pyd")
 MANAGED_PATHS_VERSION = 1
 MANAGED_PATHS_FILENAME = "managed-paths.json"
+SETTINGS_BASE_FILENAME = "settings.base.json"
 KIT_NEW_SUFFIX = ".kit-new"
 SETTINGS_PATH = "settings.json"
 CODE_STANDARDS_PATH = "skills/forge/references/code-standards.md"
@@ -77,6 +81,7 @@ STATUS_KIT_UPDATE = "kit update pending"
 STATUS_UNRECORDED = "unrecorded"
 STATUS_LOCALLY_MODIFIED = "locally modified"
 STATUS_CONFLICT = "conflict"
+STATUS_INVALID = "invalid"
 KEPT_STATUSES = frozenset({STATUS_UNRECORDED, STATUS_LOCALLY_MODIFIED, STATUS_CONFLICT})
 
 ACTION_NONE = "none"
@@ -406,6 +411,54 @@ def installation_paths(home: Path, staged: Path, layers_root: Path) -> Installat
     )
 
 
+def _settings_text(settings: dict[str, Any]) -> str:
+    return json.dumps(settings, indent=2) + "\n"
+
+
+def _load_settings_base(layers_root: Path) -> dict[str, Any] | None:
+    path = layers_root.expanduser() / SETTINGS_BASE_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        base = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        sys.stderr.write(f"warning: ignoring unreadable {path}: {error}\n")
+        return None
+    if not isinstance(base, dict):
+        sys.stderr.write(f"warning: ignoring {path}: not a JSON object\n")
+        return None
+    return base
+
+
+def _write_settings_base(layers_root: Path, settings: dict[str, Any]) -> None:
+    path = layers_root.expanduser() / SETTINGS_BASE_FILENAME
+    temporary = path.with_suffix(".tmp")
+    temporary.unlink(missing_ok=True)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        file.write(_settings_text(settings))
+    os.replace(temporary, path)
+
+
+def _merge_live_settings(
+    ours: dict[str, Any], live: Path, layers_root: Path, recorded_digest: str | None
+) -> tuple[dict[str, Any], tuple[SettingsChange, ...], str | None]:
+    if not live.is_file():
+        return ours, (), STATUS_MISSING
+    try:
+        theirs = json.loads(live.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return ours, (), STATUS_INVALID
+    if not isinstance(theirs, dict):
+        return ours, (), STATUS_INVALID
+    base = _load_settings_base(layers_root)
+    if base is None:
+        # Without the previous kit render, a live file still matching the record is that render.
+        base = theirs if _sha256(live) == recorded_digest else {}
+    merged, changes = merge_settings(base, ours, theirs)
+    return merged, tuple(changes), None
+
+
 def _auxiliary_action(status: str | None) -> str:
     if status is None:
         return ACTION_NONE
@@ -489,6 +542,12 @@ def prepare_install(
                 kit_digests[relative] = kit_digest
         if "CLAUDE.md" in kit_digests:
             _rerender_derived(staging, auxiliary, home / "CLAUDE.md")
+        staged_settings = staging / SETTINGS_PATH
+        kit_digests[SETTINGS_PATH] = _sha256(staged_settings)
+        settings, settings_changes, settings_status = _merge_live_settings(
+            result.settings, home / SETTINGS_PATH, layers_root, previous.get(SETTINGS_PATH)
+        )
+        staged_settings.write_text(_settings_text(settings), encoding="utf-8")
         digests = {
             relative: kit_digests.get(relative) or _sha256(staging / relative)
             for relative in result.files
@@ -502,12 +561,15 @@ def prepare_install(
         raise ComposeError(str(error)) from error
     return InstallPlan(
         files=result.files,
-        settings=result.settings,
+        settings=settings,
         paths=paths,
         kept=tuple(kept),
         digests=digests,
         auxiliary=auxiliary_files,
         auxiliary_digests=auxiliary_digests,
+        settings_changes=settings_changes,
+        settings_base=result.settings,
+        settings_status=settings_status,
     )
 
 
@@ -614,12 +676,31 @@ def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> Comp
                 f"kept locally modified: {relative} "
                 f"({status}; kit version in {relative}{KIT_NEW_SUFFIX})\n"
             )
+        _print_settings_changes(plan)
         _install_auxiliary(auxiliary, plan.auxiliary)
         _write_managed_record(layers_root, plan.digests, plan.auxiliary_digests)
+        _write_settings_base(layers_root, plan.settings_base)
         return ComposeResult(plan.files, plan.settings, backup)
     finally:
         if work.exists():
             shutil.rmtree(work)
+
+
+def _print_settings_changes(plan: InstallPlan) -> None:
+    if plan.settings_status == STATUS_INVALID:
+        sys.stdout.write(
+            f"{SETTINGS_PATH}: invalid JSON replaced by the kit version (old copy in backup)\n"
+        )
+    if plan.settings_status is not None:
+        return
+    applied = sum(1 for change in plan.settings_changes if change.kind == KIND_KIT)
+    kept = len(plan.settings_changes) - applied
+    sys.stdout.write(
+        f"{SETTINGS_PATH}: {applied} kit change(s) applied, {kept} local value(s) kept\n"
+    )
+    for change in plan.settings_changes:
+        if change.kind == KIND_CONFLICT:
+            sys.stdout.write(f"{SETTINGS_PATH} conflict: {change.key_path} (local value kept)\n")
 
 
 def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> None:
