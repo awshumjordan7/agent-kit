@@ -1318,10 +1318,11 @@ ${inputs}`,
   return result.fix
 }
 
-function verifyFixes(items, fixResult, label = 'verify-review') {
+function verifyFixes(items, fixResult, label = 'verify-review', recheckIds = []) {
   const explanations = Array.isArray(fixResult.results) ? fixResult.results : []
   const diff = String(fixResult.diff || '').slice(0, 12000)
-  return withTimeout(agentT('reviewer', `Verify only the original findings below after a fix round. Return exactly one result for each original id with status RESOLVED or UNRESOLVED and a one-line reason. Do not add findings or assess anything outside this list.
+  const recheck = recheckIds.length ? ` Ids ${JSON.stringify(recheckIds)} were resolved in an earlier round and have no explanation here; check that their fix still holds in current code after this diff.` : ''
+  return withTimeout(agentT('reviewer', `Verify only the original findings below after a fix round. Return exactly one result for each original id with status RESOLVED or UNRESOLVED and a one-line reason. Do not add findings or assess anything outside this list.${recheck}
 
 ORIGINAL FINDINGS
 ${JSON.stringify(items.map(item => ({ id: findingKey(item), finding: item })))}
@@ -1415,8 +1416,9 @@ ${opts.planExcerpt}`
 
 // One capped loop for gate failures and review findings. Each round a decider writes the fix
 // spec (applying a small fix set itself), an applier applies the rest, then the re-gate checks
-// gate items and a separate verifier re-checks only this round's fixed review items. Gate item
-// ids come from failure text and change across edits, so gate progress is a failure count.
+// gate items and a separate verifier re-checks this round's fixed review items, plus items closed
+// earlier whose files this round touched. Gate item ids come from failure text and change across
+// edits, so gate progress is a failure count.
 async function fixLoop(opts) {
   const { kind, label, runGate } = opts
   const afterFix = opts.afterFix || (async () => true)
@@ -1425,6 +1427,7 @@ async function fixLoop(opts) {
   let gateOpen = kind === 'gate' ? gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] }) : []
   const reviewOpen = new Map(opts.reviewItems.map(item => [findingKey(item), item]))
   const closedIds = new Set()
+  const verifiedClosed = new Map()
   const disputes = []
   const history = []
   const deciderNotes = []
@@ -1527,14 +1530,25 @@ async function fixLoop(opts) {
       const reviewFixed = fixItems.filter(item => item.source !== 'gate' && reviewOpen.has(findingKey(item)))
       if (reviewFixed.length) {
         const verifyLabel = round === 1 ? 'verify-review' : `verify-review-${round}`
-        const verify = await verifyFixes(reviewFixed, fix, verifyLabel)
+        const touchedSet = new Set(touched)
+        const recheck = [...verifiedClosed.values()].filter(item => [item.file, ...(item.specFiles || [])].some(file => file && touchedSet.has(file)))
+        const checked = [...reviewFixed, ...recheck]
+        const verify = await verifyFixes(checked, fix, verifyLabel, recheck.map(item => findingKey(item)))
         record.verify = verify
-        const stillOpen = new Set((await unresolvedAfterVerification(reviewFixed, verify, verifyLabel)).map(item => findingKey(item)))
+        const stillOpen = new Set((await unresolvedAfterVerification(checked, verify, verifyLabel)).map(item => findingKey(item)))
         for (const item of reviewFixed) {
           const id = findingKey(item)
           if (stillOpen.has(id)) continue
           reviewOpen.delete(id)
           closedIds.add(id)
+          verifiedClosed.set(id, item)
+        }
+        for (const item of recheck) {
+          const id = findingKey(item)
+          if (!stillOpen.has(id)) continue
+          verifiedClosed.delete(id)
+          reviewOpen.set(id, item)
+          await decide(`${label} round ${round}: ${item.file}:${item.line}, closed in an earlier round, failed re-verification after this round's edits and reopened.`)
         }
       }
     }

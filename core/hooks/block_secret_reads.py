@@ -159,7 +159,8 @@ REDIRECT_FROM_SECRET_WORD = re.compile(
 )
 
 # Raw dumps of files that hold cookies, auth headers, and typed values: a
-# Playwright trace, a HAR, or an auth storage-state file. Only commands that
+# Playwright trace (zipped, or the *.trace / *.network files `unzip -d` leaves),
+# a HAR, or an auth storage-state file. Only commands that
 # print bytes are blocked; cp, mv, grep, jq, zipinfo, `unzip -l`, and
 # `npx playwright show-trace` stay allowed.
 RAW_DUMP_COMMAND = re.compile(
@@ -171,12 +172,16 @@ RAW_DUMP_COMMAND = re.compile(
     r")",
     re.IGNORECASE,
 )
+# Anchored at the end of a path token so `docker.network.yml` and `strace` do not match.
+UNZIPPED_TRACE = r"\.(?:trace|network)(?=$|[\s;&|)'\"])"
 RAW_DUMP_TARGET = re.compile(
-    r"trace\.zip|\.har\b|/\.auth/|storage[-_]?state\w*\.json", re.IGNORECASE
+    rf"trace\.zip|\.har\b|/\.auth/|storage[-_]?state\w*\.json|{UNZIPPED_TRACE}", re.IGNORECASE
 )
 # `> file` is a write, not a dump, so redirect targets are removed before the path check.
 OUTPUT_REDIRECT = re.compile(r">{1,2}\s*[^\s;&|]+")
-RAW_DUMP_READ_PATH = re.compile(r"\.har\b|/\.auth/|storage[-_]?state\w*\.json", re.IGNORECASE)
+RAW_DUMP_READ_PATH = re.compile(
+    rf"\.har\b|/\.auth/|storage[-_]?state\w*\.json|{UNZIPPED_TRACE}", re.IGNORECASE
+)
 TRACE_READER = "python3 ~/.claude/skills/forge/scripts/trace-read.py <file>"
 
 # A heredoc opener: `<<` or `<<-`, optional quoting around the terminator word.
@@ -461,9 +466,9 @@ def path_verdict(file_path: str) -> str | None:
 
 
 def raw_dump_path_verdict(file_path: str) -> str | None:
-    """Return a reason to block a Read of a HAR or auth storage-state file."""
+    """Return a reason to block a Read of a trace, HAR, or auth storage-state file."""
     if RAW_DUMP_READ_PATH.search(file_path):
-        return f"reads a HAR or auth-state file raw {matched('raw-dump-read', file_path)}"
+        return f"reads a trace, HAR, or auth-state file raw {matched('raw-dump-read', file_path)}"
     return None
 
 
@@ -524,7 +529,8 @@ def block_raw_dump(noun: str, reason: str) -> int:
         f"Blocked by block_secret_reads hook: this {noun} {reason}.\n"
         "Traces, HAR files, and auth storage-state files hold cookies, auth "
         "headers, and typed values. For a redacted view of actions and "
-        f"requests, run `{TRACE_READER}`. Copying, listing (`unzip -l`, "
+        f"requests, run `{TRACE_READER}` (on the trace.zip, not the files "
+        "`unzip -d` extracts from it). Copying, listing (`unzip -l`, "
         "`zipinfo`), and `npx playwright show-trace` stay allowed.",
         file=sys.stderr,
     )
