@@ -8,6 +8,8 @@ Usage:
 
 Exit codes: 0 rendered, 1 the template has a slot this renderer did not fill, 2 bad input.
 Each template's leading comment is its data contract; it is removed before slots are filled.
+Warnings (unknown keys, a missing summary) go to stderr and do not change the exit code.
+Relative file paths inside a data file resolve against the data file's directory.
 """
 
 import argparse
@@ -26,6 +28,19 @@ FIXED_IDS = {
     "tests", "access-rules", "plan-review", "pending", "links", "access", "users", "jira",
     "context", "qa-items", "handoff",
 }
+KNOWN_KEYS = {
+    "plan": {
+        "ticket", "title", "lane", "repo", "date", "runDir", "sandboxTier", "lenses", "status",
+        "accessRules", "planReview", "pending", "links", "next",
+    },
+    "qa": {
+        "summary", "ticket", "shortTitle", "date", "tier", "branch", "sandboxId", "previewUrl",
+        "rootLoginEmail", "rootLoginPassword", "adminCreds", "users", "jiraTickets", "links",
+        "contextItems", "qaItems", "handoff",
+    },
+    "generic": {"summary", "title", "eyebrow", "status", "links"},
+}
+LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 HANDOFF_KEYS = [
     ("WHAT_CHANGED_HTML", "whatChanged"),
     ("GATE_RESULTS_HTML", "gateResults"),
@@ -46,32 +61,81 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def inline(text: str) -> str:
-    """Escape text; `code` spans become <code>, **bold** becomes <strong>."""
-    parts = re.split(r"(`[^`]+`)", str(text))
+def warn(message: str) -> None:
+    print(f"render_artifact: warning: {message}", file=sys.stderr)
+
+
+def is_web_url(target: str) -> bool:
+    return target.startswith(("http://", "https://"))
+
+
+def web_link(target: str, label: str) -> str:
+    return f'<a href="{esc(target)}" target="_blank" rel="noopener">{label}</a>'
+
+
+def bold_and_links(text: str) -> str:
+    out = []
+    pos = 0
+    for m in LINK_RE.finditer(text):
+        out.append(re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc(text[pos:m.start()])))
+        if is_web_url(m.group(2)):
+            out.append(web_link(m.group(2), esc(m.group(1))))
+        else:
+            out.append(esc(m.group(0)))
+        pos = m.end()
+    out.append(re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc(text[pos:])))
+    return "".join(out)
+
+
+def inline(text: object) -> str:
+    """Escape text; `code` spans become <code>, **bold** becomes <strong>, and [label](url)
+    becomes a link when url is http(s). Inline code never gets a Copy button."""
+    parts = re.split(r"(`[^`]+`)", "" if text is None else str(text))
     out = []
     for part in parts:
         if part.startswith("`") and part.endswith("`") and len(part) > 1:
             out.append(f"<code>{esc(part[1:-1])}</code>")
         else:
-            out.append(re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc(part)))
+            out.append(bold_and_links(part))
     return "".join(out)
 
 
-def copy_spans(text: object) -> str:
-    """Escape text; each `code` span becomes copyable code with its own Copy button."""
-    parts = re.split(r"(`[^`]+`)", "" if text is None else str(text))
-    out = []
-    for part in parts:
-        if part.startswith("`") and part.endswith("`") and len(part) >= 2:
-            raw = esc(part[1:-1])
-            out.append(
-                f'<code class="copy-code">{raw}</code><button type="button" '
-                f'class="copy-btn copy-code-btn" data-copy="{raw}">Copy</button>'
-            )
-        else:
-            out.append(esc(part))
-    return "".join(out)
+def copy_button(text: str) -> str:
+    return f'<button type="button" class="copy-btn copy-code-btn" data-copy="{esc(text)}">Copy</button>'
+
+
+def code_block(text: str) -> str:
+    return f'<div class="codeblock"><pre><code>{esc(text)}</code></pre>{copy_button(text)}</div>'
+
+
+def command_block(block: dict) -> str:
+    """{"command", "cwd", "note"?}: a "Run in" line and a block whose Copy copies the command only."""
+    command, cwd = block.get("command"), block.get("cwd")
+    if not isinstance(command, str) or not isinstance(cwd, str) or not command or not cwd:
+        raise InputError(f"a command block needs non-empty command and cwd strings; got keys {sorted(block)}")
+    note = f'<p class="cmd-note">{inline(block["note"])}</p>' if block.get("note") else ""
+    return f'<div class="cmd"><div class="cmd-cwd">Run in: <code>{esc(cwd)}</code></div>{code_block(command)}{note}</div>'
+
+
+def text_or_command(value: object) -> str:
+    return command_block(value) if isinstance(value, dict) else inline(value)
+
+
+def summary_box(inner: str) -> str:
+    return f'<div class="summary" role="note"><div class="summary-label">Summary</div>{inner}</div>'
+
+
+def data_summary(data: dict) -> str:
+    text = str(data.get("summary") or "").strip()
+    if not text:
+        warn("no summary key; the page renders without a Summary box")
+        return ""
+    return summary_box(f"<p>{inline(text)}</p>")
+
+
+def data_path(value: str, base: Path) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else (base / path).resolve()
 
 
 def slug(text: str) -> str:
@@ -173,7 +237,7 @@ def render_blocks(blocks: list[tuple[str, object]], ol_label: str = "Item") -> s
         elif kind == "p":
             out.append(f"<p>{inline(val)}</p>")
         elif kind == "pre":
-            out.append(f"<pre><code>{esc(val)}</code></pre>")
+            out.append(code_block(val))
         elif kind == "table":
             out.append(render_table(val))
         elif kind == "ul":
@@ -240,8 +304,8 @@ def pairs(value: object, keys: tuple[str, str]) -> list[tuple[str, str]]:
 def link_rows(links: object) -> str:
     out = []
     for label, target in pairs(links, ("label", "url")):
-        if target.startswith(("http://", "https://")):
-            value = f'<a href="{esc(target)}" target="_blank" rel="noopener">{esc(target)}</a>'
+        if is_web_url(target):
+            value = web_link(target, esc(target))
         else:
             value = f"<code>{esc(target)}</code>"
         out.append(
@@ -261,10 +325,16 @@ def section_html(sid: str, label: str, inner: str) -> str:
     return f'<section id="{sid}" data-toc="{esc(label)}"><h2>{esc(label)}</h2>{inner}</section>'
 
 
-def plan_slots(data: dict, markdown: str) -> tuple[dict[str, str], dict[str, bool]]:
+def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     md_title, sections = parse_markdown(markdown)
     tests = [body for name, body in sections if name.strip().lower() == "tests"]
-    others = [(name, body) for name, body in sections if name.strip().lower() != "tests"]
+    summaries = [body for name, body in sections if name.strip().lower() == "summary"]
+    others = [(name, body) for name, body in sections if name.strip().lower() not in ("tests", "summary")]
+    if summaries:
+        summary_html = summary_box(render_blocks(parse_blocks(summaries[0])))
+    else:
+        summary_html = ""
+        warn("plan.md has no ## Summary section; the page renders without a Summary box")
     if tests:
         blocks = parse_blocks(tests[0])
         if len(blocks) == 1 and blocks[0][0] == "p" and str(blocks[0][1]).startswith("None:"):
@@ -328,6 +398,7 @@ def plan_slots(data: dict, markdown: str) -> tuple[dict[str, str], dict[str, boo
         "EYEBROW": esc(f"Forge plan - {lane} lane" if lane else "Forge plan"),
         "META_HTML": "".join(meta),
         "STATUS": inline(data.get("status") or "Awaiting approval"),
+        "SUMMARY_HTML": summary_html,
         "SECTIONS": render_sections(others),
         "TESTS_HTML": tests_html,
         "ACCESS_RULES_SECTION": access,
@@ -336,43 +407,46 @@ def plan_slots(data: dict, markdown: str) -> tuple[dict[str, str], dict[str, boo
         "LINKS": link_rows(data.get("links")),
         "NEXT": f'<div class="next"><strong>Say "{esc(nxt)}" to run it.</strong></div>' if nxt else "",
     }
-    return slots, {}
+    return slots, {"SUMMARY": bool(summary_html)}
 
 
-def generic_slots(data: dict, markdown: str) -> tuple[dict[str, str], dict[str, bool]]:
+def generic_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     md_title, sections = parse_markdown(markdown)
     status = data.get("status", "")
     slots = {
         "TITLE": esc(data.get("title") or md_title),
         "EYEBROW": esc(data.get("eyebrow", "")),
         "STATUS": inline(status),
+        "SUMMARY_HTML": data_summary(data),
         "SECTIONS": render_sections(sections),
         "LINKS": link_rows(data.get("links")),
     }
-    return slots, {"STATUS": bool(status)}
+    return slots, {"STATUS": bool(status), "SUMMARY": bool(slots["SUMMARY_HTML"])}
 
 
-def qa_item_html(idx: int, item: dict) -> str:
+def qa_item_html(idx: int, item: dict, base: Path) -> str:
     click = item.get("clickPass")
     status = str(click.get("status", "PENDING")).upper() if click else "none"
     label = "pending" if status == "PENDING" else (status if click else "not run")
     group = item.get("screenGroup") or "Other"
     rows = [
         f'<dt>Ticket</dt><dd><a href="{esc(item.get("ticketUrl", ""))}">{esc(item.get("ticketKey", ""))}</a></dd>',
-        f'<dt>Before</dt><dd>{copy_spans(item.get("before", ""))}</dd>',
+        f'<dt>Before</dt><dd>{inline(item.get("before", ""))}</dd>',
     ]
     if item.get("whatChanged"):
-        rows.append(f'<dt>What changed</dt><dd>{copy_spans(item["whatChanged"])}</dd>')
+        rows.append(f'<dt>What changed</dt><dd>{inline(item["whatChanged"])}</dd>')
     if item.get("why"):
-        rows.append(f'<dt>Why</dt><dd>{copy_spans(item["why"])}</dd>')
-    steps = "".join(f"<li>{copy_spans(s)}</li>" for s in item.get("steps") or [])
+        rows.append(f'<dt>Why</dt><dd>{inline(item["why"])}</dd>')
+    steps = "".join(f"<li>{inline(s)}</li>" for s in item.get("steps") or [])
     rows.append(f"<dt>Steps</dt><dd><ol>{steps}</ol></dd>")
-    rows.append(f'<dt>Expected</dt><dd>{copy_spans(item.get("expected", ""))}</dd>')
+    rows.append(f'<dt>Expected</dt><dd>{inline(item.get("expected", ""))}</dd>')
     if click:
-        shot = click.get("screenshot", "")
+        shot = str(click.get("screenshot") or "")
+        if shot and not is_web_url(shot):
+            shot = str(data_path(shot, base))
         shot_link = f' <a href="{esc(shot)}">screenshot</a>' if shot else ""
         rows.append(f'<dt>Click pass</dt><dd>{esc(status)} - {esc(click.get("note", ""))}{shot_link}</dd>')
-    rows.append(f'<dt>Evidence</dt><dd>{copy_spans(item.get("evidence", ""))}</dd>')
+    rows.append(f'<dt>Evidence</dt><dd>{inline(item.get("evidence", ""))}</dd>')
     return (
         f'<details class="qa-item" data-id="{esc(item.get("id", str(idx)))}" data-pr="{esc(item.get("pr", ""))}" '
         f'data-group="{esc(group)}" data-status="{esc(status)}">'
@@ -403,7 +477,7 @@ def qa_status(items: list[dict]) -> str:
     return f"{len(items)} items: " + " &middot; ".join(parts)
 
 
-def qa_slots(data: dict, _markdown: str) -> tuple[dict[str, str], dict[str, bool]]:
+def qa_slots(data: dict, _markdown: str, base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     items = data.get("qaItems") or []
     users = data.get("users") or []
     jira = data.get("jiraTickets") or []
@@ -426,6 +500,7 @@ def qa_slots(data: dict, _markdown: str) -> tuple[dict[str, str], dict[str, bool
         "ROOT_LOGIN_PASSWORD": esc(data.get("rootLoginPassword", "")),
         "ADMIN_CREDS": esc(data.get("adminCreds", "")),
         "STATUS": qa_status(items),
+        "SUMMARY_HTML": data_summary(data),
         "USERS_ROWS_HTML": "".join(
             f'<tr class="copy-row"><td>{esc(u.get("role", ""))}</td><td><span class="copy-value" data-role="value"></span></td>'
             f'<td><button type="button" class="copy-btn" data-copy="{esc(u.get("email", ""))}">Copy</button></td>'
@@ -438,10 +513,13 @@ def qa_slots(data: dict, _markdown: str) -> tuple[dict[str, str], dict[str, bool
             for r in jira
         ),
         "LINKS_HTML": link_rows(data.get("links")),
-        "CONTEXT_ITEMS_HTML": "".join(f"<li>{copy_spans(c)}</li>" for c in context),
-        "QA_ITEMS_HTML": "".join(qa_item_html(i, item) for i, item in enumerate(items, start=1)),
+        "CONTEXT_ITEMS_HTML": "".join(f"<li>{text_or_command(c)}</li>" for c in context),
+        "QA_ITEMS_HTML": "".join(qa_item_html(i, item, base) for i, item in enumerate(items, start=1)),
     }
-    keep = {"USERS_SECTION": bool(users), "JIRA_SECTION": bool(jira), "CONTEXT_SECTION": bool(context)}
+    keep = {
+        "USERS_SECTION": bool(users), "JIRA_SECTION": bool(jira), "CONTEXT_SECTION": bool(context),
+        "SUMMARY": bool(slots["SUMMARY_HTML"]),
+    }
     any_handoff = False
     for slot, key in HANDOFF_KEYS:
         slots[slot] = handoff_html(key)
@@ -461,11 +539,13 @@ def build_toc(page: str, slots: dict[str, str]) -> str:
     return "".join(f'<a href="#{sid}">{label}</a>' for sid, label in entries)
 
 
-def render(kind: str, data: dict, markdown: str) -> tuple[str, list[str]]:
+def render(kind: str, data: dict, markdown: str, base: Path) -> tuple[str, list[str]]:
+    for key in sorted(set(data) - KNOWN_KEYS[kind]):
+        warn(f"unknown key {key} ignored")
     template = (REFERENCES / f"{kind}-artifact.html").read_text()
     page = re.sub(r"\A\s*<!--.*?-->\s*", "", template, count=1, flags=re.S)
     builder = {"plan": plan_slots, "qa": qa_slots, "generic": generic_slots}[kind]
-    slots, keep = builder(data, markdown)
+    slots, keep = builder(data, markdown, base)
     for name, kept in keep.items():
         page = keep_block(page, name, kept)
     slots["TOC"] = build_toc(page, slots)
@@ -488,7 +568,7 @@ def main() -> int:
         markdown = args.markdown.read_text() if args.markdown else ""
         if not isinstance(data, dict):
             raise InputError(f"{args.data} must hold a JSON object")
-        page, missing = render(args.kind, data, markdown)
+        page, missing = render(args.kind, data, markdown, args.data.resolve().parent)
     except (OSError, json.JSONDecodeError, InputError) as exc:
         print(f"render_artifact: {exc}", file=sys.stderr)
         return 2

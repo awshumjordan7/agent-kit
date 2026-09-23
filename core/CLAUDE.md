@@ -48,8 +48,10 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   templates are `plan-artifact.html`, `qa-artifact.html`, and `generic-artifact.html` in
   `~/.claude/skills/forge/references/`; the one renderer is
   `python3 ~/.claude/skills/forge/scripts/render_artifact.py {plan|qa|generic} --data <json> [--markdown <md>] --out <html>`.
-  No worker writes its own renderer. Every artifact is glanceable: tables over prose, copyable
-  credentials, a links section, no changelog or update prose.
+  No worker writes its own renderer. Every artifact is glanceable: a 1-3 sentence summary at the
+  top, tables over prose, copyable credentials, a links section, no changelog or update prose.
+  Copy buttons go only on things a person pastes: links, access-card values, users rows,
+  command blocks, and fenced code blocks; inline code gets none.
 - **Bash output stays small.** A command expected to print more than ~5 KB writes to a file in the
   run dir and returns `tail` or `grep` of it. Never `cat` a file over 200 lines; use ranged `sed -n`.
 - **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'

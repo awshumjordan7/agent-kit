@@ -6,6 +6,9 @@
   fills every slot, and exits 1 when a slot is left unfilled.
 
   qa-data.json keys (placeholder in brackets):
+    summary [SUMMARY_HTML]
+                        1-3 sentences for the Summary box under the title. Missing: stderr
+                        warning, no box.
     ticket [TICKET], shortTitle [SHORT_TITLE] (2-4 words), date [DATE], tier [TIER],
     branch [BRANCH], sandboxId [SANDBOX_ID]
     previewUrl [PREVIEW_URL], rootLoginEmail [ROOT_LOGIN_EMAIL],
@@ -19,7 +22,7 @@
                         Objects {key, url, title, role}. Empty: no Jira tickets section.
     links [LINKS_HTML]  Objects {label, url} or [label, url] pairs; links table with Copy.
     contextItems [CONTEXT_ITEMS_HTML]
-                        Strings. Empty: no Useful context section.
+                        Strings or command blocks. Empty: no Useful context section.
     qaItems [QA_ITEMS_HTML]
                         One collapsed <details class="qa-item"> each. Required: title,
                         ticketKey, ticketUrl, before, steps[], expected, evidence. Optional:
@@ -27,7 +30,8 @@
                         whatChanged and why (default "", row omitted), id (default the
                         1-based index as a string), clickPass (default absent = "not run").
                         clickPass is {status: "PASS" | "FAIL" | "SKIP" | "PENDING", note,
-                        screenshot (path or URL, may be "")}. PENDING shows as "pending".
+                        screenshot (URL, or a path resolved against the data file's
+                        directory; may be "")}. PENDING shows as "pending".
     handoff             {whatChanged [WHAT_CHANGED_HTML], gateResults [GATE_RESULTS_HTML],
                         reviewScores [REVIEW_SCORES_HTML], openFindings [OPEN_FINDINGS_HTML],
                         botVerdicts [BOT_VERDICTS_HTML], judgmentCalls [JUDGMENT_CALLS_HTML],
@@ -35,9 +39,19 @@
                         simple markdown. An empty key hides its row; all empty hides Handoff.
   Derived, not data keys: STATUS (PASS / FAIL / pending counts from clickPass) and TOC.
 
-  Copyable code spans: text in single backticks inside qaItems (before, whatChanged, why,
-  steps, expected, evidence) and contextItems renders as <code class="copy-code"> plus a
-  Copy button. Every other value is HTML-escaped.
+  Shared rules (plan, qa, generic):
+    Unknown top-level keys print "render_artifact: warning: unknown key <key> ignored" to stderr;
+    the render still exits 0. Relative file paths in the data file resolve against the data
+    file's directory.
+    Command block: {"command": str, "cwd": str, "note"?: str}. Renders a "Run in: <cwd>" line and
+    a monospace block whose Copy button copies the command only (no "$" prompt). note explains
+    placeholders such as $FORK. Allowed wherever a key says "command block".
+    Copy buttons appear only on links rows, access-card values, users rows, command blocks, and
+    fenced code blocks. Inline `code` renders as code with no button.
+    Inline text handles `code`, **bold**, and [label](url); only http(s) URLs become links,
+    anything else stays escaped text.
+  Item fields (before, whatChanged, why, steps, expected, evidence) and string contextItems
+  are inline text. Every other value is HTML-escaped.
 
   Verified checkboxes persist per viewer in localStorage under qa-verified:<ticket>:<sandbox>.
 
@@ -158,6 +172,15 @@ a { color: var(--accent); overflow-wrap: anywhere; }
 }
 .copy-btn:hover { background: var(--accent-soft); }
 .copy-btn[disabled] { opacity: .7; cursor: default; }
+.summary { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.summary-label { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+.summary > :last-child { margin-bottom: 0; }
+.codeblock { position: relative; margin: 0 0 12px; }
+.codeblock pre { margin: 0; padding-right: 72px; }
+.codeblock .copy-code-btn { position: absolute; top: 6px; right: 6px; margin: 0; background: var(--surface); }
+.cmd { display: grid; gap: 4px; margin: 0 0 12px; }
+.cmd .codeblock { margin: 0; }
+.cmd-cwd, .cmd-note { margin: 0; font-size: 13px; color: var(--muted); }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 560px) {
   h1 { font-size: 23px; }
@@ -218,6 +241,10 @@ details.handoff[open] > summary { margin-bottom: 8px; }
     <h1>{{TICKET}} - {{SHORT_TITLE}}</h1>
     <div class="meta"><span>{{DATE}}</span><span class="pill">tier: {{TIER}}</span><span class="pill">branch: {{BRANCH}}</span><span class="pill">sandbox: {{SANDBOX_ID}}</span></div>
   </header>
+
+  <!--SUMMARY_START-->
+  {{SUMMARY_HTML}}
+  <!--SUMMARY_END-->
 
   <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
 
