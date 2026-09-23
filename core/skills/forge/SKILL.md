@@ -64,12 +64,7 @@ To run an already confirmed plan, follow `references/implement-mode.md`.
 
 ## Optional stages
 
-Core ships optional stages disabled. An overlay may supply and enable:
-
-- `stages.sandbox` → `references/stages/sandbox.md`
-- `stages.ff_review` → `references/stages/ff_review.md`
-- `stages.qa_login` → `references/stages/qa_login.md`
-- ticket handling → `references/stages/ticket.md`
+Core ships optional stages disabled. An overlay may supply and enable `stages.sandbox`, `stages.ff_review`, `stages.qa_login`, and ticket handling; each reads its doc from the overlay at `references/stages/<stage>.md`.
 
 ## Guardrails
 

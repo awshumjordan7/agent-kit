@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
 import sys
 import tempfile
+import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -155,6 +157,44 @@ def _render_templates(
             target.write_text(rendered, encoding="utf-8")
 
 
+STAGED_DOCTOR_MODULE = "_aisetup_staged_doctor"
+
+
+def _render_derived(destination: Path, auxiliary_root: Path) -> None:
+    doctor_path = destination / "scripts/doctor.py"
+    if not doctor_path.is_file():
+        raise ComposeError(f"staged doctor.py is missing: {doctor_path}")
+    spec = importlib.util.spec_from_file_location(STAGED_DOCTOR_MODULE, doctor_path)
+    if spec is None or spec.loader is None:
+        raise ComposeError(f"cannot load staged doctor.py: {doctor_path}")
+    doctor = importlib.util.module_from_spec(spec)
+    # A bytecode cache here would be installed as a managed file. The dataclasses in
+    # doctor.py need the module registered in sys.modules while it executes.
+    write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    sys.modules[STAGED_DOCTOR_MODULE] = doctor
+    try:
+        spec.loader.exec_module(doctor)
+        ctx = doctor.Context(root=destination, config=doctor.load_config())
+    except (ImportError, AttributeError, SyntaxError, OSError, tomllib.TOMLDecodeError) as error:
+        raise ComposeError(f"cannot load staged doctor.py: {error}") from error
+    finally:
+        sys.modules.pop(STAGED_DOCTOR_MODULE, None)
+        sys.dont_write_bytecode = write_bytecode
+
+    targets = (
+        (destination / "skills/forge/references/code-standards.md", doctor.expected_code_standards),
+        (auxiliary_root / ".codex/AGENTS.md", doctor.expected_codex_agents),
+    )
+    for target, generate in targets:
+        if not target.is_file():
+            continue
+        text, error = generate(ctx)
+        if error is not None or text is None:
+            raise ComposeError(f"cannot render {target}: {error or 'no content'}")
+        target.write_text(text, encoding="utf-8")
+
+
 def compose_tree(
     profile: dict[str, Any], destination: Path, *, auxiliary_root: Path | None = None
 ) -> ComposeResult:
@@ -184,6 +224,7 @@ def compose_tree(
         context = profile_render_context(default_profile, fragments, profile)
         _render_templates(destination, layers, context)
         _render_agents(destination, profile)
+        _render_derived(destination, auxiliary_root)
     except (ManifestError, OSError, UnicodeError) as error:
         raise ComposeError(str(error)) from error
 

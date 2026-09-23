@@ -35,7 +35,7 @@ CODEX_HEADER = (
 )
 DEFAULT_CONFIG: dict[str, Any] = {
     "models": {"codex_version": "5.6", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
-    "ignore": {"globs": []},
+    "ignore": {"globs": ["skills/synced/**"]},
     "thresholds": {"agent_max_lines": 60},
     "repos": {"roots": ["~/Projects/work/unity"]},
     # Codex reads its global AGENTS.md on every run, so it mirrors CLAUDE.md minus the
