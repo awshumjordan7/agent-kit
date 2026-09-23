@@ -9,22 +9,37 @@
     ticket        Ticket key, or "" when there is none.
     title         Page title; defaults to plan.md's "# " title.
     lane          Forge lane (build, quick, ...); the eyebrow reads "Forge plan - <lane> lane".
-    repo, date, runDir, sandboxTier   Meta pills; an empty value is left out.
-    lenses        Review lenses, as a list or a comma string.
+    repo, date    Meta line; an empty value is left out.
+    runDir, sandboxTier, lenses   First rows of the Links table ("Run dir", "Sandbox", "Lenses");
+                  an empty value is left out. lenses is a list or a comma string.
+    decision      {"approving": str, "size": str, "topRisk": str}. Rendered as the Decision box
+                  under the Summary, plus a Tests line from plan.md "## Tests" (its "None: <reason>"
+                  line, or the count of its table rows). Missing: stderr warning; the box shows
+                  only the Tests line. An empty field is left out.
     status        One line for the status banner; defaults to "Awaiting approval".
     accessRules   List of access-rule sentences. Empty: no Access rules section.
-    planReview    {verdict, findings: [{severity, text, disposition}]}. No verdict and no
-                  findings: no Plan review section.
-    pending       [[item, state], ...] or [{item, state}, ...]. Empty: no Pending section.
+    planReview    {verdict, findings: [{severity, text, disposition}]}. Renders as one closed line,
+                  "N findings: F folded, R rejected, O other", that opens to the verdict and table.
+                  A disposition starting with "folded" counts as folded, one starting with
+                  "rejected" as rejected (case-insensitive); anything else counts as other. No
+                  verdict and no findings: no Plan review section.
+    pending       [[item, state], ...] or [{item, state}, ...]. Renders closed, below the plan
+                  sections. Empty: no Pending section.
     links         [[label, url], ...] or [{label, url}, ...]; each row gets a Copy button.
-    next          The exact word the user says to start, normally "go". Empty: no callout.
+    next          The exact word the user says to approve the plan, normally "go". The go box asks
+                  twice: "Reply <next> to approve the plan" and "Reply tests yes (or confirm the
+                  None reason) to approve the tests". Empty: no go box.
   There is no tests key: the Tests section comes from plan.md.
 
   plan.md supplies everything else:
     "## Summary" renders in the Summary box under the title and is not repeated below. No
     "## Summary": stderr warning, no box. There is no summary data key.
-    Every other "## " section (phases, files, criteria, risks, and any extra section)
-    renders in plan.md order with a TOC entry, except "## Tests".
+    These headings render first after the Decision box, in this order: "## Out of scope",
+    "## Risks" (a table Risk | Mitigation | Undo), "## Alternatives", "## Open questions".
+    Headings match case-insensitively; a missing one is left out. No "## Risks": stderr warning,
+    and the Decision box shows "Risks: none listed".
+    Every other "## " section renders after those in plan.md order with a TOC entry, except
+    "## Tests". "## Public API contract" and "## Phases" render closed; a TOC link opens them.
     "## Tests" renders in the fixed Tests section: its table, or its "None: <reason>" line.
     Markdown handled: paragraphs, "- " lists, numbered lists (as a numbered table), "### "
     subheads, pipe tables, fenced code (with a Copy button), `code`, **bold**, and [label](url)
@@ -42,7 +57,10 @@
     Inline text handles `code`, **bold**, and [label](url); only http(s) URLs become links,
     anything else stays escaped text.
 
-  Slots: TITLE, EYEBROW, META_HTML, SUMMARY_HTML, STATUS, TOC, SECTIONS, TESTS_HTML,
+  Page order: header, Summary, Decision, status, TOC, plan.md sections, Tests, Access rules,
+  Plan review, Pending additions, Links, go box.
+
+  Slots: TITLE, EYEBROW, META_HTML, SUMMARY_HTML, DECISION_HTML, STATUS, TOC, SECTIONS, TESTS_HTML,
   ACCESS_RULES_SECTION, PLAN_REVIEW_SECTION, PENDING_SECTION, LINKS, NEXT. A *_SECTION slot is a whole
   <section id="..." data-toc="Label"> or "".
 -->
@@ -167,12 +185,26 @@ a { color: var(--accent); overflow-wrap: anywhere; }
 .cmd { display: grid; gap: 4px; margin: 0 0 12px; }
 .cmd .codeblock { margin: 0; }
 .cmd-cwd, .cmd-note { margin: 0; font-size: 13px; color: var(--muted); }
+.decision { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.decision dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; }
+.decision dt { font-weight: 600; }
+.decision dd { margin: 0; min-width: 0; }
+details.fold > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; cursor: pointer; list-style: none; margin-bottom: 12px; border-bottom: 1px solid var(--rule); }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary h2 { border-bottom: 0; margin: 0; padding-bottom: 6px; }
+details.fold > summary h2::before { content: "\25B8"; display: inline-block; width: 1.1em; color: var(--accent); }
+details.fold[open] > summary h2::before { content: "\25BE"; }
+.fold-line { color: var(--muted); font-size: 14px; padding-bottom: 6px; }
+.go ol { margin: 0; padding-left: 20px; }
+.go li + li { margin-top: 4px; }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 560px) {
   h1 { font-size: 23px; }
   th, td { padding: 7px 9px; }
   .review td:first-child, .review td:last-child { width: auto; }
   .links td:first-child { white-space: normal; }
+  .decision dl { grid-template-columns: minmax(0, 1fr); }
+  .decision dd { margin-bottom: 6px; }
 }
 </style>
 
@@ -187,13 +219,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   {{SUMMARY_HTML}}
   <!--SUMMARY_END-->
 
+  {{DECISION_HTML}}
+
   <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
 
   <nav class="toc" aria-label="Plan sections">{{TOC}}</nav>
-
-  {{PLAN_REVIEW_SECTION}}
-
-  {{PENDING_SECTION}}
 
   {{SECTIONS}}
 
@@ -203,6 +233,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   </section>
 
   {{ACCESS_RULES_SECTION}}
+
+  {{PLAN_REVIEW_SECTION}}
+
+  {{PENDING_SECTION}}
 
   <section id="links" data-toc="Links">
     <h2>Links</h2>
@@ -244,5 +278,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
       setTimeout(function () { btn.textContent = original; btn.disabled = false; }, 1500);
     });
   });
+  function openFold(id) {
+    var target = id ? document.getElementById(id) : null;
+    var fold = target ? target.querySelector('details.fold') : null;
+    if (fold) { fold.open = true; }
+  }
+  document.addEventListener('click', function (event) {
+    var link = event.target.closest ? event.target.closest('nav.toc a') : null;
+    if (link) { openFold(decodeURIComponent(link.getAttribute('href').slice(1))); }
+  });
+  window.addEventListener('hashchange', function () { openFold(decodeURIComponent(location.hash.slice(1))); });
+  openFold(decodeURIComponent(location.hash.slice(1)));
 })();
 </script>

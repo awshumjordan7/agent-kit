@@ -32,7 +32,7 @@ FIXED_IDS = {
 KNOWN_KEYS = {
     "plan": {
         "ticket", "title", "lane", "repo", "date", "runDir", "sandboxTier", "lenses", "status",
-        "accessRules", "planReview", "pending", "links", "next",
+        "accessRules", "planReview", "pending", "links", "next", "decision",
     },
     "qa": {
         "summary", "ticket", "shortTitle", "date", "tier", "branch", "sandboxId", "previewUrl",
@@ -272,7 +272,8 @@ def parse_markdown(text: str) -> tuple[str, list[tuple[str, list[str]]]]:
     return title, sections
 
 
-def render_sections(sections: list[tuple[str, list[str]]]) -> str:
+def render_sections(sections: list[tuple[str, list[str]]], collapsed: frozenset[str] = frozenset()) -> str:
+    """Render `## ` sections; a name in collapsed (lower-case) renders inside a closed <details>."""
     used = set(FIXED_IDS)
     out = []
     for name, body in sections:
@@ -283,11 +284,21 @@ def render_sections(sections: list[tuple[str, list[str]]]) -> str:
             n += 1
         used.add(sid)
         label = "Criterion" if "criteri" in name.lower() else "Item"
-        out.append(
-            f'<section id="{sid}" data-toc="{esc(name)}"><h2>{esc(name)}</h2>'
-            f"{render_blocks(parse_blocks(body), label)}</section>"
-        )
+        inner = render_blocks(parse_blocks(body), label)
+        if name.strip().lower() in collapsed:
+            out.append(fold_section(sid, name, "", inner))
+        else:
+            out.append(f'<section id="{sid}" data-toc="{esc(name)}"><h2>{esc(name)}</h2>{inner}</section>')
     return "\n".join(out)
+
+
+def fold_section(sid: str, label: str, line: str, inner: str) -> str:
+    """A section whose body starts closed; line is shown beside the heading while it is closed."""
+    line_html = f'<span class="fold-line">{line}</span>' if line else ""
+    return (
+        f'<section id="{sid}" data-toc="{esc(label)}"><details class="fold"><summary>'
+        f"<h2>{esc(label)}</h2>{line_html}</summary>{inner}</details></section>"
+    )
 
 
 def pairs(value: object, keys: tuple[str, str]) -> list[tuple[str, str]]:
@@ -326,24 +337,73 @@ def section_html(sid: str, label: str, inner: str) -> str:
     return f'<section id="{sid}" data-toc="{esc(label)}"><h2>{esc(label)}</h2>{inner}</section>'
 
 
+PLAN_FIXED_SECTIONS = ("out of scope", "risks", "alternatives", "open questions")
+PLAN_COLLAPSED = frozenset({"public api contract", "phases"})
+
+
+def plan_tests(tests: list[str] | None) -> tuple[str, str]:
+    """Return the Tests section body and the one-line Tests entry for the Decision box."""
+    if tests is None:
+        return (
+            '<p class="warn">plan.md has no <code>## Tests</code> section.</p>',
+            '<span class="warn">plan.md has no Tests section</span>',
+        )
+    blocks = parse_blocks(tests)
+    if len(blocks) == 1 and blocks[0][0] == "p" and str(blocks[0][1]).startswith("None:"):
+        line = inline(blocks[0][1])
+        return f'<p class="muted">{line}</p>', line
+    tables = [val for kind, val in blocks if kind == "table"]
+    count = max(len(tables[0]) - 1, 0) if tables else 0
+    return render_blocks(blocks), f"{count} test{'' if count == 1 else 's'} in the Tests section"
+
+
+def decision_box(decision: object, tests_line: str, has_risks: bool) -> str:
+    decision = decision if isinstance(decision, dict) else {}
+    rows = [
+        (label, inline(decision[key]))
+        for label, key in (("Approving", "approving"), ("Size", "size"), ("Top risk", "topRisk"))
+        if decision.get(key)
+    ]
+    rows.append(("Tests", tests_line))
+    if not has_risks:
+        rows.append(("Risks", "none listed"))
+    body = "".join(f"<dt>{esc(label)}</dt><dd>{value}</dd>" for label, value in rows)
+    return f'<div class="decision" role="note"><div class="summary-label">Decision</div><dl>{body}</dl></div>'
+
+
+def review_count(findings: list[dict]) -> str:
+    counts = {"folded": 0, "rejected": 0, "other": 0}
+    for finding in findings:
+        disposition = str(finding.get("disposition", "")).strip().lower()
+        kind = next((k for k in ("folded", "rejected") if disposition.startswith(k)), "other")
+        counts[kind] += 1
+    total = len(findings)
+    return (
+        f"{total} finding{'' if total == 1 else 's'}: {counts['folded']} folded, "
+        f"{counts['rejected']} rejected, {counts['other']} other"
+    )
+
+
 def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     md_title, sections = parse_markdown(markdown)
-    tests = [body for name, body in sections if name.strip().lower() == "tests"]
-    summaries = [body for name, body in sections if name.strip().lower() == "summary"]
-    others = [(name, body) for name, body in sections if name.strip().lower() not in ("tests", "summary")]
-    if summaries:
-        summary_html = summary_box(render_blocks(parse_blocks(summaries[0])))
+    by_name: dict[str, list[str]] = {}
+    for name, body in sections:
+        by_name.setdefault(name.strip().lower(), body)
+    if "summary" in by_name:
+        summary_html = summary_box(render_blocks(parse_blocks(by_name["summary"])))
     else:
         summary_html = ""
         warn("plan.md has no ## Summary section; the page renders without a Summary box")
-    if tests:
-        blocks = parse_blocks(tests[0])
-        if len(blocks) == 1 and blocks[0][0] == "p" and str(blocks[0][1]).startswith("None:"):
-            tests_html = f'<p class="muted">{inline(blocks[0][1])}</p>'
-        else:
-            tests_html = render_blocks(blocks)
-    else:
-        tests_html = '<p class="warn">plan.md has no <code>## Tests</code> section.</p>'
+    has_risks = "risks" in by_name
+    if not has_risks:
+        warn('plan.md has no ## Risks section; the Decision box shows "Risks: none listed"')
+    if not data.get("decision"):
+        warn("no decision key; the Decision box shows only the Tests line")
+    tests_html, tests_line = plan_tests(by_name.get("tests"))
+
+    fixed = [(name, body) for key in PLAN_FIXED_SECTIONS for name, body in sections if name.strip().lower() == key]
+    skip = {"summary", "tests", *PLAN_FIXED_SECTIONS}
+    rest = [(name, body) for name, body in sections if name.strip().lower() not in skip]
 
     meta = []
     if data.get("ticket"):
@@ -351,15 +411,14 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
     for key in ("repo", "date"):
         if data.get(key):
             meta.append(f"<span>{esc(data[key])}</span>")
-    if data.get("runDir"):
-        meta.append(f"<span>run dir <code>{esc(data['runDir'])}</code></span>")
-    if data.get("sandboxTier"):
-        meta.append(f'<span class="pill">sandbox: {esc(data["sandboxTier"])}</span>')
     lenses = data.get("lenses")
     if isinstance(lenses, list):
         lenses = ", ".join(str(x) for x in lenses)
-    if lenses:
-        meta.append(f'<span class="pill">lenses: {esc(lenses)}</span>')
+    run_rows = [
+        [label, str(value)]
+        for label, value in (("Run dir", data.get("runDir")), ("Sandbox", data.get("sandboxTier")), ("Lenses", lenses))
+        if value
+    ]
 
     rules = [str(r) for r in data.get("accessRules") or []]
     access = section_html(
@@ -381,18 +440,26 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
                 '<div class="tbl"><table class="review"><thead><tr><th>Severity</th><th>Finding</th>'
                 f"<th>Disposition</th></tr></thead><tbody>{rows}</tbody></table></div>"
             )
-        review_html = section_html("plan-review", "Plan review", inner)
+        line = review_count(findings) if findings else "no findings"
+        review_html = fold_section("plan-review", "Plan review", esc(line), inner)
 
     pending = pairs(data.get("pending"), ("item", "state"))
-    pending_html = section_html(
+    pending_html = fold_section(
         "pending",
         "Pending additions",
+        esc(f"{len(pending)} item{'' if len(pending) == 1 else 's'}"),
         '<div class="tbl"><table class="pending"><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>'
         + "".join(f"<tr><td>{inline(i)}</td><td>{inline(s)}</td></tr>" for i, s in pending)
         + "</tbody></table></div>",
     ) if pending else ""
 
     nxt = data.get("next", "")
+    go_html = (
+        '<div class="next go" role="note"><div class="summary-label">To start</div><ol>'
+        f"<li>Reply <strong>{esc(nxt)}</strong> to approve the plan.</li>"
+        "<li>Reply <strong>tests yes</strong> (or confirm the None reason) to approve the tests.</li>"
+        "</ol></div>"
+    ) if nxt else ""
     lane = data.get("lane", "")
     slots = {
         "TITLE": esc(data.get("title") or md_title),
@@ -400,13 +467,14 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
         "META_HTML": "".join(meta),
         "STATUS": inline(data.get("status") or "Awaiting approval"),
         "SUMMARY_HTML": summary_html,
-        "SECTIONS": render_sections(others),
+        "DECISION_HTML": decision_box(data.get("decision"), tests_line, has_risks),
+        "SECTIONS": render_sections(fixed + rest, PLAN_COLLAPSED),
         "TESTS_HTML": tests_html,
         "ACCESS_RULES_SECTION": access,
         "PLAN_REVIEW_SECTION": review_html,
         "PENDING_SECTION": pending_html,
-        "LINKS": link_rows(data.get("links")),
-        "NEXT": f'<div class="next"><strong>Say "{esc(nxt)}" to run it.</strong></div>' if nxt else "",
+        "LINKS": link_rows(run_rows + pairs(data.get("links"), ("label", "url"))),
+        "NEXT": go_html,
     }
     return slots, {"SUMMARY": bool(summary_html)}
 
