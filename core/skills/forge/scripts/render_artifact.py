@@ -39,7 +39,7 @@ KNOWN_KEYS = {
         "rootLoginEmail", "rootLoginPassword", "adminCreds", "users", "jiraTickets", "links",
         "contextItems", "qaItems", "handoff", "groups", "explore", "round",
     },
-    "generic": {"summary", "title", "eyebrow", "status", "links"},
+    "generic": {"summary", "title", "eyebrow", "status", "statusTone", "keyNumbers", "nextSteps", "links"},
 }
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 HANDOFF_KEYS = [
@@ -479,18 +479,64 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
     return slots, {"SUMMARY": bool(summary_html)}
 
 
+TONE_WORDS = {"ok": "OK", "warn": "Warning", "fail": "Failed"}
+
+
+def tone(value: object, where: str) -> str:
+    """Return a known tone ("ok", "warn", "fail") or "" after warning about an unknown one."""
+    if not value:
+        return ""
+    if value not in TONE_WORDS:
+        warn(f"{where} {value!r} is not one of ok, warn, fail; shown without a colour")
+        return ""
+    return str(value)
+
+
+def key_numbers_html(rows: object) -> str:
+    tiles = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            raise InputError(f"keyNumbers entries must be objects with label and value; got {row!r}")
+        row_tone = tone(row.get("status"), f"keyNumbers status for {row.get('label', '')!r}")
+        word = f'<div class="kpi-word">{TONE_WORDS[row_tone]}</div>' if row_tone else ""
+        tone_class = f" tone-{row_tone}" if row_tone else ""
+        tiles.append(
+            f'<div class="kpi{tone_class}"><div class="kpi-label">{esc(row.get("label", ""))}</div>'
+            f'<div class="kpi-value">{esc(row.get("value", ""))}</div>{word}</div>'
+        )
+    return f'<div class="kpis">{"".join(tiles)}</div>' if tiles else ""
+
+
+def next_steps_html(steps: object) -> str:
+    items = "".join(f"<li>{inline(step)}</li>" for step in steps or [])
+    if not items:
+        return ""
+    return f'<div class="next" role="note"><div class="summary-label">Next steps</div><ol class="steps">{items}</ol></div>'
+
+
 def generic_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     md_title, sections = parse_markdown(markdown)
     status = data.get("status", "")
+    status_tone = tone(data.get("statusTone"), "statusTone")
     slots = {
         "TITLE": esc(data.get("title") or md_title),
         "EYEBROW": esc(data.get("eyebrow", "")),
         "STATUS": inline(status),
+        "STATUS_TONE": f"tone-{status_tone}" if status_tone else "",
+        "STATUS_LABEL": f"Status: {TONE_WORDS[status_tone]}" if status_tone else "Status",
         "SUMMARY_HTML": data_summary(data),
+        "KEY_NUMBERS_HTML": key_numbers_html(data.get("keyNumbers")),
+        "NEXT_STEPS_HTML": next_steps_html(data.get("nextSteps")),
         "SECTIONS": render_sections(sections),
         "LINKS": link_rows(data.get("links")),
     }
-    return slots, {"STATUS": bool(status), "SUMMARY": bool(slots["SUMMARY_HTML"])}
+    keep = {
+        "STATUS": bool(status),
+        "SUMMARY": bool(slots["SUMMARY_HTML"]),
+        "KEY_NUMBERS": bool(slots["KEY_NUMBERS_HTML"]),
+        "NEXT_STEPS": bool(slots["NEXT_STEPS_HTML"]),
+    }
+    return slots, keep
 
 
 DB_ID_BAD_RE = re.compile(r"[^A-Za-z0-9_\-.~:@+]")
