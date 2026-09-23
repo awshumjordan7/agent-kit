@@ -121,28 +121,8 @@ tokens bill at 2x input.
   once it can take the checklist and plan summary.
 - Re-test Codex sub-agents on a cheaper model when the model-selection regression is closed.
 
-## quick-impl on Luna (from 2026-09-20)
+## quick-impl Codex role (from 2026-09-23)
 
-Ended 2026-09-22: implementation moved to Claude; the instructions below are history.
-
-`roles.quick-impl` uses gpt-5.6-luna at high effort. Build-lane changes are fully specified
-edits whose plan names at most `quickReviewThreshold` source files (default 8). Otherwise Forge uses `impl`.
-Tests, Markdown, and JSON files do not count toward that threshold, so the exploration that made Luna expensive
-before 2026-09-15 no longer applies.
-
-Prices per 1M tokens (input / cached / output): Luna 0.20 / 0.02 / 1.20; Terra 2.00 / 0.20 /
-12.00; Sol 4.00 / 0.40 / 20.00.
-
-Measure five quick runs. For each run, record the `CODEX_OK` line, fix-round count, and whether
-the gate failed. The per-run revert condition is more than one fix round on a fully specified
-change, or a `failed` / `budget_exceeded` outcome. On failure, move `quick-impl` to
-gpt-5.6-terra for the next five runs. If Terra also fails, move it back to gpt-5.6-sol. Review
-and plan-review stay on Sol throughout.
-
-| Run | Date | CODEX_OK summary | Fix rounds | Gate |
-|---|---|---|---|---|
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
-| 4 |  |  |  |  |
-| 5 |  |  |  |  |
+`codex.roles.quick-impl` uses gpt-6-sol at high effort, matching the other Codex roles. Forge
+runs implementation on Claude, so this role applies only when implementation is switched back to
+Codex. The Luna trial it replaces (2026-09-20 to 2026-09-22) recorded no runs.

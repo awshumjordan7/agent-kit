@@ -169,7 +169,7 @@ def validate_profile(profile: dict[str, Any]) -> None:
         raise ProfileError("profile.doctor.repo_roots must be an array of strings")
     doctor_codex = _table(doctor.get("codex"), "profile.doctor.codex")
     _unknown(doctor_codex, CODEX_DOCTOR_KEYS, "profile.doctor.codex")
-    if not isinstance(doctor_codex.get("agents_md"), str):
+    if "agents_md" in doctor_codex and not isinstance(doctor_codex["agents_md"], str):
         raise ProfileError("profile.doctor.codex.agents_md must be a string")
     for key in ("exclude_sections", "exclude_bullets"):
         if not isinstance(doctor_codex.get(key), list) or not all(

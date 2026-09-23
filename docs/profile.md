@@ -11,7 +11,7 @@ doctor settings. Schema 1 rejects unknown keys so misspelled settings fail early
 | `agents` | `model`, `maxTurns`, and optional `effort` per agent; see below |
 | `forge` | provider roles, optional stages, gate commands, and workspace |
 | `ship_pr` | base branch overrides by `owner/repo` |
-| `doctor` | repository roots and Codex mirror settings |
+| `doctor` | repository roots and Codex mirror settings; the mirror is always `~/.codex/AGENTS.md`, and `codex.agents_md` is ignored |
 | `auto_update` | allow the daily hook to apply available updates |
 
 Agent settings have two sources: the agent file's frontmatter and the profile's `agents.<name>` entry. At install

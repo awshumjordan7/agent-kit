@@ -41,7 +41,7 @@
       "codex": {
         "roles": {
           "impl": {"model": "gpt-6-sol", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
-          "quick-impl": {"model": "gpt-5.6-luna", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
+          "quick-impl": {"model": "gpt-6-sol", "effort": "high", "maxToolCalls": 150, "maxToolOutputKB": 1500, "toolOutputTokenLimit": 12000, "webSearch": "disabled", "mcp": true, "contract": "impl"},
           "review": {"model": "gpt-6-sol", "effort": "xhigh", "maxToolCalls": 90, "maxToolOutputKB": 300, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"},
           "plan-review": {"model": "gpt-6-sol", "effort": "high", "maxToolCalls": 30, "maxToolOutputKB": 200, "toolOutputTokenLimit": 4000, "webSearch": "disabled", "mcp": false, "contract": "review"}
         },
@@ -74,7 +74,6 @@
         "transcripts": "~/.claude/projects"
       },
       "codex": {
-        "agents_md": "~/.codex/AGENTS.md",
         "exclude_sections": ["Model Routing (Sub-Agents)"],
         "exclude_bullets": ["Use `planner` for feature planning", "memory & auto-memory"]
       }

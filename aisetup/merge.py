@@ -59,7 +59,12 @@ def deep_merge(
 
 
 def _identity(value: Any) -> str:
-    return json.dumps(value, sort_keys=True)
+    # Tag non-JSON values with their type so a TOML date and a same-text string differ.
+    return json.dumps(
+        value,
+        sort_keys=True,
+        default=lambda o: {"__type__": type(o).__name__, "value": str(o)},
+    )
 
 
 def _same(left: Any, right: Any) -> bool:
