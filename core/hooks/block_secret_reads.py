@@ -342,13 +342,13 @@ CURL_AUTH_SAFE = re.compile(
 )
 
 # A presence check (`test -n "$KEY"`, `[ -z "$KEY" ]`, `[[ -n ${KEY} ]]`) prints
-# nothing. Group 1 keeps the command-start boundary so only the check itself is
-# blanked; an argument like `echo test -n "$KEY"` is not at a command start.
+# nothing. It is blanked only as the first word of an unquoted command (after
+# any `if`, `while` or `!`); an argument like `echo test -n "$KEY"` still prints.
 SECRET_TEST_SAFE = re.compile(
-    r"((?:^|[;&|(!\n]|\b(?:if|while)\s)\s*)"
-    rf"(?:test|\[\[?)\s+-[nz]\s+(['\"]?)\$\{{?{SECRET_VAR_NAME}\}}?\2(?=\s|$|[;&|\]])",
+    rf"(?:test|\[\[?)\s+-[nz]\s+(['\"]?)\$\{{?{SECRET_VAR_NAME}\}}?\1(?=\s|$|[;&|\]])",
     re.IGNORECASE,
 )
+_CHECK_PREFIX = re.compile(r"\s*(?:(?:if|while|!)\s+)*")
 
 # Bare environment dumps with no filtering argument. Bounded by command
 # separators (start/end of string, `;`, `&`, `&&`, newline) on both sides;
@@ -434,6 +434,56 @@ PYNODE_LEN_STRIP = re.compile(rf"len\(\s*(?:{_ENV_REF_ANY})\s*\)", re.IGNORECASE
 SHELL_OUT = re.compile(r"os\.system|subprocess|popen|child_process|execSync|spawn|`", re.IGNORECASE)
 
 
+def _scrub_presence_checks(head: str) -> str:
+    """Blank SECRET_TEST_SAFE checks that start an unquoted command.
+
+    Command starts are position 0 and the text after an unquoted `;`, `&`,
+    `|`, `(` or newline. Quoted text and a here-string word are never a
+    command start, so `echo "x|[ -n $KEY ]"` keeps its expansion.
+    """
+    starts = [0]
+    quote = None
+    in_here = here_word = False
+    i, n = 0, len(head)
+    while i < n:
+        c = head[i]
+        if c == "\\" and quote != "'":
+            here_word = here_word or in_here
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+            here_word = here_word or in_here
+        elif head.startswith("<<<", i):
+            in_here, here_word = True, False
+            i += 3
+            continue
+        elif in_here and c.isspace() and c != "\n":
+            in_here = not here_word
+        elif in_here and c not in ";&|\n":
+            here_word = True
+        elif c in ";&|(\n":
+            in_here = False
+            starts.append(i + 1)
+        i += 1
+    out, last = [], 0
+    for start in starts:
+        if start < last:
+            continue
+        pos = _CHECK_PREFIX.match(head, start).end()
+        if m := SECRET_TEST_SAFE.match(head, pos):
+            out.append(head[last : m.start()])
+            out.append(" ")
+            last = m.end()
+    out.append(head[last:])
+    return "".join(out)
+
+
 def secret_var_verdict(command: str) -> str | None:
     """Return a reason to block a command that would print a secret
     variable's value, or None to allow.
@@ -460,7 +510,7 @@ def secret_var_verdict(command: str) -> str | None:
         return f"would dump the full environment {matched('jq-env-dump', m.group(0))}"
     if m := PRINTENV_SECRET.search(head) or DECLARE_P_SECRET.search(head):
         return f"would print a secret-bearing variable {matched('printenv-secret', m.group(0))}"
-    scrubbed = SECRET_TEST_SAFE.sub(r"\1 ", CURL_AUTH_SAFE.sub(" ", head))
+    scrubbed = _scrub_presence_checks(CURL_AUTH_SAFE.sub(" ", head))
     if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and (m := SECRET_VAR_EXPANSION.search(scrubbed)):
         return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
     if PYNODE_INVOCATION.search(command):

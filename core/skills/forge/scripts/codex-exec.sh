@@ -403,8 +403,9 @@ elif [ -n "$INLINE_DIFF" ] && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --git" ]
 fi
 
 # Checked before the session lock is taken, so a logged-out run holds no lock.
-if ! codex login status >/dev/null 2>&1; then
-    fail 69 "CODEX_NOT_LOGGED_IN: 'codex login status' failed for CODEX_HOME=$CODEX_HOME_DIR. Run 'codex login' and retry."
+command -v codex >/dev/null 2>&1 || fail 64 "error: codex is not on PATH"
+if ! login_err=$(codex login status 2>&1 >/dev/null); then
+    fail 69 "CODEX_NOT_LOGGED_IN: 'codex login status' failed for CODEX_HOME=$CODEX_HOME_DIR ($(printf '%s\n' "$login_err" | tail -n 1)). Run 'codex login' and retry."
 fi
 
 if [ "$MODE" = "start" ]; then
