@@ -21,10 +21,8 @@ Read, in order, before touching git:
 For every `gh` command, unset each environment variable listed by
 `git config --get aisetup.gh-unset-env` using `env -u <name>`.
 Stage exactly the named file list you were given; never widen it from `git status`.
-Before committing, run `bash -n` on every named changed `*.sh` file and
-`uvx ruff@0.15.10 check --fix --select F,E9` on all named changed `*.py` files.
-Run no other checks. If either command fails, do not commit; return its output.
-Stage Ruff autofixes only for Python files in the named list.
+Before committing, run only the checks in the skill's "Branch and commit" step.
+If a check fails, do not commit; return its output.
 After any interruption, run `gh pr view <n>` before reporting so the result reflects the actual PR state.
 
 Do not restate or "improve" those rules here; if one is wrong, report it so the

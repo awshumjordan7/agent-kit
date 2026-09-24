@@ -149,6 +149,7 @@
   "effortLevel": "xhigh",
   "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
   "skipDangerousModePermissionPrompt": true,
+  "enableWorkflows": true,
   "skipWorkflowUsageWarning": true,
   "theme": "dark-ansi",
   "switchModelsOnFlag": false

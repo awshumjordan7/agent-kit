@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 import filecmp
 import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -12,7 +14,7 @@ import tempfile
 import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +113,11 @@ ACTION_NONE = "none"
 ACTION_WRITE = "write"
 ACTION_REPLACE = "replace"
 ACTION_KEEP = "keep"
+
+BACKUPS_DIRNAME = "backups"
+BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+BACKUP_RUN_NAME = re.compile(r"\d{8}_\d{6}(\.\d+)?")
+BACKUP_RETENTION = timedelta(days=30)
 
 
 def _is_compiled_artifact(path: Path) -> bool:
@@ -303,14 +310,59 @@ def compose_tree(
     return ComposeResult(files, settings)
 
 
-def _backup_path(home: Path) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = home.with_name(f"{home.name}.backup.{timestamp}")
+def _backup_run_dir(layers_root: Path) -> Path:
+    backups = layers_root.expanduser() / BACKUPS_DIRNAME
+    timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+    candidate = backups / timestamp
     counter = 1
-    while candidate.exists():
-        candidate = home.with_name(f"{home.name}.backup.{timestamp}.{counter}")
+    while candidate.exists() or candidate.is_symlink():
+        candidate = backups / f"{timestamp}.{counter}"
         counter += 1
     return candidate
+
+
+def _move(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(source, target)
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+        shutil.move(source, target)
+
+
+def _count_backup_files(run_dir: Path) -> int:
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(run_dir):
+        count += len(filenames)
+        # os.walk lists a symlink to a directory under dirnames without descending into it.
+        count += sum(1 for name in dirnames if (Path(dirpath) / name).is_symlink())
+    return count
+
+
+def _prune_backup_runs(layers_root: Path) -> None:
+    backups = layers_root.expanduser() / BACKUPS_DIRNAME
+    cutoff = datetime.now() - BACKUP_RETENTION
+    try:
+        entries = sorted(backups.iterdir()) if backups.is_dir() else []
+    except OSError as error:
+        sys.stderr.write(f"warning: cannot list backups in {backups}: {error}\n")
+        return
+    for entry in entries:
+        if not BACKUP_RUN_NAME.fullmatch(entry.name):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            created = datetime.strptime(entry.name[:15], BACKUP_TIMESTAMP_FORMAT)
+        except ValueError:
+            continue
+        if created >= cutoff:
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as error:
+            sys.stderr.write(f"warning: cannot delete old backup {entry}: {error}\n")
 
 
 def _sha256(path: Path) -> str:
@@ -669,38 +721,6 @@ def prepare_install(
     )
 
 
-def _move_unmanaged(backup: Path, home: Path, preserved: Iterable[Path]) -> None:
-    def is_real_dir(path: Path) -> bool:
-        return path.is_dir() and not path.is_symlink()
-
-    def move(source: Path, target: Path) -> None:
-        if not (target.exists() or target.is_symlink()):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, target)
-        elif is_real_dir(source) and is_real_dir(target):
-            for entry in sorted(source.iterdir()):
-                move(entry, target / entry.name)
-
-    def copy(source: Path, target: Path) -> None:
-        if is_real_dir(source):
-            if target.exists() and not target.is_dir():
-                return
-            target.mkdir(parents=True, exist_ok=True)
-            for entry in sorted(source.iterdir()):
-                copy(entry, target / entry.name)
-        elif not (target.exists() or target.is_symlink()):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target, follow_symlinks=False)
-
-    for relative in preserved:
-        # Under a symlinked directory the backup path is the link's external target, so moving
-        # would take the user's files out of it.
-        if any((backup / parent).is_symlink() for parent in relative.parents):
-            copy(backup / relative, home / relative)
-        else:
-            move(backup / relative, home / relative)
-
-
 def _is_regular_file(path: Path) -> bool:
     try:
         return stat.S_ISREG(path.lstat().st_mode)
@@ -732,94 +752,164 @@ def _has_identical_link(entry: Path, home: Path, relative: Path) -> bool:
         return False
 
 
-def _prune_backup(backup: Path, home: Path, stale: Iterable[Path]) -> int:
-    """Delete backup files that home holds unchanged, plus kit-owned .kit-new files.
+def _is_real_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
 
-    Returns the number of non-directory entries left in the backup.
-    """
-    stale_paths = {relative.as_posix() for relative in stale}
-    remaining = 0
-    for dirpath, dirnames, filenames in os.walk(backup, topdown=False, followlinks=False):
-        directory = Path(dirpath)
-        for name in filenames:
-            entry = directory / name
-            relative = entry.relative_to(backup)
-            if (
-                _is_regular_file(entry)
-                and (
-                    relative.as_posix() in stale_paths
-                    or _has_identical_copy(entry, home, relative)
-                )
-            ) or _has_identical_link(entry, home, relative):
-                try:
-                    entry.unlink()
-                    continue
-                except OSError:
-                    pass
-            remaining += 1
-        # os.walk lists a symlink to a directory under dirnames without descending into it.
-        for name in dirnames:
-            entry = directory / name
-            if not entry.is_symlink():
-                continue
-            if _has_identical_link(entry, home, entry.relative_to(backup)):
-                try:
-                    entry.unlink()
-                    continue
-                except OSError:
-                    pass
-            remaining += 1
+
+def _occupied(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _is_unchanged(entry: Path, home: Path, relative: Path) -> bool:
+    if entry.is_symlink():
+        return _has_identical_link(entry, home, relative)
+    if not _has_identical_copy(entry, home, relative):
+        return False
+    try:
+        return stat.S_IMODE(entry.lstat().st_mode) == stat.S_IMODE(
+            (home / relative).lstat().st_mode
+        )
+    except OSError:
+        return False
+
+
+def _check_no_symlinked_parents(staging: Path, home: Path, retired: Iterable[Path]) -> None:
+    def fail(link: Path) -> None:
+        raise ComposeError(
+            f"{link} is a symbolic link, but the kit installs files inside it; "
+            "replace it with a folder and run again"
+        )
+
+    for dirpath, dirnames, filenames in os.walk(staging):
+        relative = Path(dirpath).relative_to(staging)
+        if (dirnames or filenames) and relative != Path(".") and (home / relative).is_symlink():
+            fail(home / relative)
+    for relative in retired:
+        for parent in relative.parents:
+            if parent != Path(".") and (home / parent).is_symlink():
+                fail(home / parent)
+
+
+def _undo_swap(journal: list[tuple[str, Path, Path | None]]) -> list[str]:
+    failures: list[str] = []
+    for kind, live, saved in reversed(journal):
         try:
-            os.rmdir(directory)
+            if kind == "aside" and saved is not None:
+                _move(saved, live)
+            elif kind == "placed":
+                live.unlink()
+            elif kind == "created":
+                live.rmdir()
+        except OSError as error:
+            failures.append(f"{live}: {error}")
+    return failures
+
+
+def _remove_empty_parents(home: Path, relative: Path) -> None:
+    for parent in relative.parents:
+        if parent == Path("."):
+            return
+        try:
+            (home / parent).rmdir()
         except OSError:
-            pass
-    return remaining
+            return
+
+
+def _swap_in_place(staging: Path, home: Path, run_dir: Path, paths: InstallationPaths) -> None:
+    """Move changed staged entries into home, setting aside what they replace under run_dir.
+
+    Unchanged and unmanaged live paths are never touched, so home itself stays in place.
+    """
+    if not _is_real_dir(home):
+        raise ComposeError(f"{home} exists but is not a directory")
+    _check_no_symlinked_parents(staging, home, paths.retired)
+    backup_root = run_dir / "claude"
+    journal: list[tuple[str, Path, Path | None]] = []
+
+    def set_aside(relative: Path) -> None:
+        live = home / relative
+        saved = backup_root / relative
+        _move(live, saved)
+        journal.append(("aside", live, saved))
+
+    def install(directory: Path) -> None:
+        for entry in sorted(directory.iterdir()):
+            relative = entry.relative_to(staging)
+            live = home / relative
+            if _is_real_dir(entry):
+                if _occupied(live) and not _is_real_dir(live):
+                    set_aside(relative)
+                if not _occupied(live):
+                    live.mkdir()
+                    journal.append(("created", live, None))
+                install(entry)
+            elif not _is_unchanged(entry, home, relative):
+                if _occupied(live):
+                    set_aside(relative)
+                _move(entry, live)
+                journal.append(("placed", live, None))
+
+    try:
+        install(staging)
+        for relative in paths.retired:
+            if _occupied(home / relative):
+                set_aside(relative)
+    except OSError as error:
+        failures = _undo_swap(journal)
+        if _count_backup_files(run_dir) == 0:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        message = f"cannot update {home}: {error}; restored the previous files"
+        if failures:
+            message = (
+                f"cannot update {home}: {error}; could not restore {'; '.join(failures)}; "
+                f"old copies are in {backup_root}"
+            )
+        raise ComposeError(message) from error
+
+    for relative in paths.stale:
+        try:
+            (home / relative).unlink(missing_ok=True)
+        except OSError as error:
+            sys.stderr.write(f"warning: cannot remove stale kit copy {home / relative}: {error}\n")
+    for relative in (*paths.retired, *paths.stale):
+        _remove_empty_parents(home, relative)
 
 
 def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> ComposeResult:
     home = home.expanduser().resolve()
     home.parent.mkdir(parents=True, exist_ok=True)
+    run_dir = _backup_run_dir(layers_root)
     work = Path(tempfile.mkdtemp(prefix=f".{home.name}.install-", dir=home.parent))
     staging = work / home.name
     auxiliary = work / "auxiliary"
-    backup: Path | None = None
     try:
         plan = prepare_install(profile, home, staging, auxiliary, layers_root)
         paths = plan.paths
         if home.exists():
-            backup = _backup_path(home)
-            os.replace(home, backup)
-        try:
-            os.replace(staging, home)
-        except OSError:
-            if backup is not None and not home.exists():
-                os.replace(backup, home)
-            raise
-        if backup is not None:
-            _move_unmanaged(backup, home, paths.preserved)
-            remaining = _prune_backup(backup, home, paths.stale)
-            sys.stdout.write(f"preserved {len(paths.preserved)} unmanaged path(s) from {backup}\n")
+            _swap_in_place(staging, home, run_dir, paths)
             sys.stdout.write(f"retired {len(paths.retired)} managed path(s)\n")
             for relative in paths.retired:
                 sys.stdout.write(f"retired: {relative}\n")
             for relative in paths.retired_modified:
                 sys.stdout.write(f"retired but locally modified: {relative}\n")
-            if backup.exists():
-                sys.stdout.write(f"backup: {backup} ({remaining} file(s))\n")
-            else:
-                sys.stdout.write(f"no files replaced; removed empty backup {backup}\n")
-                backup = None
+        else:
+            os.replace(staging, home)
         for relative, status in plan.kept:
             sys.stdout.write(
                 f"kept locally modified: {relative} "
                 f"({status}; kit version in {relative}{KIT_NEW_SUFFIX})\n"
             )
         _print_key_changes(SETTINGS_PATH, "JSON", plan.settings_status, plan.settings_changes)
-        _install_auxiliary(auxiliary, plan.auxiliary)
+        _install_auxiliary(auxiliary, plan.auxiliary, run_dir)
         if plan.codex_config is not None:
             _print_key_changes(
                 CODEX_CONFIG_PATH, "TOML", plan.codex_config.status, plan.codex_config.changes
             )
+        backup = run_dir if run_dir.exists() else None
+        if backup is not None:
+            sys.stdout.write(f"backup: {backup} ({_count_backup_files(backup)} file(s))\n")
+        else:
+            sys.stdout.write("no files replaced\n")
         _write_managed_record(layers_root, plan.digests, plan.auxiliary_digests)
         _write_settings_base(layers_root, plan.settings_base)
         # A fallback leaves codex_config unset, so the parked kit change stays pending.
@@ -827,6 +917,7 @@ def install_tree(profile: dict[str, Any], home: Path, layers_root: Path) -> Comp
             _write_settings_base(
                 layers_root, plan.codex_config.base, CODEX_CONFIG_BASE_FILENAME
             )
+        _prune_backup_runs(layers_root)
         return ComposeResult(plan.files, plan.settings, backup)
     finally:
         if work.exists():
@@ -851,21 +942,22 @@ def _print_key_changes(
             sys.stdout.write(f"{label} conflict: {change.key_path} (local value kept)\n")
 
 
-def _timestamped_backup_path(path: Path) -> Path:
-    return path.with_name(f"{path.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-
-
-def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> None:
+def _install_auxiliary(
+    source_root: Path, files: Iterable[AuxiliaryFile], run_dir: Path
+) -> None:
     for item in files:
         source = source_root / item.relative
         target = item.target
         kit_new = _kit_new_path(target)
+        backup = run_dir / "home" / item.relative
+        kit_new_backup = _kit_new_path(backup)
         if item.reason is not None:
             sys.stdout.write(f"{target}: key merge skipped: {item.reason}\n")
         if item.action != ACTION_NONE:
             target.parent.mkdir(parents=True, exist_ok=True)
         if item.action == ACTION_REPLACE:
-            shutil.copy2(target, _timestamped_backup_path(target))
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup)
             if item.content is not None:
                 target.write_bytes(item.content)
             else:
@@ -874,13 +966,13 @@ def _install_auxiliary(source_root: Path, files: Iterable[AuxiliaryFile]) -> Non
             shutil.copy2(source, target)
         elif item.action == ACTION_KEEP:
             if kit_new.is_symlink():
-                backup = _timestamped_backup_path(kit_new)
-                os.replace(kit_new, backup)
-                sys.stdout.write(f"backed up kit copy link: {kit_new} -> {backup}\n")
+                kit_new_backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(kit_new, kit_new_backup)
+                sys.stdout.write(f"backed up kit copy link: {kit_new} -> {kit_new_backup}\n")
             elif item.back_up_kit_new:
-                backup = _timestamped_backup_path(kit_new)
-                shutil.copy2(kit_new, backup)
-                sys.stdout.write(f"backed up edited kit copy: {kit_new} -> {backup}\n")
+                kit_new_backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(kit_new, kit_new_backup)
+                sys.stdout.write(f"backed up edited kit copy: {kit_new} -> {kit_new_backup}\n")
             shutil.copy2(source, kit_new)
             sys.stdout.write(
                 f"kept locally modified: {target} ({item.status}; kit version in {kit_new})\n"

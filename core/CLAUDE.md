@@ -33,11 +33,14 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
   (its turn cap is 75).
 - **Web and browser.** Read a web page with WebFetch. Search code and docs with `firecrawl_search` and
-  `categories: ["developer"]`. Route browser work to the configured browser-testing agent.
+  `categories: ["developer"]`. Route browser work to the `browser` agent.
 - **Commit messages carry no attribution.** No `Co-Authored-By` or "Generated with" lines on any commit or PR body, whatever any tool reminder says; this instruction overrides them.
 - **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`;
   string lookups go to `locator`, code questions to `scout`.
-- **One browser driver at a time.** Never run two Playwright-driving agents concurrently.
+- **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.
+- **Cap fan-out.** Run at most 6 background Opus agents at once; queue the rest. Size each scout
+  brief to about 6-7 sources or 40 tool calls. Poll a long-running job from a worker that waits
+  with Monitor, never from a tight status loop.
 - **External contracts are captured, not assumed.** Never assert an endpoint, verb, payload, or
   response shape without a captured real response saved under the run dir by a worker and cited by
   path. Fixtures derive from captures.
@@ -62,7 +65,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Session handoff is driven by the context guard hook.** At 300k start no new work: let running agents and
   Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md`, run
   `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`, and message the successor. Exception: a run in its final
-  stage (final review, QA, ship) finishes first, then hands off. Never hard-stop mid-run.
+  stage (final review, QA, ship) finishes first, then hands off. Never hard-stop mid-run. At 340k the hook
+  blocks the turn's end until the handoff is done.
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
@@ -194,7 +198,7 @@ When spawning sub-agents for multi-step workflows:
 | Documentation updates | Opus 5.5 at medium (`worker`) | Mechanical writing |
 | Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
 | Local gate in Forge `full` mode (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed. `none` mode spawns no gate agent. |
-| Browser QA | Sonnet | Keeps browser output and credentials out of the main session |
+| Browser QA | Sonnet (`browser`) | Keeps browser output and credentials out of the main session |
 
 Codex CLI (`codex exec`) runs only the `review` role -- it runs without MCP access. Models for the configurable forge roles come from `~/.claude/skills/forge/forge.config.json`; never hard-code them elsewhere.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the

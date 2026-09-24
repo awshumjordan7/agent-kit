@@ -25,10 +25,14 @@ python3 install.py doctor --selfcheck --json
 and redacted MCP commands without writing them. A managed file you edited is kept: install prints `kept locally
 modified` and writes the kit version beside it as `<file>.kit-new`. `settings.json` is merged three ways against the
 previous kit render in `~/.ai-setup/settings.base.json`, so keys set by you or Claude Code stay, kit changes apply,
-and your value wins a conflict. The previous home becomes a backup, unmanaged paths are moved back into the new
-home, and the backup keeps only files that were replaced or retired; an empty backup is removed. When `--home` is not
-the default `~/.claude`, install and update skip MCP registration because the Claude CLI always writes user-scoped
-servers to the default home. `update` fetches configured layer repositories, replays the profile, and runs doctor.
+and your value wins a conflict. The home stays in place: only changed files are swapped in, and unmanaged paths are
+never moved. Each file the kit replaces or retires is moved to `~/.ai-setup/backups/<timestamp>/claude/<path>`, and
+each replaced file outside the Claude home (such as `~/.codex/config.toml`) to `.../<timestamp>/home/<path under your
+home>`. A run that replaces nothing prints `no files replaced` and creates no folder. After a successful install,
+backup folders older than 30 days are deleted. If a swap fails, the files already swapped are put back. When
+`--home` is not the default `~/.claude`, install and update skip MCP registration because the Claude CLI always writes
+user-scoped servers to the default home. `update` fetches configured layer repositories, replays the profile, and
+runs doctor.
 
 ## Update
 

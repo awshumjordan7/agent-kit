@@ -22,6 +22,7 @@ commit_message=''
 push=false
 sha=''
 no_stages=false
+print_mode=false
 files=()
 
 while (($#)); do
@@ -43,9 +44,13 @@ while (($#)); do
       shift
       (($#)) && [[ $1 != --* ]] || die 'gate.sh: --files requires at least one path'
       while (($#)) && [[ $1 != --* ]]; do
-        files+=("$1")
+        IFS=',' read -r -a file_parts <<<"$1"
+        for file_part in ${file_parts[@]+"${file_parts[@]}"}; do
+          [[ -n $file_part ]] && files+=("$file_part")
+        done
         shift
       done
+      ((${#files[@]})) || die 'gate.sh: --files requires at least one path'
       ;;
     --skip-tests)
       skip_tests=true
@@ -57,6 +62,10 @@ while (($#)); do
       ;;
     --no-stages)
       no_stages=true
+      shift
+      ;;
+    --print-mode)
+      print_mode=true
       shift
       ;;
     *) die "gate.sh: unknown argument: $1" ;;
@@ -82,10 +91,16 @@ stage_enabled() {
   [[ -z $only_stages || ,$only_stages, == *",$1,"* ]]
 }
 
-[[ -n $repo ]] || die 'gate.sh: --repo is required'
-[[ -n $run_dir ]] || die 'gate.sh: --run-dir is required'
-[[ -n $label ]] || die 'gate.sh: --label is required'
-[[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die 'gate.sh: --label contains unsupported characters'
+if $print_mode; then
+  if [[ -z $repo ]]; then
+    repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || die 'gate.sh: --print-mode needs --repo or a git working directory'
+  fi
+else
+  [[ -n $repo ]] || die 'gate.sh: --repo is required'
+  [[ -n $run_dir ]] || die 'gate.sh: --run-dir is required'
+  [[ -n $label ]] || die 'gate.sh: --label is required'
+  [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die 'gate.sh: --label contains unsupported characters'
+fi
 if [[ -n $commit_message && $files_given != true ]]; then
   die 'gate.sh: --commit requires --files'
 fi
@@ -100,7 +115,10 @@ fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || die 'gate.sh: cannot resolve script directory'
 config_file="${GATE_CONFIG:-$script_dir/../forge.config.json}"
-[[ -f $config_file ]] || die "gate.sh: missing config: $config_file"
+if [[ ! -f $config_file ]]; then
+  $print_mode && { printf 'full\n'; exit 0; }
+  die "gate.sh: missing config: $config_file"
+fi
 
 if [[ ! -d $repo ]]; then
   repo_candidates=("$repo")
@@ -162,26 +180,29 @@ if [[ $common_dir != "$repo_git_dir" || $repo == */.claude/worktrees/* || -n $sh
   worktree_detected=true
 fi
 
-mkdir -p "$run_dir" 2>/dev/null || die "gate.sh: cannot create run directory: $run_dir"
-run_dir=$(cd "$run_dir" 2>/dev/null && pwd -P) || die "gate.sh: cannot open run directory: $run_dir"
+entry_file=''
+if ! $print_mode; then
+  mkdir -p "$run_dir" 2>/dev/null || die "gate.sh: cannot create run directory: $run_dir"
+  run_dir=$(cd "$run_dir" 2>/dev/null && pwd -P) || die "gate.sh: cannot open run directory: $run_dir"
 
-state_prefix="$run_dir/.gate-$label"
-entry_file="$state_prefix-config.json"
-commands_file="$state_prefix-commands.nul"
-results_file="$state_prefix-results.tsv"
-files_file="$state_prefix-files.nul"
-trap 'rm -f "$state_prefix"-*' EXIT
-: >"$commands_file" || die "gate.sh: cannot write run directory: $run_dir"
-: >"$results_file" || die "gate.sh: cannot write run directory: $run_dir"
-: >"$files_file" || die "gate.sh: cannot write run directory: $run_dir"
+  state_prefix="$run_dir/.gate-$label"
+  entry_file="$state_prefix-config.json"
+  commands_file="$state_prefix-commands.nul"
+  results_file="$state_prefix-results.tsv"
+  files_file="$state_prefix-files.nul"
+  trap 'rm -f "$state_prefix"-*' EXIT
+  : >"$commands_file" || die "gate.sh: cannot write run directory: $run_dir"
+  : >"$results_file" || die "gate.sh: cannot write run directory: $run_dir"
+  : >"$files_file" || die "gate.sh: cannot write run directory: $run_dir"
+fi
 
-python3 - "$config_file" "$repo" "$common_checkout" "$worktree_detected" "$entry_file" <<'PY'
+python3 - "$config_file" "$repo" "$common_checkout" "$worktree_detected" "$entry_file" "$print_mode" <<'PY'
 import json
 import os
 import subprocess
 import sys
 
-config_path, repo, common_checkout, detected_raw, output_path = sys.argv[1:]
+config_path, repo, common_checkout, detected_raw, output_path, print_mode = sys.argv[1:]
 
 
 def origin_url(path):
@@ -225,6 +246,12 @@ if matched_path is None:
                     matched_path = path
                     prefix_fallback = True
                     break
+if print_mode == "true":
+    # A repo with no usable entry gets the default mode, so callers run their checks.
+    entry = entries.get(matched_path) if matched_path is not None else None
+    mode = entry.get("mode", "full") if isinstance(entry, dict) else "full"
+    print(mode if mode in {"full", "none"} else "full")
+    raise SystemExit(0)
 if matched_path is None:
     print(f"gate.sh: unknown repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
@@ -294,6 +321,7 @@ with open(output_path, "w", encoding="utf-8") as handle:
 PY
 config_status=$?
 ((config_status == 0)) || exit 2
+$print_mode && exit 0
 
 if $files_given; then
   if ((${#files[@]})); then

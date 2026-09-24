@@ -1722,7 +1722,7 @@ async function smoke(sandbox, context) {
       : 'Do not run the Playwright spec suite in this chunk. Attempt each criterion below with Playwright MCP tools.'
     const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${PARAMS.runDir}/sandbox.json (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
     `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion under ${PARAMS.runDir}/smoke/. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
-    { label, phase: 'Sandbox', schema: SMOKE_SCHEMA })
+    { label, phase: 'Sandbox', agentType: 'browser', schema: SMOKE_SCHEMA })
     if (!smokeResult) return null
     results.push(...(smokeResult.results || []))
   }

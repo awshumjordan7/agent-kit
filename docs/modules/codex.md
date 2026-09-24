@@ -17,8 +17,8 @@ Arrays merge as whole values, except arrays at `permissions.allow`, `permissions
 `hooks.<name>`, which merge element by element as in `settings.json`. Output lists key paths only, never values.
 
 When the merge changes nothing, the file is not touched. Otherwise the old file is copied to
-`config.toml.backup.<timestamp>` and the merged data is written. The rewrite does not keep blank lines or custom
-formatting.
+`~/.ai-setup/backups/<timestamp>/home/.codex/config.toml` and the merged data is written. Backup folders older than
+30 days are deleted after a successful install. The rewrite does not keep blank lines or custom formatting.
 
 The merge is skipped, and the whole-file rule applies instead, in two cases:
 
