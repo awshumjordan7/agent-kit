@@ -60,7 +60,7 @@
 #
 # Exit codes: 0 success (CODEX_OK line + final message); 1 codex failed or
 # produced no final message; 2 thread-file state error; 10 watch max-wait
-# elapsed while still running; 64 usage error; 65 config error;
+# elapsed while still running; 64 usage error or codex not on PATH; 65 config error;
 # 69 not logged in (CODEX_NOT_LOGGED_IN); 75 stalled;
 # 76 budget exceeded; 77 out of credits; 78 lock timeout;
 # 79 context/tool-call handoff (CODEX_CONTEXT_HANDOFF).
