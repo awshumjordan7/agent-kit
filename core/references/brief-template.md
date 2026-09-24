@@ -19,5 +19,5 @@ Briefs are written before the spawn: the brief file's write must succeed in a to
 They are not edited after.
 Write briefs with the Write tool, or in Bash only with a quoted heredoc (`<<'EOF'`).
 Never tell an agent to delete a directory (`rm -rf` is denied); if a dir must be emptied, a worker runs `find <dir> -mindepth 1 -delete` then `rmdir <dir>`.
-Browser steps go to the configured browser-testing agent, never to `worker`. Playwright MCP blocks file: URLs, so serve a rendered file over localhost and provide that URL.
+Browser steps go to the `browser` agent, never to `worker`. Playwright MCP blocks file: URLs, so serve a rendered file over localhost and provide that URL.
 A brief that hands an agent a file holding cookies, tokens, headers, or typed values (a Playwright trace.zip, whose action titles and params include filled passwords; a HAR; an auth storage-state file) names `python3 ~/.claude/skills/forge/scripts/trace-read.py <file>` in KNOWN as the structure-only probe (it prints redacted action and network rows), or `zipinfo -1 <file>` for a file listing, and forbids printing raw contents or action titles from it.
