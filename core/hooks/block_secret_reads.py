@@ -341,6 +341,15 @@ CURL_AUTH_SAFE = re.compile(
     re.IGNORECASE,
 )
 
+# A presence check (`test -n "$KEY"`, `[ -z "$KEY" ]`, `[[ -n ${KEY} ]]`) prints
+# nothing. Group 1 keeps the command-start boundary so only the check itself is
+# blanked; an argument like `echo test -n "$KEY"` is not at a command start.
+SECRET_TEST_SAFE = re.compile(
+    r"((?:^|[;&|(!\n]|\b(?:if|while)\s)\s*)"
+    rf"(?:test|\[\[?)\s+-[nz]\s+(['\"]?)\$\{{?{SECRET_VAR_NAME}\}}?\2(?=\s|$|[;&|\]])",
+    re.IGNORECASE,
+)
+
 # Bare environment dumps with no filtering argument. Bounded by command
 # separators (start/end of string, `;`, `&`, `&&`, newline) on both sides;
 # a single `|` on the far side means something downstream still gets a
@@ -451,7 +460,7 @@ def secret_var_verdict(command: str) -> str | None:
         return f"would dump the full environment {matched('jq-env-dump', m.group(0))}"
     if m := PRINTENV_SECRET.search(head) or DECLARE_P_SECRET.search(head):
         return f"would print a secret-bearing variable {matched('printenv-secret', m.group(0))}"
-    scrubbed = CURL_AUTH_SAFE.sub(" ", head)
+    scrubbed = SECRET_TEST_SAFE.sub(r"\1 ", CURL_AUTH_SAFE.sub(" ", head))
     if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and (m := SECRET_VAR_EXPANSION.search(scrubbed)):
         return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
     if PYNODE_INVOCATION.search(command):

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit/PostToolUse/Stop hook: nag by context-size band, block once at 280k.
+"""UserPromptSubmit/PostToolUse/Stop hook: nag by context-size band, block once at 340k.
 
 As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
-block at 160k, then at 240k every tool call except progress-file edits and
+block at 160k, then at 300k every tool call except progress-file edits and
 StructuredOutput is blocked. Other sub-agents and the main session pass through.
 
 Fail-open by design: exit 0 silently on any missing/unreadable transcript,
@@ -17,9 +17,9 @@ import sys
 
 BAND_160K = 160_000
 BAND_200K = 200_000
-BAND_240K = 240_000
-BAND_280K = 280_000
-BANDS = (BAND_160K, BAND_200K, BAND_240K, BAND_280K)
+BAND_300K = 300_000
+BAND_340K = 340_000
+BANDS = (BAND_160K, BAND_200K, BAND_300K, BAND_340K)
 RESET_BELOW = 120_000
 
 STATE_DIR = os.environ.get("CONTEXT_GUARD_STATE_DIR") or os.path.expanduser(
@@ -40,14 +40,14 @@ MESSAGES = {
         "Context guard: ~{n}k tokens. Finish the current step, then rewrite STATE.md from "
         "the template so the handoff is one command away."
     ),
-    BAND_240K: (
+    BAND_300K: (
         "Context guard: ~{n}k tokens. Start no new work. Let running agents and Codex "
         "sessions finish, rewrite STATE.md, then run "
         "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name>` and message the "
         "successor. Exception: if this run is in its final stage (final review, QA, ship), "
         "finish it first, then hand off. " + REPORT_ISSUE_LINE
     ),
-    BAND_280K: (
+    BAND_340K: (
         "Context guard: ~{n}k tokens. Before ending this turn: wait for running agents, "
         "rewrite STATE.md, run handoff.py, message the successor, then end. Exception: a "
         "run in its final stage finishes first. " + REPORT_ISSUE_LINE
@@ -208,7 +208,7 @@ def implementer_pretool(payload):
     measure = measure_from_transcript(agent_transcript)
     if measure is None or measure < BAND_160K:
         return 0
-    if measure >= BAND_240K:
+    if measure >= BAND_300K:
         return 0 if progress_file_call(payload) else deny_tool_call(IMPL_HARD_MESSAGE)
     state_path = os.path.join(STATE_DIR, f"impl-{agent_id}.json")
     if load_state(state_path)["blocked"]:
@@ -265,17 +265,17 @@ def main() -> int:
             return 0
 
     if event_name == "Stop":
-        if measure >= BAND_280K and not payload.get("stop_hook_active") and not state["blocked"]:
+        if measure >= BAND_340K and not payload.get("stop_hook_active") and not state["blocked"]:
             try:
                 save_state(state_path, state["band"], True)
             except OSError:
                 return 0
-            emit_block(MESSAGES[BAND_280K].format(n=measure // 1000))
+            emit_block(MESSAGES[BAND_340K].format(n=measure // 1000))
         return 0
 
     crossed = highest_crossed_band(measure)
-    if crossed > BAND_240K:
-        crossed = BAND_240K  # 280k is announced only via the Stop block
+    if crossed > BAND_300K:
+        crossed = BAND_300K  # 340k is announced only via the Stop block
     if crossed > state["band"]:
         try:
             save_state(state_path, crossed, state["blocked"])

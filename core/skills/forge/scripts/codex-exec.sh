@@ -60,7 +60,8 @@
 #
 # Exit codes: 0 success (CODEX_OK line + final message); 1 codex failed or
 # produced no final message; 2 thread-file state error; 10 watch max-wait
-# elapsed while still running; 64 usage error; 65 config error; 75 stalled;
+# elapsed while still running; 64 usage error; 65 config error;
+# 69 not logged in (CODEX_NOT_LOGGED_IN); 75 stalled;
 # 76 budget exceeded; 77 out of credits; 78 lock timeout;
 # 79 context/tool-call handoff (CODEX_CONTEXT_HANDOFF).
 #
@@ -399,6 +400,11 @@ if [ -n "$INLINE_DIFF" ] && [ ! -s "$INLINE_DIFF" ]; then
     fail 65 "CODEX_DIFF_INVALID: diff must be non-empty: $INLINE_DIFF"
 elif [ -n "$INLINE_DIFF" ] && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --git" ]; then
     fail 65 "CODEX_DIFF_INVALID: non-empty diff must begin with diff --git: $INLINE_DIFF"
+fi
+
+# Checked before the session lock is taken, so a logged-out run holds no lock.
+if ! codex login status >/dev/null 2>&1; then
+    fail 69 "CODEX_NOT_LOGGED_IN: 'codex login status' failed for CODEX_HOME=$CODEX_HOME_DIR. Run 'codex login' and retry."
 fi
 
 if [ "$MODE" = "start" ]; then
