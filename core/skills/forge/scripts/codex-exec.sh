@@ -310,9 +310,14 @@ STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
 LOCK_WAIT="$(resolve_config '.codex.lockWaitSeconds')"; LOCK_WAIT="${LOCK_WAIT:-1800}"
 MAX_TOOL_CALLS="${MAX_TOOL_CALLS:-40}"
 MAX_TOOL_OUTPUT_KB="${MAX_TOOL_OUTPUT_KB:-300}"
-HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-120000}"
-if [ -z "$HANDOFF_TOOL_CALLS" ]; then
-    if [ "$CONTRACT" = "impl" ]; then HANDOFF_TOOL_CALLS=60; else HANDOFF_TOOL_CALLS=30; fi
+# Only impl sessions keep a state file, so a handed-off session of any other
+# contract restarts with nothing; those contracts get no handoff by default.
+if [ "$CONTRACT" = "impl" ]; then
+    HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-120000}"
+    HANDOFF_TOOL_CALLS="${HANDOFF_TOOL_CALLS:-60}"
+else
+    HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-0}"
+    HANDOFF_TOOL_CALLS="${HANDOFF_TOOL_CALLS:-0}"
 fi
 MAX_HANDOFFS="${MAX_HANDOFFS:-3}"
 if [ "$HANDOFF_TOOL_CALLS" -gt 0 ] && [ "$HANDOFF_TOOL_CALLS" -gt "$MAX_TOOL_CALLS" ]; then
