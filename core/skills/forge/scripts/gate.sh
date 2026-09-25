@@ -46,6 +46,8 @@ while (($#)); do
       while (($#)) && [[ $1 != --* ]]; do
         IFS=',' read -r -a file_parts <<<"$1"
         for file_part in ${file_parts[@]+"${file_parts[@]}"}; do
+          file_part="${file_part#"${file_part%%[![:space:]]*}"}"
+          file_part="${file_part%"${file_part##*[![:space:]]}"}"
           [[ -n $file_part ]] && files+=("$file_part")
         done
         shift
@@ -375,13 +377,20 @@ kept = []
 for raw_path in paths:
     path = raw_path.decode("utf-8", "surrogateescape")
     candidate = Path(path)
-    if not path or candidate.is_absolute() or ".." in candidate.parts:
+    if not path or ".." in candidate.parts:
         continue
     try:
+        if candidate.is_absolute():
+            try:
+                candidate = candidate.relative_to(repo_root)
+            except ValueError:
+                candidate = (candidate.parent.resolve() / candidate.name).relative_to(repo_root)
+            if candidate == Path("."):
+                continue
         (repo_root / candidate).resolve().relative_to(repo_root)
     except (OSError, RuntimeError, ValueError):
         continue
-    kept.append(raw_path)
+    kept.append(str(candidate).encode("utf-8", "surrogateescape"))
 with open(files_path, "wb") as handle:
     for path in dict.fromkeys(kept):
         handle.write(path + b"\0")
@@ -393,6 +402,9 @@ files=()
 while IFS= read -r -d '' file; do
   files+=("$file")
 done <"$files_file"
+if [[ $files_given == true ]] && ((${#files[@]} == 0)); then
+  die 'gate.sh: every --files path was dropped (outside the repository or containing ..)'
+fi
 
 diff_command=(python3 "$script_dir/run_context.py" diff --run-dir "$run_dir" --repo "$repo" --label "$label")
 if ((${#files[@]})); then
@@ -827,7 +839,7 @@ fi
 semgrep_bin="${GATE_SEMGREP_BIN:-semgrep}"
 if stage_enabled semgrep && [[ $semgrep_enabled == true ]]; then
   if ! command -v "$semgrep_bin" >/dev/null 2>&1; then
-    record_command 'semgrep skipped: binary not found'
+    record_failure semgrep "semgrep is enabled for this repository but '$semgrep_bin' is not installed. Install it, or set \"semgrep\": false in this repository's forge.config.json entry."
   elif ((${#semgrep_files[@]} == 0)); then
     record_command 'semgrep skipped: no changed files'
   else

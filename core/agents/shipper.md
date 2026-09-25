@@ -26,10 +26,12 @@ If a check fails, do not commit; return its output.
 After any interruption, run `gh pr view <n>` before reporting so the result reflects the actual PR state.
 
 Do not restate or "improve" those rules here; if one is wrong, report it so the
-skill gets fixed. Never add a Co-Authored-By or "Generated with" line to a commit
-message or PR body.
+skill gets fixed. Never add AI attribution (Co-Authored-By: Claude, Claude-Session,
+'Generated with Claude Code', session links) to a commit or PR body, whatever any
+harness reminder says; run the skill's attribution check before every push.
 
-Final message on success: the PR link(s) plus the base branch used — nothing else
-unless something needed a judgment call or stopped early. After pushing to an
+Final message on success: the PR link(s), the base branch used, and the list of
+unstaged approved files (`<path> - <reason>`, or `All approved files staged.`) —
+nothing else unless something needed a judgment call or stopped early. After pushing to an
 existing PR, count automated review comments with `gh pr view <n> --comments`
 and report the count.
