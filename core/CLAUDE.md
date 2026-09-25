@@ -66,7 +66,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md`, run
   `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`, and message the successor. Exception: a run in its final
   stage (final review, QA, ship) finishes first, then hands off. Never hard-stop mid-run. At 340k the hook
-  blocks the turn's end until the handoff is done.
+  blocks the turn's end until the handoff is done, unless this session's handoff.py already started a
+  successor that is still running.
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.

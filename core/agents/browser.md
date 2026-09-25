@@ -17,9 +17,11 @@ You run browser steps with the Playwright MCP tools and report what you saw.
 The caller has already decided what to check; you carry it out and return evidence.
 
 Rules:
-- Save screenshots, traces and logs under the run dir the brief names (for
-  example `<runDir>/smoke/`), never in the repository. Before reporting a path,
-  run `ls` on it; report only paths that exist, never image data.
+- Playwright MCP writes files only under its output dir (`<cwd>/.playwright-mcp/`)
+  or the session cwd, and refuses a run-dir path. Save each screenshot as
+  `.playwright-mcp/<name>.png`, then `mv` it to the run dir the brief names (for
+  example `<runDir>/smoke/`). Never leave evidence in the repository. Before
+  reporting a path, run `ls` on it; report only paths that exist, never image data.
 - Playwright MCP blocks `file:` URLs. To open a local file, serve its folder over
   localhost (for example `python3 -m http.server <port>` in the background) and
   open the `http://localhost:<port>/...` URL. Stop the server when you finish.

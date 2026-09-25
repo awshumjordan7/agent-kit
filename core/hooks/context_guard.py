@@ -13,6 +13,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 
 BAND_160K = 160_000
@@ -59,6 +60,8 @@ IMPLEMENTER_AGENT = "claude-implementer"
 PROGRESS_MARKER = "/impl-progress-"
 PROGRESS_TOOLS = ("Write", "Edit", "Read")
 AGENT_ID_SHAPE = re.compile(r"^[\w-]+$")
+SESSION_ID_SHAPE = re.compile(r"[\w-]+")
+SUCCESSOR_PGREP_TIMEOUT_SECONDS = 5
 IMPL_SOFT_MESSAGE = (
     "Context is at {n}k. If little work remains, retry this call and finish. "
     "Otherwise update your progress file and return status PARTIAL."
@@ -159,6 +162,34 @@ def emit_hook_context(event_name, message):
             }
         )
     )
+
+
+def successor_live(session_id):
+    """True when handoff.py recorded a successor for this session and that
+    `claude --name <successor>` process is still running."""
+    if not isinstance(session_id, str) or not SESSION_ID_SHAPE.fullmatch(session_id):
+        return False
+    marker_path = os.path.join(STATE_DIR, f"{session_id}.successor")
+    try:
+        with open(marker_path) as f:
+            name = f.readline().strip()
+    except OSError:
+        return False
+    if not name:
+        return False
+    # Same pattern as handoff.py's _claude_pids.
+    pattern = rf"(^|/)claude --name {re.escape(name)}( |$)"
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", pattern],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=SUCCESSOR_PGREP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and bool(result.stdout.split())
 
 
 def emit_block(reason):
@@ -265,7 +296,12 @@ def main() -> int:
             return 0
 
     if event_name == "Stop":
-        if measure >= BAND_340K and not payload.get("stop_hook_active") and not state["blocked"]:
+        if (
+            measure >= BAND_340K
+            and not payload.get("stop_hook_active")
+            and not state["blocked"]
+            and not successor_live(session_id)
+        ):
             try:
                 save_state(state_path, state["band"], True)
             except OSError:

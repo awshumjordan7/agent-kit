@@ -12,6 +12,11 @@ from pathlib import Path
 USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>]"
 POLL_INTERVAL_SECONDS = 1
 START_TIMEOUT_SECONDS = 20
+STATE_DIR = Path(
+    os.environ.get("CONTEXT_GUARD_STATE_DIR")
+    or os.path.expanduser("~/.claude/hooks/state/context-guard")
+)
+SESSION_ID_SHAPE = re.compile(r"[\w-]+")
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -71,6 +76,18 @@ def _open_windows_terminal_tab(
     )
 
 
+def _write_successor_marker(session_name: str, state_path: Path) -> None:
+    """context_guard.py reads this marker to skip its 340k Stop block while the successor runs."""
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not SESSION_ID_SHAPE.fullmatch(session_id):
+        return
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / f"{session_id}.successor").write_text(f"{session_name}\n{state_path}\n")
+    except OSError as error:
+        sys.stderr.write(f"handoff.py: could not write the successor marker: {error}\n")
+
+
 def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
     if not state_path.is_file():
         sys.stderr.write(f"handoff.py: STATE.md not found: {state_path}\n")
@@ -80,10 +97,14 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
         "Read only that file to start; it points at everything else."
     )
     input_text = f"claude --name {session_name!r} --permission-mode bypassPermissions {prompt!r}"
+    manual_command = f"cd {shlex.quote(str(cwd))} && " + shlex.join(
+        ["claude", "--name", session_name, "--permission-mode", "bypassPermissions", prompt]
+    )
+    run_yourself = f"run this command yourself: {manual_command}"
     distro = os.environ.get("WSL_DISTRO_NAME", "")
     on_wsl = sys.platform == "linux" and bool(distro) and shutil.which("wt.exe") is not None
     if sys.platform != "darwin" and not on_wsl:
-        sys.stderr.write(f"handoff.py: no terminal tab opener for this platform; run: {input_text}\n")
+        sys.stderr.write(f"handoff.py: no terminal tab opener for this platform; {run_yourself}\n")
         return 1
     try:
         existing_pids = _claude_pids(session_name)
@@ -93,17 +114,22 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
     if sys.platform == "darwin":
         result = _open_ghostty_tab(cwd, input_text)
         if result.returncode:
-            sys.stderr.write(f"handoff.py: failed to open Ghostty tab: {result.stderr.strip()}\n")
+            sys.stderr.write(
+                f"handoff.py: failed to open Ghostty tab: {result.stderr.strip()}; {run_yourself}\n"
+            )
             return 1
     else:
         try:
             result = _open_windows_terminal_tab(state_path, session_name, cwd, prompt, distro)
         except OSError as error:
-            sys.stderr.write(f"handoff.py: failed to open Windows Terminal tab: {error}\n")
+            sys.stderr.write(
+                f"handoff.py: failed to open Windows Terminal tab: {error}; {run_yourself}\n"
+            )
             return 1
         if result.returncode:
             sys.stderr.write(
-                f"handoff.py: failed to open Windows Terminal tab: {result.stderr.strip()}\n"
+                f"handoff.py: failed to open Windows Terminal tab: {result.stderr.strip()}; "
+                f"{run_yourself}\n"
             )
             return 1
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
@@ -116,8 +142,9 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
             sys.stderr.write(f"handoff.py: failed to inspect Claude processes: {error}\n")
             return 1
     else:
-        sys.stderr.write(f"handoff: successor {session_name!r} did not start; run: {input_text}\n")
+        sys.stderr.write(f"handoff: successor {session_name!r} did not start; {run_yourself}\n")
         return 1
+    _write_successor_marker(session_name, state_path)
     sys.stdout.write(f"session: {session_name}\n")
     sys.stdout.write(f"state:   {state_path}\n")
     return 0
