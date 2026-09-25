@@ -71,7 +71,9 @@ const PARAMS = {
   repo: args.repo || '',
   ticket: args.ticket || 'forge',
   tickets: Array.isArray(args.tickets) && args.tickets.length ? args.tickets.map(String) : [args.ticket || 'forge'],
-  criteria: Array.isArray(args.criteria) ? args.criteria : [],
+  criteria: Array.isArray(args.criteria)
+    ? args.criteria
+    : typeof args.criteria === 'string' ? args.criteria.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : [],
   tier: TIERS[args.tier] ? args.tier : 'opus',
   tierSandbox: args.tier_sandbox || 'sandbox',
   // Reuse a fork another run built (companion repo run): {sandboxId, loginUrl, previewUrl}.
@@ -93,7 +95,10 @@ const PARAMS = {
   checkpointDecision: typeof args.checkpointDecision === 'string' ? args.checkpointDecision : null,
   smokeCommand: typeof args.smokeCommand === 'string' ? args.smokeCommand : '',
   prBodyExtra: typeof args.prBodyExtra === 'string' ? args.prBodyExtra : '',
+  resumeAttempt: Number.isInteger(args.resumeAttempt) && args.resumeAttempt > 0 ? args.resumeAttempt : 0,
 }
+// Each resume-k Codex attempt counts as a spawn whether it replays from the cache or runs live.
+PARAMS.spawnCap += PARAMS.resumeAttempt
 
 let FORGE_CONFIG = PARAMS.forgeConfig
 
@@ -132,9 +137,6 @@ const secretRunDirWord = SECRET_PATH_WORDS.exec(String(PARAMS.runDir))
 if (secretRunDirWord) {
   throw new Error(`runDir ${PARAMS.runDir} contains the word "${secretRunDirWord[0]}", which the block_secret_reads hook blocks in Write paths; choose a run dir without it`)
 }
-if (!PARAMS.planText) {
-  throw new Error('planText is required; pass the plan text in args')
-}
 if (!['build', 'review'].includes(PARAMS.lane)) {
   throw new Error(`unsupported forge lane: ${PARAMS.lane}`)
 }
@@ -142,13 +144,10 @@ if (PARAMS.checkpointDecision && !['ship', 'smoke', 'qa'].includes(PARAMS.checkp
   throw new Error(`unsupported checkpointDecision: ${PARAMS.checkpointDecision}; allowed values are ship, smoke, qa`)
 }
 
-const PHASES = PARAMS.lane === 'build' ? planPhases(PARAMS.planText) : []
-const PHASED = PHASES.length >= 2
 // Spawns one phase adds: implement, a possible Codex wrapper retry, commit, phases.json write, gate.
 const PHASE_SPAWNS = 5
 // Spawns a phased run adds once: phases.json read, branch switch, resume file scan, final phases.json write.
 const PHASED_RUN_SPAWNS = 4
-if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
 const GATE_CHECKOUT = `${PARAMS.runDir}/gate-checkout`
 const EMPTY_PHASES_FILE = { branch: '', phases: [], lastCommittedPhase: null, headSha: null, pendingGates: [] }
 
@@ -347,7 +346,7 @@ const GATE_SCHEMA = {
     commit: {
       anyOf: [
         { type: 'null' },
-        { type: 'object', additionalProperties: false, properties: { sha: { anyOf: [{ type: 'string' }, { type: 'null' }] }, pushed: { type: 'boolean' }, error: { type: 'string' } }, required: ['sha', 'pushed', 'error'] },
+        { type: 'object', additionalProperties: false, properties: { sha: { anyOf: [{ type: 'string' }, { type: 'null' }] }, pushed: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'array', items: { type: 'string' } } }, required: ['sha', 'pushed', 'error', 'dropped'] },
       ],
     },
   },
@@ -365,7 +364,7 @@ const PHASE_ROW_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     id: { type: 'string' }, title: { type: 'string' },
-    sha: { type: ['string', 'null'] }, gate: { type: ['string', 'null'] },
+    sha: { type: 'string' }, gate: { type: 'string' },
   },
   required: ['id', 'title', 'sha', 'gate'],
 }
@@ -374,8 +373,8 @@ const PHASES_FILE_SCHEMA = {
   properties: {
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
-    lastCommittedPhase: { type: ['string', 'null'] },
-    headSha: { type: ['string', 'null'] },
+    lastCommittedPhase: { type: 'string' },
+    headSha: { type: 'string' },
     pendingGates: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
@@ -480,6 +479,13 @@ const WRITE_ACK_SCHEMA = {
 const THREAD_CHECK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
+}
+const PLAN_READ_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    planText: { type: 'string' }, utf16Length: { type: 'integer' }, fnv1a: { type: 'integer' }, error: { type: 'string' },
+  },
+  required: ['planText', 'utf16Length', 'fnv1a', 'error'],
 }
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -637,7 +643,7 @@ const STUBS = {
   lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
   gate: opts => {
     if (String(opts.label).startsWith('commit-')) {
-      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep', 'parity'], commit: { sha: dryRunSha(opts.label), pushed: false, error: '' } }
+      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep', 'parity'], commit: { sha: dryRunSha(opts.label), pushed: false, error: '', dropped: [] } }
     }
     const forcedFailure = PARAMS.dryRunFailGate === opts.label
     return forcedFailure
@@ -667,7 +673,7 @@ const STUBS = {
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
-    ? { ...EMPTY_PHASES_FILE }
+    ? { ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' }
     : opts.schema === BRANCH_SCHEMA
     ? { branch: `${PARAMS.ticket}-dry-run` }
     : opts.schema === THREAD_CHECK_SCHEMA
@@ -677,7 +683,9 @@ const STUBS = {
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
       contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
     },
-  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
+  readConfig: opts => opts.schema === PLAN_READ_SCHEMA
+    ? { planText: DRY_RUN_PLAN, utf16Length: DRY_RUN_PLAN.length, fnv1a: fnv1a(DRY_RUN_PLAN), error: '' }
+    : ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
@@ -782,7 +790,20 @@ const codexWrapper = `Read ~/.claude/skills/forge/references/codex-wrapper.md an
 // Normalize wrapper errors and retry a real error once before assertCodex throws. A Codex process
 // still holding the helper lock surfaces as CODEX_LOCK_TIMEOUT and throws after that retry.
 // A null result means the spawn cap was hit and is not retried.
+// Agent results are cached, so a resumed run replays a failed stage's error; resumeAttempt k gives
+// such a stage the fresh attempts resume-1..k, and earlier ones replay from the cache.
 async function codexAttempts(prompt, opts) {
+  let result = await codexFirstAttempts(prompt, opts)
+  for (let k = 1; k <= PARAMS.resumeAttempt && result && normalizedCodexError(result.error); k++) {
+    await decide(`${opts.label} result still carries an error on resume (${String(result.error).slice(0, 200)}); running attempt resume-${k}.`)
+    result = await agentT('codexWrap', `${prompt}\nattempt=resume-${k}`, { ...opts, label: `${opts.label}-resume-${k}` })
+    if (result) result.error = normalizedCodexError(result.error)
+    await recordCodexHandoffs(result, opts.label)
+  }
+  return result
+}
+
+async function codexFirstAttempts(prompt, opts) {
   let result = await agentT('codexWrap', prompt, opts)
   if (result) result.error = normalizedCodexError(result.error)
   await recordCodexHandoffs(result, opts.label)
@@ -871,6 +892,41 @@ function assertImplementation(result, where) {
     throw new Error(`Claude implementation failed at ${where}: ${(result && result.error) || 'agent returned null'}`)
   }
   return true
+}
+
+const DRY_RUN_PLAN = '# Plan: dry-run plan\n\n## Summary\nDry-run plan text read from planPath.\n'
+
+// 32-bit FNV-1a over UTF-16 code units; the plan reader computes the same value in Python.
+function fnv1a(text) {
+  let hash = 2166136261
+  for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619) >>> 0
+  return hash
+}
+
+function planReadProblem(read) {
+  if (!read) return 'the reader agent returned null'
+  if (read.error) return read.error
+  if (!read.planText) return 'the plan file is empty'
+  if (read.planText.length !== read.utf16Length) return `length check failed: received ${read.planText.length} UTF-16 code units, the file has ${read.utf16Length}`
+  if (fnv1a(read.planText) !== read.fnv1a) return 'FNV-1a check failed: the received text differs from the file at the same length'
+  return ''
+}
+
+// Reading the plan through an agent keeps the plan text out of Workflow args, notices, and relaunches.
+async function loadPlanText() {
+  if (PARAMS.planText) return
+  PARAMS.spawnCap += 1
+  const script = 'import functools, json, pathlib, sys; path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8") if path.is_file() else None; data = (text or "").encode("utf-16-le"); units = [data[i] | (data[i + 1] << 8) for i in range(0, len(data), 2)]; print(json.dumps({"planText": text, "utf16Length": len(units), "fnv1a": functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units, 2166136261), "error": ""} if text is not None else {"planText": "", "utf16Length": 0, "fnv1a": 0, "error": f"{path} is missing or not a file"}))'
+  const read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying planText character for character: python3 -c ${shellQuote(script)} ${shellQuote(PARAMS.planPath)}`,
+    { label: 'read-plan', phase: 'Implement', schema: PLAN_READ_SCHEMA })
+  const problem = planReadProblem(read)
+  if (!problem) {
+    PARAMS.planText = read.planText
+    return
+  }
+  if (PARAMS.lane === 'build') throw new Error(`could not read the plan at ${PARAMS.planPath} (${problem}); pass planText inline`)
+  PARAMS.planText = ''
+  await decide(`Plan text could not be read from ${PARAMS.planPath} (${problem}); the review lane continues without it.`)
 }
 
 async function loadForgeConfig() {
@@ -1177,11 +1233,21 @@ function savedCheckpointProblem(saved) {
   return ''
 }
 
-function readCheckpoint() {
-  const script = 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), end="")'
+// Agents echo JSON nulls unreliably, so the read commands print "" for every null and the
+// fields that carry meaning as null are restored after the read.
+const PY_NO_NULLS = 'clean = lambda v: "" if v is None else ({k: clean(x) for k, x in v.items()} if isinstance(v, dict) else ([clean(x) for x in v] if isinstance(v, list) else v))'
+
+function restorePhaseRow(row) {
+  return { ...row, sha: row.sha || null, gate: row.gate || null }
+}
+
+async function readCheckpoint() {
+  const script = `import json, pathlib, sys; ${PY_NO_NULLS}; print(json.dumps(clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")))))`
   const path = `${PARAMS.runDir}/checkpoint.json`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
-  { label: 'read-checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_FILE_SCHEMA })
+  const saved = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
+    { label: 'read-checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_FILE_SCHEMA })
+  if (saved && Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
+  return saved
 }
 
 async function followCheckpoint(state, decision, command) {
@@ -1817,7 +1883,7 @@ function qaArtifactDraft(shipResult, context) {
   return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
 1. Read the full header comment of ~/.claude/skills/forge/references/qa-artifact.html, from its first line up to its closing -->, for its complete data and placeholder contract. Read ${PARAMS.runDir}/sandbox.json with ranged reads if it exists.
 2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from sandbox.json when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
-Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered: ${JSON.stringify(criteria)}. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence="", pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is either a string with one action, location first (for example "On the Customers page, click Add"), or a command block {command, cwd, note?} whose cwd is the directory to run it in. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from sandbox.json testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
+Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered: ${JSON.stringify(criteria)}. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence="", pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is either a string with one action, location first (for example "On the Customers page, click Add"), or a command block {command, cwd, note?} whose cwd is the directory to run it in. Each command block is self-contained and copy-pasteable in zsh: write the full command every time and never use shell variables, export, or aliases defined in another step. Items that test how a verdict or note is saved take their test input from a separate item or from the note field, never from that item's own Pass/Fail/Blocked buttons, because the saved verdict must record whether the check passed. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from sandbox.json testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
 3. Run python3 ~/.claude/skills/forge/scripts/render_artifact.py qa --data ${PARAMS.runDir}/qa-data.json --out ${PARAMS.runDir}/qa-artifact.html; never write your own renderer. A nonzero exit is an error: return its stderr as the error text. Then run open ${PARAMS.runDir}/qa-artifact.html on macOS. If the Artifact tool is available, load the artifact-capabilities skill, then publish the rendered file titled "${PARAMS.ticket} <shortTitle> QA" with capabilities {"db": {}} on the first publish, and run one ArtifactData list on collection qa-results with that artifact's url to confirm the capability. Omit capabilities on every later republish of the same page.
 4. Return path=${PARAMS.runDir}/qa-artifact.html, the qaItems count as items, whether open succeeded as opened, and error="". On any error return that path, items=0, opened=false, and the error text.`,
   { label: 'qa-draft', phase: 'Ship', agentType: 'worker', schema: QA_DRAFT_SCHEMA })
@@ -1962,11 +2028,13 @@ function removeGateCheckout() {
     { label: 'remove-gate-checkout', phase: 'Handoff', schema: ACK_SCHEMA })
 }
 
-function readPhases() {
+async function readPhases() {
   const empty = JSON.stringify(EMPTY_PHASES_FILE).replace(/null/g, 'None')
-  const script = `import json, pathlib, sys; path = pathlib.Path(sys.argv[1]); print(path.read_text(encoding="utf-8") if path.is_file() else json.dumps(${empty}), end="")`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)}`,
+  const script = `import json, pathlib, sys; ${PY_NO_NULLS}; path = pathlib.Path(sys.argv[1]); data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else ${empty}; print(json.dumps(clean(data)))`
+  const saved = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)}`,
     { label: 'read-phases', phase: 'Implement', schema: PHASES_FILE_SCHEMA })
+  if (!saved) return saved
+  return { ...saved, phases: (saved.phases || []).map(restorePhaseRow), lastCommittedPhase: saved.lastCommittedPhase || null, headSha: saved.headSha || null }
 }
 
 function writePhases(run, extraPending = []) {
@@ -2009,10 +2077,15 @@ async function commitFiles(label, message, files) {
   const result = await agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
     { label, phase: 'Implement', schema: GATE_SCHEMA })
   const commit = result && result.commit
+  if (commit && Array.isArray(commit.dropped) && commit.dropped.length) {
+    await decide(`${label} dropped --files entries that match no file on disk, in the index, or in HEAD: ${commit.dropped.join(', ')}`)
+  }
   if (commit && commit.sha) return { sha: commit.sha, empty: false, error: '' }
   const error = (commit && commit.error) || (result && (result.failures || [])[0] && result.failures[0].summary) || 'commit agent returned null'
-  if (/^no (?:staged changes to commit|committable --files paths remain)|every --files path was dropped/.test(error)) return { sha: null, empty: true, error: '' }
-  return { sha: null, empty: false, error }
+  // Every entry dropped means the reported paths were wrong, so the uncommitted work must block the phase.
+  const allDropped = Boolean(commit && Array.isArray(commit.dropped) && commit.dropped.length && commit.dropped.length >= new Set(files).size)
+  if (!allDropped && /^no (?:staged changes to commit|committable --files paths remain)/.test(error)) return { sha: null, empty: true, error: '' }
+  return { sha: null, empty: false, error: allDropped ? `every --files entry was dropped (${error})` : error }
 }
 
 // Gates share one checkout and label-keyed state files, so they run strictly one at a time.
@@ -2062,7 +2135,7 @@ async function collectPhaseGate(run, entry, allowFix) {
     afterFix: async (touched, files) => {
       fixes++
       run.files = [...new Set([...run.files, ...repoRelative(touched)])]
-      const commit = await commitFiles(`commit-fix-phase-${entry.id}-${fixes}`, `Fix Phase ${entry.id} gate`, [...new Set(repoRelative(files))])
+      const commit = await commitFiles(`commit-fix-phase-${entry.id}-${fixes}`, `Fix Phase ${entry.id} gate (round ${fixes})`, [...new Set(repoRelative(files))])
       if (commit.error) {
         await decide(`Fix Phase ${entry.id} gate could not be committed: ${commit.error.slice(0, 300)}`)
         return false
@@ -2112,12 +2185,22 @@ async function phasedImplement(state) {
   let startIndex = 0
   let resumeFiles = []
   if (PHASES_RECORDED) {
+    let savedIndex = -1
     if (saved.lastCommittedPhase) {
-      const index = PHASES.findIndex(item => item.id === saved.lastCommittedPhase)
-      if (index < 0) throw new Error(`${PARAMS.runDir}/phases.json records committed phase ${saved.lastCommittedPhase}, which the plan does not contain`)
-      startIndex = index + 1
-      run.lastCommittedPhase = saved.lastCommittedPhase
-      run.headSha = saved.headSha || [...run.rows.slice(0, index + 1)].reverse().map(row => row.sha).find(Boolean) || null
+      savedIndex = PHASES.findIndex(item => item.id === saved.lastCommittedPhase)
+      if (savedIndex < 0) throw new Error(`${PARAMS.runDir}/phases.json records committed phase ${saved.lastCommittedPhase}, which the plan does not contain`)
+    }
+    // A phase that committed nothing keeps a null sha, so earlier gaps are normal.
+    const rowIndex = run.rows.reduce((last, row, index) => row.sha ? index : last, -1)
+    const lastIndex = Math.max(savedIndex, rowIndex)
+    if (lastIndex >= 0) {
+      startIndex = lastIndex + 1
+      run.lastCommittedPhase = PHASES[lastIndex].id
+      const rowSha = [...run.rows.slice(0, lastIndex + 1)].reverse().map(row => row.sha).find(Boolean) || null
+      run.headSha = savedIndex >= rowIndex ? (saved.headSha || rowSha) : rowSha
+      if (rowIndex > savedIndex) {
+        await decide(`Phase ${run.lastCommittedPhase} adopted as the last committed phase from its recorded sha ${rowSha.slice(0, 12)}; phases.json named ${saved.lastCommittedPhase ? `Phase ${saved.lastCommittedPhase}` : 'no committed phase'}.`)
+      }
     }
     const context = await changedFiles()
     if (contextFailed(context)) {
@@ -2130,8 +2213,8 @@ async function phasedImplement(state) {
     // The final gate always runs after the loop, so a saved final gate is not queued twice.
     const requeue = gated && resumeFiles.length ? saved.pendingGates.filter(pending => pending.label !== finalLabel) : []
     for (const pending of requeue) queuePhaseGate(run, { id: pending.id, sha: pending.sha, label: pending.label, files: resumeFiles })
-    await decide(saved.lastCommittedPhase
-      ? `Resuming the phase loop after Phase ${saved.lastCommittedPhase}; ${requeue.length} pending or failed gate(s) re-queued.`
+    await decide(run.lastCommittedPhase
+      ? `Resuming the phase loop after Phase ${run.lastCommittedPhase}; ${requeue.length} pending or failed gate(s) re-queued.`
       : `Resuming the phase loop at Phase ${PHASES[0].id}; no phase was committed before the interruption.`)
   }
   if (!run.branch) {
@@ -2311,17 +2394,24 @@ async function fullLane() {
       phase('Sandbox')
       if (stopped(state) || !state.ship) return state
       state.context = await changedFiles()
+      const sandboxOn = sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos)
+      const draftQa = sandboxOn || PARAMS.checkpointDecision === 'qa'
+      const draftSkipped = draftQa ? '' : ' QA draft skipped: no QA stage is on.'
       if (contextFailed(state.context)) {
-        state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [], criteria: PARAMS.criteria })
-        if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
+        if (draftQa) {
+          state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [], criteria: PARAMS.criteria })
+          if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
+        }
         state.status = 'BLOCKED'
-        await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}`)
+        await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}${draftSkipped}`)
         return state
       }
-      if (!sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos)) {
-        state.qaDraft = await qaArtifactDraft(state.ship, state.context)
-        if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
-        await decide('Sandbox and smoke skipped because stages.sandbox is off.')
+      if (!sandboxOn) {
+        if (draftQa) {
+          state.qaDraft = await qaArtifactDraft(state.ship, state.context)
+          if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
+        }
+        await decide(`Sandbox and smoke skipped because stages.sandbox is off.${draftSkipped}`)
         return state
       }
       ;[state.qaDraft, state.sandbox] = await Promise.all([
@@ -2458,6 +2548,10 @@ async function reviewLane() {
 }
 
 await loadForgeConfig()
+await loadPlanText()
+const PHASES = PARAMS.lane === 'build' ? planPhases(PARAMS.planText) : []
+const PHASED = PHASES.length >= 2
+if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
 const PHASES_SAVED = (PHASED && !PARAMS.checkpointDecision && await readPhases()) || EMPTY_PHASES_FILE
 // writePhases always records every phase row, so rows mean this run already started the phase loop.
 const PHASES_RECORDED = (PHASES_SAVED.phases || []).length > 0

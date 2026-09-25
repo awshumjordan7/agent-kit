@@ -44,7 +44,7 @@ weakest entry rather than from scratch; the handoff renders from it.
 - Per-agent timeouts bound wall-clock; the Workflow runtime has no clock of its own.
 - Isolated failures: a lens or smoke agent that dies becomes a `FAIL` row in the handoff, not an aborted run.
 - Workflow resume: re-running after a crash skips completed stages. `resumeFromRunId` works only in the launching session; a successor session relaunches with the args in `launch-args.json`.
-- `workflow_carry.py <runId> --from <old-session-dir> --to <new-session-dir>` is only for a journal copied into the new session. A cached agent result whose `error` is non-empty replays as a failure; remove only that failed entry after preserving the journal.
+- `workflow_carry.py <runId> --from <old-session-dir> --to <new-session-dir>` is only for a journal copied into the new session. A cached agent result whose `error` is non-empty replays as a failure. For a Codex stage, relaunch with `resumeFromRunId` and `resumeAttempt` raised by one; each Codex stage whose cached result still carries an error gets one fresh attempt, and every call after it runs live. For any other agent, remove only that failed entry after preserving the journal.
 
 ## How it ends
 
