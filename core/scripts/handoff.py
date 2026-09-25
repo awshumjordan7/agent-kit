@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -7,16 +8,13 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>]"
 POLL_INTERVAL_SECONDS = 1
 START_TIMEOUT_SECONDS = 20
-STATE_DIR = Path(
-    os.environ.get("CONTEXT_GUARD_STATE_DIR")
-    or os.path.expanduser("~/.claude/hooks/state/context-guard")
-)
-SESSION_ID_SHAPE = re.compile(r"[\w-]+")
+STATE_MAX_AGE_SECONDS = 120
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -76,25 +74,39 @@ def _open_windows_terminal_tab(
     )
 
 
-def _write_successor_marker(session_name: str, state_path: Path) -> None:
-    """context_guard.py reads this marker to skip its 340k Stop block while the successor runs."""
+def _write_handoff_marker(session_name: str, state_path: Path, pids: set[int]) -> None:
+    """Tell context_guard.py this session already started its successor."""
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if not SESSION_ID_SHAPE.fullmatch(session_id):
-        sys.stderr.write(
-            "handoff.py: CLAUDE_CODE_SESSION_ID is missing or malformed; successor marker not written, "
-            "so the context guard will still block at 340k\n"
-        )
+    if not session_id:
+        sys.stderr.write("handoff.py: CLAUDE_CODE_SESSION_ID unset; no handoff marker written\n")
         return
+    state_dir = Path(
+        os.environ.get("CONTEXT_GUARD_STATE_DIR")
+        or os.path.expanduser("~/.claude/hooks/state/context-guard")
+    )
+    marker = {
+        "successor": session_name,
+        "state": str(state_path.resolve()),
+        "pids": sorted(pids),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        (STATE_DIR / f"{session_id}.successor").write_text(f"{session_name}\n{state_path}\n")
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / f"{session_id}.handoff").write_text(json.dumps(marker))
     except OSError as error:
-        sys.stderr.write(f"handoff.py: could not write the successor marker: {error}\n")
+        sys.stderr.write(f"handoff.py: failed to write handoff marker: {error}\n")
 
 
 def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
     if not state_path.is_file():
         sys.stderr.write(f"handoff.py: STATE.md not found: {state_path}\n")
+        return 1
+    age = time.time() - state_path.stat().st_mtime
+    if age > STATE_MAX_AGE_SECONDS:
+        sys.stderr.write(
+            f"handoff.py: STATE.md is {int(age)}s old (limit {STATE_MAX_AGE_SECONDS}s); "
+            "rewrite it, then rerun handoff.py in a later tool call\n"
+        )
         return 1
     prompt = (
         f"Read {state_path} and continue from it. "
@@ -114,6 +126,12 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
         existing_pids = _claude_pids(session_name)
     except OSError as error:
         sys.stderr.write(f"handoff.py: failed to inspect Claude processes: {error}\n")
+        return 1
+    if existing_pids:
+        sys.stderr.write(
+            f"handoff.py: a claude session named {session_name!r} already runs "
+            f"(pids {sorted(existing_pids)}); pick a new name or stop that session\n"
+        )
         return 1
     if sys.platform == "darwin":
         result = _open_ghostty_tab(cwd, input_text)
@@ -140,7 +158,8 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL_SECONDS)
         try:
-            if _claude_pids(session_name) - existing_pids:
+            new_pids = _claude_pids(session_name) - existing_pids
+            if new_pids:
                 break
         except OSError as error:
             sys.stderr.write(f"handoff.py: failed to inspect Claude processes: {error}\n")
@@ -148,7 +167,7 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
     else:
         sys.stderr.write(f"handoff: successor {session_name!r} did not start; {run_yourself}\n")
         return 1
-    _write_successor_marker(session_name, state_path)
+    _write_handoff_marker(session_name, state_path, new_pids)
     sys.stdout.write(f"session: {session_name}\n")
     sys.stdout.write(f"state:   {state_path}\n")
     return 0

@@ -13,7 +13,6 @@ import glob
 import json
 import os
 import re
-import subprocess
 import sys
 
 BAND_160K = 160_000
@@ -56,12 +55,14 @@ MESSAGES = {
 }
 
 
+HANDOFF_SUFFIX = ".handoff"
+BACKGROUND_LAUNCH_PREFIXES = ("Async agent launched successfully.", "Workflow launched in background")
+NOTIFIED_TOOL_USE_ID = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
+
 IMPLEMENTER_AGENT = "claude-implementer"
 PROGRESS_MARKER = "/impl-progress-"
 PROGRESS_TOOLS = ("Write", "Edit", "Read")
 AGENT_ID_SHAPE = re.compile(r"^[\w-]+$")
-SESSION_ID_SHAPE = re.compile(r"[\w-]+")
-SUCCESSOR_PGREP_TIMEOUT_SECONDS = 5
 IMPL_SOFT_MESSAGE = (
     "Context is at {n}k. If little work remains, retry this call and finish. "
     "Otherwise update your progress file and return status PARTIAL."
@@ -126,6 +127,60 @@ def measure_from_transcript(transcript_path):
     )
 
 
+def _tool_result_text(block):
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
+        )
+    return ""
+
+
+def pending_background_tasks(path):
+    """Count background Agent/Workflow launches in the transcript that have no
+    task-notification yet. Reads the whole file, so call it only past 340k."""
+    launched = set()
+    notified = set()
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                # Mid-turn completions arrive as attachment or queue-operation
+                # records, so match notifications on the raw line, not the type.
+                line = raw.decode("utf-8", errors="replace")
+                if "<task-notification>" in line:
+                    notified.update(NOTIFIED_TOOL_USE_ID.findall(line))
+                ev = try_parse(raw)
+                if not isinstance(ev, dict) or ev.get("type") != "user":
+                    continue
+                message = ev.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                origin = ev.get("origin")
+                is_notification = isinstance(origin, dict) and origin.get("kind") == "task-notification"
+                if isinstance(content, str):
+                    if is_notification or "<task-notification>" in content:
+                        notified.update(NOTIFIED_TOOL_USE_ID.findall(content))
+                    continue
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        if _tool_result_text(block).startswith(BACKGROUND_LAUNCH_PREFIXES):
+                            launched.add(block.get("tool_use_id"))
+                    elif is_notification and block.get("type") == "text":
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            notified.update(NOTIFIED_TOOL_USE_ID.findall(text))
+    except OSError:
+        return 0
+    return len(launched - notified)
+
+
 def load_state(state_path):
     try:
         with open(state_path) as f:
@@ -164,32 +219,27 @@ def emit_hook_context(event_name, message):
     )
 
 
-def successor_live(session_id):
-    """True when handoff.py recorded a successor for this session and that
-    `claude --name <successor>` process is still running."""
-    if not isinstance(session_id, str) or not SESSION_ID_SHAPE.fullmatch(session_id):
-        return False
-    marker_path = os.path.join(STATE_DIR, f"{session_id}.successor")
+def handoff_successor_running(session_id):
+    """True when handoff.py left a marker for this session and one of the
+    successor pids it recorded is still alive."""
     try:
-        with open(marker_path) as f:
-            name = f.readline().strip()
-    except OSError:
+        with open(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}")) as f:
+            pids = json.load(f).get("pids", [])
+    except (OSError, ValueError, AttributeError):
         return False
-    if not name:
+    if not isinstance(pids, list):
         return False
-    # Same pattern as handoff.py's _claude_pids.
-    pattern = rf"(^|/)claude --name {re.escape(name)}( |$)"
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", pattern],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=SUCCESSOR_PGREP_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0 and bool(result.stdout.split())
+    for pid in pids:
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+        return True
+    return False
 
 
 def emit_block(reason):
@@ -294,14 +344,18 @@ def main() -> int:
             save_state(state_path, state["band"], state["blocked"])
         except OSError:
             return 0
+        try:
+            os.remove(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}"))
+        except OSError:
+            pass
 
     if event_name == "Stop":
-        if (
-            measure >= BAND_340K
-            and not payload.get("stop_hook_active")
-            and not state["blocked"]
-            and not successor_live(session_id)
-        ):
+        if handoff_successor_running(session_id):
+            return 0
+        if measure >= BAND_340K and not payload.get("stop_hook_active") and not state["blocked"]:
+            # Leave blocked unset so a later Stop can still block once the tasks finish.
+            if pending_background_tasks(transcript_path) > 0:
+                return 0
             try:
                 save_state(state_path, state["band"], True)
             except OSError:

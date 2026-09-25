@@ -63,11 +63,13 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Overlap waits.** When a long step (gate, test run, capture, Codex or Opus turn) works on a committed
   state, start the next independent step instead of waiting for it.
 - **Session handoff is driven by the context guard hook.** At 300k start no new work: let running agents and
-  Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md`, run
-  `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`, and message the successor. Exception: a run in its final
-  stage (final review, QA, ship) finishes first, then hands off. Never hard-stop mid-run. At 340k the hook
-  blocks the turn's end until the handoff is done, unless this session's handoff.py already started a
-  successor that is still running.
+  Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md` (list every live
+  sandbox or fork the run owns), then in a later tool call run `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`
+  and message the successor. handoff.py refuses when STATE.md is more than 120 s old or a session with that name
+  already runs. If it exits 1, the handoff is not done: fix the cause it names and rerun, or give the user the command
+  it printed. Exception: a run in its final stage (final review, QA, ship) finishes first, then hands off. Never
+  hard-stop mid-run. At 340k the hook blocks the turn's end once, unless a successor started by handoff.py or a
+  background agent is still running.
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
