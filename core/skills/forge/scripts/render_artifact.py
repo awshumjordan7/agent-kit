@@ -778,6 +778,7 @@ def qa_groups_html(data: dict, items: list[dict], ids: list[str], base: Path) ->
         out.append(qa_group_html(name, group, "".join(parts)))
     if "explore" in data:
         out.append(explore_html(data["explore"]))
+        shown += 1
     return "".join(out), shown
 
 
@@ -796,6 +797,8 @@ def qa_status(items: list[dict], groups: int, has_explore: bool) -> str:
         )
         if ran.count("SKIP"):
             text += f", SKIP {ran.count('SKIP')}"
+        if ran.count("BLOCKED"):
+            text += f', <span class="status-blocked">BLOCKED {ran.count("BLOCKED")}</span>'
     return text
 
 
