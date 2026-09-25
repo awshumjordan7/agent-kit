@@ -12,6 +12,7 @@ Read this file first. Do not read plan.md, the Codex logs, or other run-dir file
 - plan: <path>   decisions: <path>   STATUS.json: <path>   captures: <path>
 - PR(s): <url>   branch: <name>   base: <name>   worktree: <path or "main checkout">
 - sandbox: <id> preview <url> (details in sandbox.json)
+- live sandboxes/forks: <id> created <YYYY-MM-DD> - <keep: reason | teardown: when> (one line each, or "none"; one older than a day with no keep reason also goes under Blockers)
 - Workflow: <runId> in <session dir>
 - optional review stage: <status or NOT configured>
 ## Do not redo
