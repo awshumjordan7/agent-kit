@@ -96,6 +96,8 @@ const PARAMS = {
   smokeCommand: typeof args.smokeCommand === 'string' ? args.smokeCommand : '',
   resumeAttempt: Number.isInteger(args.resumeAttempt) && args.resumeAttempt > 0 ? args.resumeAttempt : 0,
 }
+// Each resume-k Codex attempt counts as a spawn whether it replays from the cache or runs live.
+PARAMS.spawnCap += PARAMS.resumeAttempt
 
 let FORGE_CONFIG = PARAMS.forgeConfig
 
@@ -1906,8 +1908,10 @@ async function commitFiles(label, message, files) {
   }
   if (commit && commit.sha) return { sha: commit.sha, empty: false, error: '' }
   const error = (commit && commit.error) || (result && (result.failures || [])[0] && result.failures[0].summary) || 'commit agent returned null'
-  if (/^no (?:staged changes to commit|committable --files paths remain)/.test(error)) return { sha: null, empty: true, error: '' }
-  return { sha: null, empty: false, error }
+  // Every entry dropped means the reported paths were wrong, so the uncommitted work must block the phase.
+  const allDropped = Boolean(commit && Array.isArray(commit.dropped) && commit.dropped.length && commit.dropped.length >= new Set(files).size)
+  if (!allDropped && /^no (?:staged changes to commit|committable --files paths remain)/.test(error)) return { sha: null, empty: true, error: '' }
+  return { sha: null, empty: false, error: allDropped ? `every --files entry was dropped (${error})` : error }
 }
 
 // Gates share one checkout and label-keyed state files, so they run strictly one at a time.

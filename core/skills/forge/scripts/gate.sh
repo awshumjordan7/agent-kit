@@ -1224,7 +1224,8 @@ if not failures and commit_message:
             if ignored.returncode == 0:
                 continue
             (head_only_files if location == "head" else stage_files).append(path)
-        if not stage_files and not head_only_files:
+        # A rerun after a deletion-only commit drops every entry, so HEAD adoption is still checked below.
+        if not stage_files and not head_only_files and not dropped:
             commit_error = "no committable --files paths remain after safety filters"
     commit_paths = stage_files + head_only_files
 
@@ -1241,11 +1242,12 @@ if not failures and commit_message:
 
     head_adopted = False
     if not commit_error:
+        # With no paths, `git diff --cached` would inspect the whole index, so it is skipped.
         changed = subprocess.run(
             ["git", "-C", repo, "diff", "--cached", "--quiet", "--", *commit_paths],
             check=False,
-        )
-        if changed.returncode == 0:
+        ) if commit_paths else None
+        if changed is None or changed.returncode == 0:
             # A rerun after an interrupted report finds its own commit already at HEAD.
             head_subject = subprocess.run(
                 ["git", "-C", repo, "log", "-1", "--format=%s"],
@@ -1258,7 +1260,7 @@ if not failures and commit_message:
                 head_adopted = True
                 print("gate.sh: nothing staged; HEAD already carries this commit message, reporting HEAD", file=sys.stderr)
             else:
-                commit_error = "no staged changes to commit"
+                commit_error = "no staged changes to commit" if commit_paths else "no committable --files paths remain after safety filters"
 
     if not commit_error and not head_adopted:
         committed = subprocess.run(
