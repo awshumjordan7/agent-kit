@@ -28,6 +28,9 @@ KNOWN GAPS, deliberately not covered:
     that mention a secret word -- the same text `cat` of those files prints.
   - A plain `rg <word> <dir>/` reads the non-hidden, non-ignored
     secret-named files in `<dir>`.
+  - A reader name glued to a hyphen (`llvm-strings .env`) is not seen as a
+    reader, so option names such as `--head` and hyphenated branch names
+    do not match.
   - Reading a secret indirectly: copy to a neutral name first, then read.
 Tighten only if the threat model changes; today's goal is preventing careless
 credential exposure, not defeating circumvention.
@@ -41,6 +44,7 @@ Exit codes: 2 = block (stderr is shown to Claude), 0 = allow.
 
 import io
 import json
+import posixpath
 import re
 import shlex
 import sys
@@ -821,7 +825,7 @@ def _secret_word_hit(patterns: list[str], raw: str) -> Hit | None:
     return None
 
 
-def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
+def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False) -> Hit | None:
     """Check the file operands and scripts of a parsed grep/git grep/rg/sed/awk call.
 
     A grep pattern is search text and is never checked as a path. A broad
@@ -830,7 +834,7 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
     reaches. A pattern with whitespace still counts: `"token: "` matches
     `oauth_token: <value>` lines. An rg search is broad when it reaches hidden,
     ignored or symlinked files (`-u`, `--hidden`, `-L`, a positive `-g`), names
-    no path, or names `~`, `$HOME` or `/`.
+    no path and reads no pipe, or names `.`, `~`, `$HOME` or `/`.
     """
     family, options = args.family, args.options
     includes = [
@@ -875,9 +879,13 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
             or bool(includes)
             or bool(set("u.L") & set(shorts))
             or bool(names & {"--hidden", "--unrestricted", "--follow"})
-            # With no path rg searches the working directory.
-            or not args.files
-            or any((f.rstrip("/") or "/") in ("~", "$HOME", "${HOME}", "/") for f in args.files)
+            # With no path rg searches the working directory, unless a pipe
+            # feeds it; then it reads stdin.
+            or (not args.files and not fed_by_pipe)
+            or any(
+                (posixpath.normpath(f).rstrip("/") or "/") in (".", "~", "$HOME", "${HOME}", "/")
+                for f in args.files
+            )
         )
     if not broad or names & NAMES_ONLY_OPTS[family] or all_md:
         return None
@@ -1163,7 +1171,7 @@ def verdict(command: str) -> Hit | None:
     dot_cd = False
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
-    for raw, feeds_pipe in zip(segments, piped):
+    for i, (raw, feeds_pipe) in enumerate(zip(segments, piped)):
         if cd := CD_TARGET.match(raw):
             dot_cd = dot_cd or any(has_dot_part(word) for word in cd.group(1).split())
         # Blank out only the allowlisted paths, never the whole segment:
@@ -1176,7 +1184,7 @@ def verdict(command: str) -> Hit | None:
         # Tokenized from the raw segment: allowlist blanking must not shift
         # which token is the pattern.
         if (reader := parse_reader(raw)) is not None:
-            if hit := reader_verdict(reader, raw):
+            if hit := reader_verdict(reader, raw, fed_by_pipe=i > 0 and piped[i - 1]):
                 return hit
             # A dot-directory (~/.config/gh/hosts.yml) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
