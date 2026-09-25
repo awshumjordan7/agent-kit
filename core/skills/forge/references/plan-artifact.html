@@ -2,7 +2,7 @@
   Forge plan artifact. Render it, never hand-fill it:
     python3 ~/.claude/skills/forge/scripts/render_artifact.py plan \
       --data <runDir>/plan-data.json --markdown <runDir>/plan.md --out <runDir>/plan-artifact.html
-  The main session writes plan-data.json; a worker runs the renderer, publishes, and opens the page.
+  The main session writes plan-data.json; a worker runs the renderer; the main session publishes the page.
   The renderer removes this comment, then fills every slot. It exits 1 when a slot is left unfilled.
 
   plan-data.json keys:
