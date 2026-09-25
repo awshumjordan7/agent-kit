@@ -1,6 +1,6 @@
 ---
 name: locator
-description: Locate-only search. Finds files, symbols, call sites, and string mentions and returns file:line lists with no interpretation. Use for "where is X" questions when a scout's judgment is not needed.
+description: Locate-only search. Finds files, symbols, call sites, and string mentions and returns file:line lists with no interpretation. Use for "where is X" questions when a scout's judgment is not needed. Parsing or joining data (transcripts, JSONL, tables) goes to a worker script, not locator.
 model: haiku
 tools: Bash, Grep, Glob, Read, Write
 disallowedTools: Agent
