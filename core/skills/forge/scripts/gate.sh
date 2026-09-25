@@ -1152,7 +1152,8 @@ result["diffTruncated"] = len(diff_text) > DIFF_INLINE_CAP
 
 commit_error = ""
 if not failures and commit_message:
-    result["commit"] = {"sha": None, "pushed": False, "error": ""}
+    dropped = []
+    result["commit"] = {"sha": None, "pushed": False, "error": "", "dropped": dropped}
 
     def command_error(prefix, completed):
         detail = " ".join((completed.stderr or completed.stdout or "").split())
@@ -1171,9 +1172,46 @@ if not failures and commit_message:
     if not commit_error and branch_name in {"develop", "main", "master"}:
         commit_error = f"refusing to commit on protected branch {branch_name}"
 
+    def path_location(path):
+        if os.path.lexists(os.path.join(repo, path)):
+            return "worktree"
+        indexed = subprocess.run(
+            ["git", "-C", repo, "ls-files", "--error-unmatch", "--", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if indexed.returncode == 0:
+            return "worktree"
+        in_head = subprocess.run(
+            ["git", "-C", repo, "ls-tree", "-r", "--name-only", "HEAD", "--", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if in_head.returncode == 0 and in_head.stdout.strip():
+            return "head"
+        return None
+
+    # HEAD-only paths are deletions already staged with `git rm`; `git add` would reject them.
     stage_files = []
+    head_only_files = []
     if not commit_error:
-        for path in files:
+        for entry in files:
+            path, location = entry, path_location(entry)
+            if location is None:
+                # Implementers sometimes annotate entries, as in "gone/ (3 files removed)".
+                annotated = re.match(r"^(.*\S)\s+\([^()]*\)$", entry)
+                if annotated:
+                    path, location = annotated.group(1), path_location(annotated.group(1))
+            if location is None:
+                print(
+                    f"gate.sh: dropped --files entry {entry}: matches no file on disk, in the index, or in HEAD",
+                    file=sys.stderr,
+                )
+                dropped.append(entry)
+                continue
             parts = path.replace("\\", "/").split("/")
             if ".envs" in parts or fnmatch.fnmatch(os.path.basename(path), "*.env*"):
                 continue
@@ -1185,11 +1223,12 @@ if not failures and commit_message:
             )
             if ignored.returncode == 0:
                 continue
-            stage_files.append(path)
-        if not stage_files:
+            (head_only_files if location == "head" else stage_files).append(path)
+        if not stage_files and not head_only_files:
             commit_error = "no committable --files paths remain after safety filters"
+    commit_paths = stage_files + head_only_files
 
-    if not commit_error:
+    if not commit_error and stage_files:
         staged = subprocess.run(
             ["git", "-C", repo, "add", "--", *stage_files],
             stdout=subprocess.PIPE,
@@ -1200,17 +1239,30 @@ if not failures and commit_message:
         if staged.returncode != 0:
             commit_error = command_error("staging failed", staged)
 
+    head_adopted = False
     if not commit_error:
         changed = subprocess.run(
-            ["git", "-C", repo, "diff", "--cached", "--quiet", "--", *stage_files],
+            ["git", "-C", repo, "diff", "--cached", "--quiet", "--", *commit_paths],
             check=False,
         )
         if changed.returncode == 0:
-            commit_error = "no staged changes to commit"
+            # A rerun after an interrupted report finds its own commit already at HEAD.
+            head_subject = subprocess.run(
+                ["git", "-C", repo, "log", "-1", "--format=%s"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            if head_subject.returncode == 0 and head_subject.stdout.rstrip("\n") == commit_message:
+                head_adopted = True
+                print("gate.sh: nothing staged; HEAD already carries this commit message, reporting HEAD", file=sys.stderr)
+            else:
+                commit_error = "no staged changes to commit"
 
-    if not commit_error:
+    if not commit_error and not head_adopted:
         committed = subprocess.run(
-            ["git", "-C", repo, "commit", "-m", commit_message, "--", *stage_files],
+            ["git", "-C", repo, "commit", "-m", commit_message, "--", *commit_paths],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1218,11 +1270,11 @@ if not failures and commit_message:
         )
         if committed.returncode != 0:
             rewritten = subprocess.run(
-                ["git", "-C", repo, "diff", "--quiet", "--", *stage_files],
+                ["git", "-C", repo, "diff", "--quiet", "--", *commit_paths],
                 check=False,
             )
             # A pre-commit hook that rewrote files fails the first attempt; stage its edits and retry once.
-            if rewritten.returncode == 1:
+            if rewritten.returncode == 1 and stage_files:
                 restaged = subprocess.run(
                     ["git", "-C", repo, "add", "--", *stage_files],
                     stdout=subprocess.PIPE,
@@ -1232,7 +1284,7 @@ if not failures and commit_message:
                 )
                 if restaged.returncode == 0:
                     committed = subprocess.run(
-                        ["git", "-C", repo, "commit", "-m", commit_message, "--", *stage_files],
+                        ["git", "-C", repo, "commit", "-m", commit_message, "--", *commit_paths],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
@@ -1270,6 +1322,7 @@ if not failures and commit_message:
         "sha": None if commit_error else sha,
         "pushed": push and not commit_error,
         "error": commit_error,
+        "dropped": dropped,
     }
 
 encoded = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
