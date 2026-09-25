@@ -209,40 +209,119 @@ RAW_DUMP_READ_PATH = re.compile(
 TRACE_READER = "python3 ~/.claude/skills/forge/scripts/trace-read.py <file>"
 
 # A heredoc opener: `<<` or `<<-`, optional quoting around the terminator word.
-HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+# A here-string (`<<<`) and a git conflict marker (`<<<<<<<`) are not openers.
+HEREDOC_OPEN = re.compile(r"(?<!<)<<-?(?!<)\s*(['\"]?)(\w+)\1")
 
 # Commands that will actually execute a heredoc body handed to them, as
 # opposed to just writing it out or filing it away unread. A shell runs the
 # body as commands, so it gets the full scan; an interpreter body is code
 # whose string literals are often prose (a STATE.md rewrite), so it is checked
-# for path-shaped secrets only.
+# for path-shaped secrets only. A word counts only as a command word, so
+# `/bin/bash` and `x.sh` count while `.env.example` and `--env-file` do not.
 HEREDOC_SHELL = re.compile(
-    r"\b(bash|sh|zsh|dash|ksh|fish|eval|exec|ssh|sudo|env|xargs|source)\b",
+    r"(?<![\w-])(?:bash|sh|zsh|dash|ksh\w*|fish|eval|exec|ssh|sudo|xargs|source)\b|"
+    r"(?<![\w.-])env(?![\w.-])|"
+    r"\$\{?(?:SHELL|BASH)\b",
     re.IGNORECASE,
 )
 HEREDOC_INTERPRETER = re.compile(r"\b(python3?|node|perl|ruby|php)\b", re.IGNORECASE)
+# A heredoc element that closes a group or loop, so the interpreter may sit in
+# an earlier element: `{ python3 -; } <<'EOF'`.
+GROUP_CLOSE = re.compile(r"\s*(?:[})]|(?:done|fi)\b)")
+# Files a heredoc header writes: a `>`/`>>` target (not an fd duplication).
+WRITE_TARGET = re.compile(r">{1,2}\|?\s*([^\s;&|<>]+)")
+TEE_OPERANDS = re.compile(r"\btee((?:\s+[^\s;&|<>]+)*)")
 
 INTERPRETER_BODY_SECRET = re.compile(SECRET_PATH_SHAPES, re.IGNORECASE)
 
 
-def strip_heredoc_bodies(command: str) -> tuple[str, list[tuple[str, set[str]]]]:
+class Heredocs(NamedTuple):
+    """A command split by strip_heredoc_bodies."""
+
+    # The command with interpreter and data bodies removed; shell bodies stay.
+    head: str
+    # Each interpreter body with the interpreter words of its header.
+    interpreter_bodies: list[tuple[str, set[str]]]
+    # Data bodies written to a file that the command names again later.
+    rerun_bodies: list[str]
+    # True when every opener on a header line quotes its terminator.
+    quoted: bool
+
+
+def list_element_spans(line: str) -> list[tuple[int, int]]:
+    """Return the spans of a line's list elements, split at unquoted `;`, `&&`, `||` and a lone `&`.
+
+    A pipe does not split: every stage of a pipeline is one element. The `&`
+    of a redirection (`2>&1`, `<&3`, `&>file`) does not split.
+    """
+    spans: list[tuple[int, int]] = []
+    start, quote = 0, None
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c == "\\" and quote != "'":
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif line.startswith(("&&", "||"), i):
+            spans.append((start, i))
+            i += 2
+            start = i
+            continue
+        elif c == ";" or (c == "&" and line[i - 1 : i] not in ("<", ">") and line[i + 1 : i + 2] != ">"):
+            spans.append((start, i))
+            i += 1
+            start = i
+            continue
+        i += 1
+    spans.append((start, n))
+    return spans
+
+
+def _written_files(element: str) -> list[str]:
+    """Return the files a heredoc header element writes: `>` targets and `tee` operands."""
+    files = [m.group(1) for m in WRITE_TARGET.finditer(element)]
+    for m in TEE_OPERANDS.finditer(element):
+        files += [word for word in m.group(1).split() if not word.startswith("-")]
+    return [f.strip("'\"") for f in files if f.strip("'\"") not in ("", "/dev/null")]
+
+
+def _named_again(files: list[str], later: str) -> bool:
+    """Return True when a written file's base name, or its stem as a whole word, appears in later text."""
+    for path in files:
+        base = path.rstrip("/").rpartition("/")[2]
+        stem = base.rpartition(".")[0] or base
+        if base and (base in later or re.search(rf"(?<!\w){re.escape(stem)}(?!\w)", later)):
+            return True
+    return False
+
+
+def strip_heredoc_bodies(command: str) -> Heredocs:
     """Drop heredoc body lines that are inert data instead of executed code.
 
-    Scans line by line: a line matching `<<-?(['"]?)(\\w+)\\1` opens a heredoc
-    whose body runs to the first line equal to the terminator (leading tabs
-    allowed when the opener is `<<-`). If the header line (the whole line,
-    every pipeline stage) names a shell -- bash, eval, ssh, sudo, source, and
-    the like -- the body is kept in the returned command for the full scan.
-    If it names only an interpreter -- python3, node, perl, ruby, php -- the
-    body is removed from the command and returned separately, with the
-    interpreter words of its header, for the path-only check. Otherwise the
-    body is dropped and only the header line remains. Several heredocs in one
-    command are handled in order, and an unterminated heredoc runs to end of
-    text under the same rule.
+    Scans line by line: a line matching HEREDOC_OPEN opens a heredoc whose
+    body runs to the first line equal to the terminator (leading tabs allowed
+    when the opener is `<<-`). If the header line (the whole line, every
+    pipeline stage) names a shell -- bash, eval, ssh, sudo, source, and the
+    like -- the body is kept in the head for the full scan. If an interpreter
+    -- python3, node, perl, ruby, php -- appears in the header's list element
+    that holds the `<<`, or in a later element, the body is removed from the
+    head and returned separately, with those interpreter words, for the
+    path-only check; earlier elements count only when the `<<` element closes
+    a group or loop (`{ python3 -; } <<'EOF'`). Otherwise the body is dropped
+    as data, and also returned when the file it is written to is named again
+    later in the command. Several heredocs in one command are handled in
+    order, and an unterminated heredoc runs to end of text under the same rule.
     """
     lines = command.split("\n")
     out: list[str] = []
     interpreter_bodies: list[tuple[str, set[str]]] = []
+    rerun_bodies: list[str] = []
+    quoted = True
     i, n = 0, len(lines)
     while i < n:
         header = lines[i]
@@ -251,10 +330,15 @@ def strip_heredoc_bodies(command: str) -> tuple[str, list[tuple[str, set[str]]]]
         if not match:
             i += 1
             continue
+        quoted = quoted and bool(match.group(1))
         terminator = match.group(2)
         strip_tabs = match.group(0).startswith("<<-")
         shell = bool(HEREDOC_SHELL.search(header))
-        interpreter = not shell and bool(HEREDOC_INTERPRETER.search(header))
+        spans = list_element_spans(header)
+        start, end = next(((s, e) for s, e in spans if s <= match.start() < e), spans[-1])
+        own = header[start:end]
+        counted = header if GROUP_CLOSE.match(own) else header[start:]
+        words = set() if shell else {w.lower().rstrip("3") for w in HEREDOC_INTERPRETER.findall(counted)}
         j = i + 1
         while j < n:
             candidate = lines[j].lstrip("\t") if strip_tabs else lines[j]
@@ -264,11 +348,12 @@ def strip_heredoc_bodies(command: str) -> tuple[str, list[tuple[str, set[str]]]]
         body = lines[i + 1 : j + 1] if j < n else lines[i + 1 : n]
         if shell:
             out.extend(body)
-        elif interpreter:
-            words = {w.lower().rstrip("3") for w in HEREDOC_INTERPRETER.findall(header)}
+        elif words:
             interpreter_bodies.append(("\n".join(body), words))
+        elif _named_again(_written_files(own), header[match.end() :] + "\n" + "\n".join(lines[j + 1 :])):
+            rerun_bodies.append("\n".join(body))
         i = j + 1
-    return "\n".join(out), interpreter_bodies
+    return Heredocs("\n".join(out), interpreter_bodies, rerun_bodies, quoted)
 
 
 def matched(rule: str, text: str) -> str:
@@ -386,12 +471,14 @@ def _word_end(text: str, i: int) -> int:
     return min(i, n)
 
 
-def strip_redirections(segment: str) -> str:
+def strip_redirections(segment: str, output_only: bool = False) -> str:
     """Remove unquoted redirections, operator and target, from one segment.
 
     `N>&M`, `>&M` and `N>&-` are complete on their own; every other operator
     (`>`, `>>`, `<`, `N>`, `&>`, `&>>`, a fused `2>err`) also drops its
-    target word. A quoted `'>'` is an argument, not a redirection.
+    target word. A quoted `'>'` or an escaped `\\>` is an argument, not a
+    redirection. With output_only, input redirections, here-strings and
+    process substitution (`>(...)`) stay in the text.
     """
     out: list[str] = []
     quote = None
@@ -407,6 +494,14 @@ def strip_redirections(segment: str) -> str:
                 quote = None
         elif c in "'\"":
             quote = c
+        elif output_only and c == "<":
+            # `<>` opens a file for reading too, so its target stays.
+            while i < n and segment[i] in "<>":
+                out.append(segment[i])
+                i += 1
+            continue
+        elif output_only and segment.startswith(">(", i):
+            pass
         elif c in "<>" or (c == "&" and segment.startswith(">", i + 1)):
             j = len(out)
             while j and out[j - 1].isdigit():
@@ -502,7 +597,17 @@ READER_OPTS = {
 }
 # A numeric option consumes the next token only when it is all digits.
 NUMERIC_LONG_OPTS = {"max-count", "after-context", "before-context", "context", "threads", "max-depth"}
-AWK_ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
+ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
+# The xargs options that can precede `grep`; any other, `-a`/`--arg-file`
+# included, skips the parse.
+XARGS_OPTS = OptionTable(
+    set("nLPsdIE"),
+    set("0rtpx"),
+    {"max-args", "max-lines", "max-procs", "max-chars", "delimiter", "replace", "eof"},
+    {"null", "no-run-if-empty", "verbose", "interactive", "exit"},
+    set(),
+)
+GREP_COMMANDS = ("grep", "egrep", "fgrep")
 # Output limited to file names or counts prints no matched line.
 NAMES_ONLY_OPTS = {
     "grep": {"-l", "-L", "-c", "-q", "--files-with-matches", "--files-without-match", "--count", "--quiet", "--silent"},
@@ -526,15 +631,44 @@ class ReaderArgs(NamedTuple):
     options: list[tuple[str, str]]
     patterns: list[str]
     files: list[str]
+    # True for `xargs grep`, whose file list comes from stdin.
+    stdin_files: bool = False
+
+
+def _skip_xargs_options(tokens: list[str]) -> list[str] | None:
+    """Return the tokens after xargs's options, or None when an option is not in XARGS_OPTS."""
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            return tokens[i + 1 :]
+        if not token.startswith("-") or token == "-":
+            return tokens[i:]
+        i += 1
+        if token.startswith("--"):
+            name, eq, _ = token[2:].partition("=")
+            if name in XARGS_OPTS.long_values:
+                i += 0 if eq else 1
+            elif name not in XARGS_OPTS.long_flags:
+                return None
+            continue
+        for j, flag in enumerate(token[1:], start=2):
+            if flag in XARGS_OPTS.short_values:
+                i += 1 if j == len(token) else 0
+                break
+            if flag not in XARGS_OPTS.short_flags:
+                return None
+    return []
 
 
 def parse_reader(raw: str) -> ReaderArgs | None:
-    """Parse a grep, egrep, fgrep, git grep, sed, or awk segment into its arguments.
+    """Parse a grep, egrep, fgrep, git grep, sed, awk, or `xargs grep` segment into its arguments.
 
     Returns None when the segment is another command, when it holds command
     or process substitution, when its quotes do not balance, or when it uses
     an option missing from the command's table (an abbreviated long option
-    included); the caller then applies the text checks instead.
+    included); the caller then applies the text checks instead. Leading
+    `NAME=value` assignments are skipped before grep and xargs only.
     """
     if any(s in raw for s in ("$(", "`", "<(", ">(")):
         return None
@@ -542,6 +676,17 @@ def parse_reader(raw: str) -> ReaderArgs | None:
         tokens = shlex.split(strip_redirections(raw))
     except ValueError:
         return None
+    k = 0
+    while k < len(tokens) and ASSIGNMENT.match(tokens[k]):
+        k += 1
+    if k and (k == len(tokens) or tokens[k] not in GREP_COMMANDS + ("xargs",)):
+        return None
+    tokens = tokens[k:]
+    stdin_files = tokens[:1] == ["xargs"]
+    if stdin_files:
+        tokens = _skip_xargs_options(tokens[1:])
+        if not tokens or tokens[0] not in GREP_COMMANDS:
+            return None
     if tokens[:2] == ["git", "grep"]:
         tokens = ["git grep"] + tokens[2:]
     if not tokens or tokens[0] not in READER_OPTS:
@@ -599,9 +744,9 @@ def parse_reader(raw: str) -> ReaderArgs | None:
         patterns, files = positionals[:1], positionals[1:]
     if command == "awk":
         # An assignment's value can name the file a getline reads: `f=.env`.
-        files = [AWK_ASSIGNMENT.sub("", f) for f in files]
+        files = [ASSIGNMENT.sub("", f) for f in files]
     family = "grep" if command in ("egrep", "fgrep") else command
-    return ReaderArgs(family, options, patterns, files)
+    return ReaderArgs(family, options, patterns, files, stdin_files)
 
 
 def _narrow_glob(glob: str) -> bool:
@@ -632,7 +777,7 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
     """Check the file operands and scripts of a parsed grep/git grep/sed/awk call.
 
     A grep pattern is search text and is never checked as a path. A broad
-    search (recursive, every git grep, or a shell glob) for a secret word
+    search (recursive, every git grep, `xargs grep`, or a shell glob) for a secret word
     still blocks, since it prints matching lines from every secret file it
     reaches. A pattern with whitespace still counts: `"token: "` matches
     `oauth_token: <value>` lines.
@@ -647,7 +792,7 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
         if secret_path_hit(path) or (file_shape and not AUTHORIZED_PATHS.search(path)):
             return Hit("reads a credential-bearing path", "reader-operand", path, raw)
     glob = any(GLOB_CHARS.search(f) for f in args.files)
-    all_md = bool(args.files) and all(f.lower().endswith(".md") for f in args.files)
+    all_md = not args.stdin_files and bool(args.files) and all(f.lower().endswith(".md") for f in args.files)
     if family in ("sed", "awk"):
         # `sed 'r FILE'`, GNU `sed e`, and awk `getline < FILE` read files.
         for script in args.patterns:
@@ -659,6 +804,7 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
     # git grep recurses, and --no-index or --untracked reach ignored files.
     broad = (
         family == "git grep"
+        or args.stdin_files
         or bool(set("rR") & set(shorts))
         or bool(names & {"--recursive", "--dereference-recursive"})
         # GNU grep accepts any unambiguous prefix: `-d rec`.
@@ -695,6 +841,34 @@ def is_messenger(raw: str) -> bool:
     if words[0] in MESSENGER_COMMANDS or words[0].endswith(".py") or TEXT_ONLY_GIT.match(raw.lstrip()):
         return True
     return words[0] in SCRIPT_INTERPRETERS and len(words) > 1 and bool(SCRIPT_FILE.search(words[1]))
+
+
+# Commands that never run their input or arguments as code, so a message
+# piped into them or printed beside them stays text.
+QUIET_COMMANDS = {
+    "head", "tail", "grep", "egrep", "fgrep", "wc", "cut", "sort", "uniq", "tr", "jq", "cat", "column", "nl",
+    "echo", "printf", "true", "cd",
+}
+# An output redirection and its target; `&` marks an fd duplication (`2>&1`).
+OUTPUT_REDIRECT_ANY = re.compile(r">{1,2}\|?(&)?\s*([^\s;&|<>()]*)")
+
+
+def is_quiet(command: str) -> bool:
+    """Return True when nothing in a command can run a messenger's text as code.
+
+    A quiet command has no substitution anywhere, quoted or not; no output
+    redirection other than an fd duplication or `/dev/null`, since a written
+    file can be run later; and at most one segment that is not a
+    QUIET_COMMANDS command, which must be a messenger.
+    """
+    if any(s in command for s in ("$(", "`", "<(", ">(")):
+        return False
+    for m in OUTPUT_REDIRECT_ANY.finditer(blank_quoted(command, "'\"")):
+        fd_dup = m.group(1) and re.fullmatch(r"\d+|-", m.group(2))
+        if not fd_dup and m.group(2) != "/dev/null":
+            return False
+    others = [s for s in split_segments(command) if s.split() and s.split()[0] not in QUIET_COMMANDS]
+    return len(others) <= 1 and all(is_messenger(s) for s in others)
 
 
 # Code in an interpreter heredoc body that hands text to a shell or evaluates
@@ -883,6 +1057,10 @@ def secret_path_hit(path: str) -> tuple[str, str] | None:
 
 
 CD_TARGET = re.compile(r"[\s({]*(?:cd|pushd)\s+(.*)")
+# `--exclude`, `--exclude-from` and `--exclude-dir` with their value, as
+# `=value` or the next word. `--exclude-vcs` takes no value and stays.
+_OPTION_VALUE = r"""(?:'[^']*'|"[^"]*"|\\.|[^\s'"\\])+"""
+EXCLUDE_OPTION = re.compile(rf"(?<!\S)--exclude(?:-from|-dir)?(?:=|\s+){_OPTION_VALUE}")
 
 
 # Heredoc bodies are data unless a shell or interpreter on the header line
@@ -890,8 +1068,9 @@ CD_TARGET = re.compile(r"[\s({]*(?:cd|pushd)\s+(.*)")
 # segments are checked below.
 def verdict(command: str) -> Hit | None:
     """Return why to block a command, or None to allow."""
-    command, interpreter_bodies = strip_heredoc_bodies(command)
-    for body, words in interpreter_bodies:
+    heredocs = strip_heredoc_bodies(command)
+    command = heredocs.head
+    for body, words in heredocs.interpreter_bodies:
         for scan in interpreter_body_scans(body, words):
             scan = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", scan))
             if m := INTERPRETER_BODY_SECRET.search(scan):
@@ -899,8 +1078,8 @@ def verdict(command: str) -> Hit | None:
                     "runs code that names a credential-bearing path", "interpreter-body-secret", m.group(0), body
                 )
     segments = split_segments(command)
-    # A shell anywhere in the command may run a messenger's text: `echo "..." | bash`.
-    messengers = not any(HEREDOC_SHELL.search(s.split()[0]) for s in segments if s.strip())
+    # Any other command may run a messenger's text: `echo "..." | bash`.
+    messengers = is_quiet(command)
     # A search after `cd ~/.config/gh` reads a dot-directory like a search
     # that names it.
     dot_cd = False
@@ -927,12 +1106,14 @@ def verdict(command: str) -> Hit | None:
             if dotted and (m := READER_NEAR_SECRET_WORD.search(word_scan(segment))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         else:
-            scan = QUOTED_PROSE.sub(" ", segment) if messengers and is_messenger(raw) else segment
+            # A file the command writes or excludes is not read.
+            reader_text = EXCLUDE_OPTION.sub(" ", strip_redirections(segment, output_only=True))
+            scan = QUOTED_PROSE.sub(" ", reader_text) if messengers and is_messenger(raw) else reader_text
             if m := READER_NEAR_SECRET.search(scan):
                 return Hit("reads a credential-bearing path", "reader-near-secret", m.group(0), raw)
             if m := READER_NEAR_SECRET_FILE.search(pattern_scan(scan)):
                 return Hit("reads a credential-bearing path", "reader-near-secret-file", m.group(0), raw)
-            if m := READER_NEAR_SECRET_WORD.search(word_scan(segment)):
+            if m := READER_NEAR_SECRET_WORD.search(word_scan(reader_text)):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         if m := REDIRECT_FROM_SECRET.search(segment):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret", m.group(0), raw)
@@ -943,8 +1124,7 @@ def verdict(command: str) -> Hit | None:
 
 def raw_dump_verdict(command: str) -> str | None:
     """Return a reason to block a raw dump of a trace, HAR, or storage-state file."""
-    command, _ = strip_heredoc_bodies(command)
-    for segment in split_segments(command):
+    for segment in split_segments(strip_heredoc_bodies(command).head):
         if RAW_DUMP_COMMAND.match(segment) and RAW_DUMP_TARGET.search(OUTPUT_REDIRECT.sub(" ", segment)):
             return f"dumps a trace, HAR, or auth-state file raw {matched('raw-dump', segment)}"
     return None
@@ -985,11 +1165,15 @@ CURL_AUTH_SAFE = re.compile(
     re.IGNORECASE,
 )
 
-# A presence check (`test -n "$KEY"`, `[ -z "$KEY" ]`, `[[ -n ${KEY} ]]`) prints
+# A presence check (`test -n "$KEY"`, `[ -z "$KEY" ]`, `[[ -n ${KEY:-} ]]`) prints
 # nothing. It is blanked only as the first word of an unquoted command (after
 # any `if`, `while` or `!`); an argument like `echo test -n "$KEY"` still prints.
+# A default word (`${KEY:-x}`, `${KEY:+x}`) may not hold `$` or a backtick,
+# which could run a command.
 SECRET_TEST_SAFE = re.compile(
-    rf"(?:test|\[\[?)\s+-[nz]\s+(['\"]?)\$\{{?{SECRET_VAR_NAME}\}}?\1(?=\s|$|[;&|\]])",
+    rf"(?:test|\[\[?)\s+-[nz]\s+(['\"]?)"
+    rf"\$(?:\{{{SECRET_VAR_NAME}(?::?[-+=][^}}$`]*)?\}}|\{{?{SECRET_VAR_NAME}\}}?)"
+    r"\1(?=\s|$|[;&|\]])",
     re.IGNORECASE,
 )
 _CHECK_PREFIX = re.compile(r"\s*(?:(?:if|while|!)\s+)*")
@@ -1125,6 +1309,44 @@ def _scrub_presence_checks(head: str) -> str:
     return "".join(out)
 
 
+# A `$` after an odd number of backslashes is printed, not expanded.
+ESCAPED_DOLLAR = re.compile(r"(?<!\\)(?:\\\\)*\\\$")
+
+
+def _unescape_messengers(head: str) -> str:
+    """Blank escaped `\\$` in the messenger segments of a quiet command.
+
+    Anywhere else the next shell may expand the text again (`bash -c`,
+    `eval`, `ssh host`, `| bash`), so an escaped `$` still counts there.
+    Segments are rejoined with newlines, so only search the result for
+    expansions, not for the commands around them.
+    """
+    if "\\" not in head or not is_quiet(head):
+        return head
+    return "\n".join(ESCAPED_DOLLAR.sub(" ", s) if is_messenger(s) else s for s in split_segments(head))
+
+
+# Lower-case loop variables that name a list item, not a credential: `for key
+# in a b` over literal words, or `while read key ...; done < file` with no pipe
+# feeding it. Any other binding of the name, such as `key=$(pass show x)`,
+# `for key in $(env)` or `env | while read key`, drops the exemption.
+FOR_KEY = re.compile(r"\bfor\s+(keys?)\s+in\s+([^;\n]*)")
+READ_KEY = re.compile(r"\bread\b[^;\n|&<>]*?\s(keys?)(?=[\s;]|$)", re.MULTILINE)
+KEY_ASSIGN = re.compile(r"(?<![\w-])(keys?)\+?=")
+DONE_FROM_FILE = re.compile(r"\bdone\s*<")
+
+
+def _loop_bound_names(command: str) -> set[str]:
+    """Return the lower-case `key`/`keys` names the command binds only to non-secret words."""
+    names = {m.group(1) for m in FOR_KEY.finditer(command) if not re.search(r"[$`]", m.group(2))}
+    read_names = {m.group(1) for m in READ_KEY.finditer(command)}
+    safe_read = (
+        bool(DONE_FROM_FILE.search(command)) and "<(" not in command and "|" not in blank_quoted(command, "'\"")
+    )
+    names = names | read_names if safe_read else names - read_names
+    return names - {m.group(1) for m in KEY_ASSIGN.finditer(command)}
+
+
 def secret_var_verdict(command: str) -> str | None:
     """Return a reason to block a command that would print a secret
     variable's value, or None to allow.
@@ -1137,9 +1359,12 @@ def secret_var_verdict(command: str) -> str | None:
     When every heredoc terminator is quoted (`<<'EOF'`), the shell does not
     expand the bodies, so they are left out of the dump checks unless they
     shell out. An unquoted body is expanded and stays checked.
+
+    Interpreter env references are searched in the head, the interpreter
+    bodies, and any data body written to a file the command names again.
     """
-    quoted = all(m.group(1) for m in HEREDOC_OPEN.finditer(command))
-    head, bodies = strip_heredoc_bodies(command) if quoted else (command, [])
+    heredocs = strip_heredoc_bodies(command)
+    head, bodies = (heredocs.head, heredocs.interpreter_bodies) if heredocs.quoted else (command, [])
     for body, words in bodies:
         if shells_out(body, words) and (m := SECRET_VAR_EXPANSION.search(body)):
             return f"would print a secret-bearing variable {matched('heredoc-shell-out', m.group(0))}"
@@ -1152,10 +1377,15 @@ def secret_var_verdict(command: str) -> str | None:
     if m := PRINTENV_SECRET.search(head) or DECLARE_P_SECRET.search(head):
         return f"would print a secret-bearing variable {matched('printenv-secret', m.group(0))}"
     scrubbed = _scrub_presence_checks(CURL_AUTH_SAFE.sub(" ", head))
-    if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and (m := SECRET_VAR_EXPANSION.search(scrubbed)):
-        return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
+    if DUMP_TRANSFORM_COMMANDS.search(scrubbed):
+        exempt = _loop_bound_names(head)
+        expansions = _scrub_presence_checks(CURL_AUTH_SAFE.sub(" ", _unescape_messengers(head)))
+        for m in SECRET_VAR_EXPANSION.finditer(expansions):
+            if m.group(1) not in exempt:
+                return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
     if PYNODE_INVOCATION.search(command):
-        stripped = PYNODE_LEN_STRIP.sub(" ", command)
+        executed = [heredocs.head, *(body for body, _ in heredocs.interpreter_bodies), *heredocs.rerun_bodies]
+        stripped = PYNODE_LEN_STRIP.sub(" ", "\n".join(executed))
         if m := PYNODE_SECRET_REF.search(stripped) or PYNODE_WHOLESALE.search(stripped):
             return f"would print a secret-bearing variable {matched('interpreter-env-ref', m.group(0))}"
     return None
