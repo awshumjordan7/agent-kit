@@ -5,11 +5,11 @@ Covers Bash (command text) and the path-bearing tools: Read, Grep, Edit,
 Write, NotebookEdit, Artifact. Any tool that can put file contents into the
 transcript -- or, for Artifact, onto a hosted page -- needs a check here.
 
-The settings.json Read(...) deny rules do NOT cover the Read tool here:
-defaultMode is bypassPermissions, which skips permission evaluation entirely,
-so every deny rule is inert. Hooks still run in that mode, which makes this
-file the only enforcement point for both tools. Keep the deny rules -- they
-apply if the default mode ever changes -- but do not rely on them.
+The settings.json Read(...) deny rules are enforced in every permission mode,
+including bypassPermissions, and block both the Read and Write tools. A deny
+rule cannot carve out exceptions (deny beats allow), so the deny list must not
+match the ALLOWLIST templates such as .env.example. Bash is covered only by
+this hook.
 
 Fail-open by design. Any unexpected input, parse error, or unmatched command
 exits 0 (allow). A bug here must never be able to brick the shell -- the cost
@@ -23,6 +23,9 @@ KNOWN GAPS, deliberately not covered:
   - In a python or node heredoc body that neither shells out nor evaluates
     code, a path with a space inside a string literal
     (`open('/home/u/My Files/.env')`) reads as prose.
+  - Grep patterns and sed/awk scripts are search text, so a non-recursive
+    grep, sed or awk of named files outside dot-directories may print lines
+    that mention a secret word -- the same text `cat` of those files prints.
   - Reading a secret indirectly: copy to a neutral name first, then read.
 Tighten only if the threat model changes; today's goal is preventing careless
 credential exposure, not defeating circumvention.
