@@ -26,8 +26,6 @@ KNOWN GAPS, deliberately not covered:
   - Grep patterns and sed/awk scripts are search text, so a non-recursive
     grep, sed or awk of named files outside dot-directories may print lines
     that mention a secret word -- the same text `cat` of those files prints.
-  - A plain `rg <word> <dir>/` reads the non-hidden, non-ignored
-    secret-named files in `<dir>`.
   - A reader name glued to a hyphen (`llvm-strings .env`) is not seen as a
     reader, so option names such as `--head` and hyphenated branch names
     do not match.
@@ -1184,8 +1182,15 @@ def verdict(command: str) -> Hit | None:
         # Tokenized from the raw segment: allowlist blanking must not shift
         # which token is the pattern.
         if (reader := parse_reader(raw)) is not None:
-            if hit := reader_verdict(reader, raw, fed_by_pipe=i > 0 and piped[i - 1]):
+            fed_by_pipe = i > 0 and piped[i - 1]
+            if hit := reader_verdict(reader, raw, fed_by_pipe=fed_by_pipe):
                 return hit
+            # rg recurses into every directory operand, so any rg that reads
+            # files rather than stdin gets the plain reader word check.
+            if reader.family == "rg" and (reader.files or not fed_by_pipe):
+                reader_text = EXCLUDE_OPTION.sub(" ", strip_redirections(segment, output_only=True))
+                if m := READER_NEAR_SECRET_WORD.search(word_scan(reader_text)):
+                    return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             # A dot-directory (~/.config/gh/hosts.yml) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
             # A variable operand with a literal source extension ($R/app.py) is
