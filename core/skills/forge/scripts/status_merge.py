@@ -43,14 +43,19 @@ def merge_status(status: dict, patch: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--status", type=Path, required=True)
-    parser.add_argument("--patch-json", required=True)
+    patch_source = parser.add_mutually_exclusive_group(required=True)
+    patch_source.add_argument("--patch-json")
+    patch_source.add_argument("--patch-file", type=Path)
     args = parser.parse_args()
+    patch_text = (
+        args.patch_file.read_text(encoding="utf-8") if args.patch_file else args.patch_json
+    )
     status = (
         json.loads(args.status.read_text(encoding="utf-8"))
         if args.status.is_file()
         else {"criteria": [], "rounds": {}, "open_findings": []}
     )
-    merged = merge_status(status, json.loads(args.patch_json))
+    merged = merge_status(status, json.loads(patch_text))
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     sys.stdout.write(json.dumps({"written": True}, separators=(",", ":")) + "\n")

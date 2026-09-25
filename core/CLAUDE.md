@@ -68,8 +68,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   and message the successor. handoff.py refuses when STATE.md is more than 120 s old or a session with that name
   already runs. If it exits 1, the handoff is not done: fix the cause it names and rerun, or give the user the command
   it printed. Exception: a run in its final stage (final review, QA, ship) finishes first, then hands off. Never
-  hard-stop mid-run. At 340k the hook blocks the turn's end once, unless handoff.py already started a successor or
-  background agents are still running.
+  hard-stop mid-run. At 340k the hook blocks the turn's end once, unless a successor started by handoff.py or a
+  background agent is still running.
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.

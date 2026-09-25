@@ -94,6 +94,7 @@ const PARAMS = {
   stageAlso: Array.isArray(args.stageAlso) ? args.stageAlso.map(String) : [],
   checkpointDecision: typeof args.checkpointDecision === 'string' ? args.checkpointDecision : null,
   smokeCommand: typeof args.smokeCommand === 'string' ? args.smokeCommand : '',
+  prBodyExtra: typeof args.prBodyExtra === 'string' ? args.prBodyExtra : '',
   resumeAttempt: Number.isInteger(args.resumeAttempt) && args.resumeAttempt > 0 ? args.resumeAttempt : 0,
 }
 // Each resume-k Codex attempt counts as a spawn whether it replays from the cache or runs live.
@@ -128,6 +129,13 @@ const CODEX_REVIEW_THREAD = `${PARAMS.runDir}/codex-review.thread`
 
 if (!PARAMS.runDir || !PARAMS.projectDir) {
   throw new Error('forge-core requires args.runDir and args.projectDir')
+}
+// Copy of SECRET_BARE_WORDS in core/hooks/block_secret_reads.py: its Write check blocks any path
+// containing one of these words, so a run dir named with one could never receive Forge's state files.
+const SECRET_PATH_WORDS = /\bcredentials?\b|\bsecrets?\b|\bpasswd\b|\bshadow\b|\btokens?\b|\bapi[_-]?keys?\b/i
+const secretRunDirWord = SECRET_PATH_WORDS.exec(String(PARAMS.runDir))
+if (secretRunDirWord) {
+  throw new Error(`runDir ${PARAMS.runDir} contains the word "${secretRunDirWord[0]}", which the block_secret_reads hook blocks in Write paths; choose a run dir without it`)
 }
 if (!['build', 'review'].includes(PARAMS.lane)) {
   throw new Error(`unsupported forge lane: ${PARAMS.lane}`)
@@ -266,11 +274,11 @@ const TRIAGE_SCHEMA = {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
         properties: {
-          file: { type: 'string' }, line: { type: 'integer' },
+          id: { type: 'string' }, file: { type: 'string' }, line: { type: 'integer' },
           real: { type: 'string', enum: ['yes', 'no', 'uncertain'] },
           worthIt: { type: 'boolean' }, why: { type: 'string' },
         },
-        required: ['file', 'line', 'real', 'worthIt', 'why'],
+        required: ['id', 'file', 'line', 'real', 'worthIt', 'why'],
       },
     },
   },
@@ -348,9 +356,9 @@ const CHECKPOINT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
+    command: { type: 'string' }, script: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
   },
-  required: ['recommendation', 'command', 'reason', 'summary'],
+  required: ['recommendation', 'command', 'script', 'reason', 'summary'],
 }
 const PHASE_ROW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -385,7 +393,7 @@ const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
+    command: { type: 'string' }, script: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
     decidedBy: { type: 'string', enum: ['pending', 'auto', 'user'] },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
@@ -408,6 +416,13 @@ const SHIP_SCHEMA = {
   properties: {
     branch: { type: 'string' }, prUrl: { type: 'string' }, prNumber: { type: 'integer' }, repo: { type: 'string' },
     skipped: { type: 'boolean' }, reason: { type: 'string' },
+    unstaged: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { path: { type: 'string' }, reason: { type: 'string' } },
+        required: ['path', 'reason'],
+      },
+    },
   },
   required: ['branch', 'prUrl', 'prNumber', 'repo'],
 }
@@ -447,6 +462,19 @@ const SMOKE_SCHEMA = {
 const ACK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { written: { type: 'boolean' } }, required: ['written'],
+}
+const WRITE_ACK_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    files: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { path: { type: 'string' }, bytes: { type: 'integer' }, crc32: { type: 'integer' }, moved: { type: 'boolean' } },
+        required: ['path', 'bytes', 'crc32', 'moved'],
+      },
+    },
+  },
+  required: ['files'],
 }
 const THREAD_CHECK_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -603,9 +631,9 @@ const STUBS = {
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
     : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
   checkpoint: () => PARAMS.dryRunFindings
-    ? { recommendation: 'smoke', command: 'true', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
-    : { recommendation: 'ship', command: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
-  triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
+    ? { recommendation: 'smoke', command: 'true', script: '', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
+    : { recommendation: 'ship', command: '', script: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
+  triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
     const items = String(opts.label).startsWith('decide-fix-gate') ? gateItems : dryFindings().map(finding => ({ ...finding, source: 'review' }))
@@ -636,10 +664,12 @@ const STUBS = {
   },
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
+    : opts.schema === WRITE_ACK_SCHEMA
+    ? { files: (opts.expect || []).map(item => ({ ...item, moved: true })) }
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_FILE_SCHEMA
-    ? { recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } }
+    ? { recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } }
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -674,6 +704,9 @@ const __test = {
   planPhases,
   partitionTriage,
   pickImplRole,
+  utf8Bytes,
+  crc32,
+  savedCheckpointProblem,
   sandboxAllowed,
   sandboxCheck,
   dryRunJournal,
@@ -728,7 +761,7 @@ async function agentT(role, prompt, opts = {}) {
   const profile = forceTier ? TIERS[PARAMS.tier][role] : tierProfile(role)
   if (!profile) throw new Error(`unknown tier role: ${role}`)
   spawnCount++
-  const { forceTier: _forceTier, ...agentOpts } = opts
+  const { forceTier: _forceTier, expect: _expect, ...agentOpts } = opts
   const callOpts = { ...agentOpts, model: profile.model, effort: profile.effort }
   if (PARAMS.dryRun) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
@@ -1075,7 +1108,7 @@ function changedFiles(allDirty = false) {
 }
 
 function checkpointReview(context, gate, implement, phases = null) {
-  return agentT('checkpoint', `You are the fresh pre-ship checkpoint reviewer. Read the plan text below and the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. Recommend qa when only a human or sandbox exercise would prove it. Set command to an empty string unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+  return agentT('checkpoint', `You are the fresh pre-ship checkpoint reviewer. Read the plan text below and the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, put a complete Python 3 program in script (real newlines, single backslashes, no heredoc) and leave command empty; forge saves it to ${PARAMS.runDir}/smoke.py and runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. Otherwise set script to an empty string and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Set command and script to empty strings unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
 
 PLAN
 ${PARAMS.planText}
@@ -1089,9 +1122,12 @@ ${JSON.stringify(implement || {})}`,
 }
 
 function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
+  const smoke = checkpoint.recommendation === 'smoke'
+  const script = smoke && String(checkpoint.script || '').trim() ? String(checkpoint.script) : ''
   return {
     recommendation: checkpoint.recommendation,
-    command: checkpoint.recommendation === 'smoke' ? checkpoint.command : '',
+    command: !smoke ? '' : script ? `python3 ${shellQuote(`${PARAMS.runDir}/smoke.py`)}` : checkpoint.command,
+    script,
     reason: checkpoint.reason,
     summary: checkpoint.summary,
     decidedBy,
@@ -1101,11 +1137,100 @@ function checkpointDocument(checkpoint, implement, context, decidedBy, state = {
   }
 }
 
+// The Workflow runtime has no verified TextEncoder or Buffer, so UTF-8 and CRC32 are computed here.
+function utf8Bytes(text) {
+  const value = String(text)
+  const bytes = []
+  for (let index = 0; index < value.length; index++) {
+    let code = value.codePointAt(index)
+    if (code > 0xffff) index++
+    else if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd
+    if (code < 0x80) bytes.push(code)
+    else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f))
+    else if (code < 0x10000) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
+    else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
+  }
+  return bytes
+}
+
+const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let value = index
+  for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+  return value >>> 0
+})
+
+// Matches Python's zlib.crc32.
+function crc32(bytes) {
+  let value = 0xffffffff
+  for (const byte of bytes) value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8)
+  return (value ^ 0xffffffff) >>> 0
+}
+
+// Arguments are groups of <temp> <final> <bytes> <crc32>. Trailing newlines are ignored because the
+// Write tool may add or drop one. Files are moved into place only when every group matches.
+const VERIFY_WRITE_SCRIPT = [
+  'import json, os, sys, zlib',
+  'args = sys.argv[1:]',
+  'groups = [args[index:index + 4] for index in range(0, len(args), 4)]',
+  'observe = lambda path: (lambda data: (len(data), zlib.crc32(data)))(open(path, "rb").read().rstrip(b"\\n")) if os.path.isfile(path) else (-1, -1)',
+  'seen = [(temp, final, int(size), int(crc)) + observe(temp) for temp, final, size, crc in groups]',
+  'ok = bool(seen) and all(row[2] == row[4] and row[3] == row[5] for row in seen)',
+  'moved = [os.replace(row[0], row[1]) is None for row in seen] if ok else [False for row in seen]',
+  'print(json.dumps({"files": [{"path": row[1], "bytes": row[4], "crc32": row[5], "moved": flag} for row, flag in zip(seen, moved)]}))',
+].join('; ')
+
+let writeAttempts = 0
+
+// Writes run-dir files with the Write tool instead of passing content as a shell argument. Every
+// writer is a fresh agent and the Write tool refuses to overwrite a file the agent has not read, so
+// the agent writes new temp paths and the verify script moves them onto the final paths.
+// The runtime forbids Math.random, so a temp name is unique through the attempt counter and a
+// checksum of the label and content.
+async function writeFiles(label, phaseLabel, files) {
+  const expect = files.map(file => {
+    const bytes = utf8Bytes(String(file.content).replace(/\n+$/, ''))
+    return { path: file.path, bytes: bytes.length, crc32: crc32(bytes) }
+  })
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    writeAttempts++
+    const nonce = `${writeAttempts}-${crc32(utf8Bytes(`${label}\n${attempt}\n${files.map(file => file.content).join('\n')}`)).toString(16)}`
+    const temps = files.map(file => `${file.path}.${nonce}.tmp`)
+    const blocks = files.map((file, index) => {
+      const content = String(file.content)
+      return `<<<FORGE-FILE ${temps[index]}>>>\n${content}${content.endsWith('\n') ? '' : '\n'}<<<FORGE-END>>>`
+    }).join('\n')
+    const verifyArgs = expect.map((item, index) => [temps[index], item.path, item.bytes, item.crc32].map(shellQuote).join(' ')).join(' ')
+    const ack = await agentT('changedFiles', `You write ${files.length} file(s) for Forge. For each block below, use the Write tool to write exactly the text between its \`<<<FORGE-FILE <path>>>\` line and the next \`<<<FORGE-END>>>\` line, excluding those two marker lines, to the path named in the FORGE-FILE line. Copy the text character for character. If the Write tool refuses because the path exists and has not been read, Read it once, then Write it again. After every Write succeeds, run exactly one command with the Bash tool and return its stdout JSON unchanged: python3 -c ${shellQuote(VERIFY_WRITE_SCRIPT)} ${verifyArgs}
+If any Write or the command is refused, blocked by a hook, or fails, return {"files": []}. Never write a file another way: no Bash heredoc, echo, printf, or python write.
+
+${blocks}`,
+    { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema: WRITE_ACK_SCHEMA, expect })
+    const observed = (ack && Array.isArray(ack.files)) ? ack.files : []
+    const matched = observed.length === expect.length && expect.every((item, index) =>
+      observed[index].path === item.path && observed[index].moved === true &&
+      observed[index].bytes === item.bytes && observed[index].crc32 === item.crc32)
+    if (matched) return true
+    if (capBlocked) return false
+    await decide(`${label} attempt ${attempt} did not verify (${observed.length ? 'size or checksum mismatch' : 'no write acknowledgement'}).`)
+  }
+  return false
+}
+
+// Saved context drops the long prompt fields; a relaunch recomputes the context before review.
 function writeCheckpoint(checkpoint) {
-  const script = 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(json.loads(sys.argv[2]), indent=2) + "\\n", encoding="utf-8"); print(json.dumps({"written": True}))'
-  const path = `${PARAMS.runDir}/checkpoint.json`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)} ${shellQuote(JSON.stringify(checkpoint))}`,
-  { label: 'write-checkpoint', phase: 'Checkpoint', schema: ACK_SCHEMA })
+  const context = checkpoint.context && { ...checkpoint.context, standards: '', contract: '', reviewerContract: '', checklist: '' }
+  const files = [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, context }, null, 2)}\n` }]
+  if (checkpoint.script) files.push({ path: `${PARAMS.runDir}/smoke.py`, content: checkpoint.script })
+  return writeFiles('write-checkpoint', 'Checkpoint', files)
+}
+
+function savedCheckpointProblem(saved) {
+  if (!saved) return 'the file could not be read'
+  if (contextFailed(saved.context)) return 'context.commandSucceeded is not true'
+  if (!String(saved.context.diffPath || '').endsWith('.diff')) return `context.diffPath does not end in .diff (${saved.context.diffPath || 'empty'})`
+  if (!Array.isArray(saved.implementFilesChanged)) return 'implementFilesChanged is not an array'
+  if (Array.isArray(saved.phases) && saved.phases.length && !saved.phases.some(row => row.sha)) return 'no saved phase has a commit sha'
+  return ''
 }
 
 // Agents echo JSON nulls unreliably, so the read commands print "" for every null and the
@@ -1278,12 +1403,30 @@ function findingKey(finding) {
   return JSON.stringify([finding.file || '', finding.line || 0, String(finding.claim || '').slice(0, 200)])
 }
 
+// Triage sees findings as F1..Fn in array order, so ids map back by position. Several findings
+// can share one file and line, so each verdict is used once, every finding takes its id match
+// before any fallback runs, and the file-and-line fallback only uses verdicts whose id names no finding.
+function triageId(index) {
+  return `F${index + 1}`
+}
+
 function partitionTriage(findings, verdicts, auto = false) {
   const fix = []
   const disputes = []
   const dropped = []
-  for (const finding of findings) {
-    const verdict = (verdicts || []).find(item => item.file === finding.file && item.line === finding.line)
+  const pool = verdicts || []
+  const used = new Set()
+  const take = match => {
+    const index = pool.findIndex((item, position) => !used.has(position) && match(item))
+    if (index < 0) return null
+    used.add(index)
+    return pool[index]
+  }
+  const ids = findings.map((finding, position) => triageId(position))
+  const byId = ids.map(id => take(item => item.id === id))
+  findings.forEach((finding, position) => {
+    const verdict = byId[position] ||
+      take(item => !ids.includes(item.id) && item.file === finding.file && item.line === finding.line)
     if (!verdict || verdict.real === 'uncertain') {
       if (auto) fix.push(finding)
       else disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
@@ -1292,13 +1435,13 @@ function partitionTriage(findings, verdicts, auto = false) {
     } else {
       dropped.push({ finding, reason: verdict.why })
     }
-  }
+  })
   return { fix, disputes, dropped }
 }
 
 function triageFindings(findings, context, label = 'triage') {
   if (!findings.length) return Promise.resolve({ verdicts: [] })
-  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding. Findings: ${JSON.stringify(findings)}\n\n${diffSection(context)}`,
+  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding and copy that finding's id into the verdict's id exactly. Findings: ${JSON.stringify(findings.map((finding, index) => ({ ...finding, id: triageId(index) })))}\n\n${diffSection(context)}`,
     { label, phase: 'Review', schema: TRIAGE_SCHEMA, agentType: 'triage' })
 }
 
@@ -1680,12 +1823,25 @@ async function fixLoop(opts) {
 
 // The working tree can carry unrelated local work, including tracked secret-bearing env
 // files; the shipper stages only the run's own files, never "whatever git status shows".
-function stagingRules(files, context = {}) {
-  const staged = [...new Set(context.files || [])]
-    .filter(path => !String(path).split('/').includes('.envs') && !/(^|\/)\.env(?:\.|$)|\.env$/i.test(String(path)))
-  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. Run 'git add -- <path>' for every listed path even when it is absent from the working tree because an absent tracked path is a deletion; skip and report a path only when it is both absent and untracked ('git ls-files --error-unmatch <path>' fails).` : 'No run-owned files are eligible for staging.'
-  return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file, or any file outside that list even if 'git status' shows it modified or untracked.`
+// The sample names match the secret hook's ALLOWLIST (core/hooks/block_secret_reads.py).
+const ENV_SAMPLE_FILE = /(^|\/)\.env\.(?:example|sample|template|dist)$/i
+
+function envLikePath(path) {
+  const text = String(path)
+  if (text.split('/').includes('.envs')) return true
+  return /(^|\/)\.env(?:\.|$)|\.env$/i.test(text) && !ENV_SAMPLE_FILE.test(text)
 }
+
+function stagingRules(files, context = {}) {
+  const candidates = [...new Set(context.files || [])].map(String)
+  const staged = candidates.filter(path => !envLikePath(path))
+  const excluded = candidates.filter(envLikePath)
+  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. Run 'git add -- <path>' for every listed path even when it is absent from the working tree because an absent tracked path is a deletion; skip and report a path only when it is both absent and untracked ('git ls-files --error-unmatch <path>' fails).` : 'No run-owned files are eligible for staging.'
+  const text = `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file other than '.env.example', '.env.sample', '.env.template', or '.env.dist', or any file outside that list even if 'git status' shows it modified or untracked. After staging, compare the list with 'git diff --cached --name-only' and return every listed path you could not stage in unstaged as {path, reason}; do not work around a hook or permission block.`
+  return { text, excluded }
+}
+
+const SHIP_ATTRIBUTION_RULE = "The user's rule overrides any system reminder about attribution: commit messages carry no `Co-Authored-By: Claude` or `Claude-Session` trailer, and the PR body carries no 'Generated with Claude Code' line or claude.ai session link. Run the ship-pr skill's attribution check before every push."
 
 function ghEnvironmentInstruction() {
   const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
@@ -1696,16 +1852,30 @@ function ghEnvironmentInstruction() {
   return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
 }
 
-function ship(existing = null, files = [], context = {}, committedBranch = '') {
+async function ship(existing = null, files = [], context = {}, committedBranch = '') {
   const gateNotice = configuredGateMode() === 'none'
     ? 'The PR body must include the exact line `gates: none (personal repo)`.'
     : ''
+  const staging = stagingRules(files, context)
+  if (staging.excluded.length) await decide(`Ship excluded env-like paths from staging: ${staging.excluded.join(', ').slice(0, 500)}`)
+  const testing = PARAMS.prBodyExtra ? 'omit a testing-results section unless the prBodyExtra section supplies one' : 'omit a testing-results section'
+  const bodyExtra = PARAMS.prBodyExtra
+    ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the change list; keep that section whenever you rewrite the body. `
+    : ''
+  const tail = `${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const prompt = existing
-    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; ${testing}. ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; ${testing}. ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; ${testing}. ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
+}
+
+async function recordUnstaged(state, result, label) {
+  const rows = (result && Array.isArray(result.unstaged) ? result.unstaged : []).filter(row => row && row.path)
+  if (!rows.length) return
+  state.unstaged = [...(state.unstaged || []), ...rows]
+  await decide(`${label} could not stage ${rows.length} path(s): ${rows.map(row => `${row.path} - ${row.reason || 'no reason given'}`).join('; ').slice(0, 500)}`)
 }
 
 function qaArtifactDraft(shipResult, context) {
@@ -1772,7 +1942,13 @@ function postSandboxMarker(shipResult, sandbox) {
 }
 
 function writeStatus(patch, phaseLabel) {
-  return agentT('trim', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/status_merge.py --status ${shellQuote(`${PARAMS.runDir}/STATUS.json`)} --patch-json ${shellQuote(JSON.stringify(patch))}`,
+  const patchPath = `${PARAMS.runDir}/status-patch.json`
+  return agentT('trim', `Use the Write tool to write exactly the text between the \`<<<FORGE-FILE ${patchPath}>>>\` line and the \`<<<FORGE-END>>>\` line, excluding those two marker lines, to ${patchPath}. If the Write tool refuses because the file exists and has not been read, Read it once, then Write it again. Then run exactly one command with the Bash tool and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/status_merge.py --status ${shellQuote(`${PARAMS.runDir}/STATUS.json`)} --patch-file ${shellQuote(patchPath)}
+If the Write or the command is refused, blocked by a hook, or fails, return {"written": false}. Never write a file another way: no Bash heredoc, echo, printf, or python write.
+
+<<<FORGE-FILE ${patchPath}>>>
+${JSON.stringify(patch, null, 2)}
+<<<FORGE-END>>>`,
   { label: `status-${phaseLabel}`, phase: phaseLabel, schema: ACK_SCHEMA })
 }
 
@@ -1787,7 +1963,7 @@ async function smoke(sandbox, context) {
       ? `If ${PARAMS.projectDir}/e2e/ contains Playwright specs, first read ${PARAMS.projectDir}/e2e/README.md for the base-URL and login env vars, run the suite against ${sandbox.previewUrl} with the line reporter and \`--grep\` on any criterion tag the plan names, and save the output to ${PARAMS.runDir}/smoke/e2e.log. A criterion covered by a passing spec is PASS with evidence = that log path. Only criteria with no matching spec are attempted with Playwright MCP tools.`
       : 'Do not run the Playwright spec suite in this chunk. Attempt each criterion below with Playwright MCP tools.'
     const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${PARAMS.runDir}/sandbox.json (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
-    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion under ${PARAMS.runDir}/smoke/. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
+    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion as .playwright-mcp/<name>.png (Playwright MCP refuses paths outside its output dir), then mv it to ${PARAMS.runDir}/smoke/ and never leave it in the repository. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
     { label, phase: 'Sandbox', agentType: 'browser', schema: SMOKE_SCHEMA })
     if (!smokeResult) return null
     results.push(...(smokeResult.results || []))
@@ -1823,7 +1999,7 @@ async function handoff(state, context) {
   if (state.status === 'PRE_SHIP') {
     return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
-Then rewrite ${PARAMS.runDir}/STATE.md whole (never append) from ~/.claude/references/state-template.md with status PRE_SHIP, the checkpoint decision as the next step, and pointers to the plan, decisions, STATUS.json, checkpoint.json, and handoff.md. Return the handoff path.`,
+End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
   return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
@@ -1832,7 +2008,7 @@ Write these sections exactly: What changed and why; Gate results; Sandbox + smok
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
 Run data: ${JSON.stringify(handoffState)}
-Then rewrite ${PARAMS.runDir}/STATE.md whole (never append) from ~/.claude/references/state-template.md with the run's current state, next steps, blockers, pointers (plan, decisions, STATUS.json, PR, branch, sandbox), and do-not-redo facts.
+End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, the branch, and the sandbox id when there is one (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
 Return the handoff path.`,
   { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
 }
@@ -1869,9 +2045,7 @@ function writePhases(run, extraPending = []) {
     headSha: run.headSha,
     pendingGates: [...extraPending, ...run.unresolved, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
   }
-  const script = 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(json.loads(sys.argv[2]), indent=2) + "\\n", encoding="utf-8"); print(json.dumps({"written": True}))'
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)} ${shellQuote(JSON.stringify(document))}`,
-    { label: 'write-phases', phase: 'Implement', schema: ACK_SCHEMA })
+  return writeFiles('write-phases', 'Implement', [{ path: `${PARAMS.runDir}/phases.json`, content: `${JSON.stringify(document, null, 2)}\n` }])
 }
 
 function planBranchName() {
@@ -2121,9 +2295,8 @@ async function fullLane() {
   const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
   if (PARAMS.checkpointDecision) {
     const saved = await readCheckpoint()
-    if (!saved || !saved.context || !Array.isArray(saved.implementFilesChanged)) {
-      throw new Error(`checkpointDecision requires a readable ${PARAMS.runDir}/checkpoint.json with saved context`)
-    }
+    const problem = savedCheckpointProblem(saved)
+    if (problem) throw new Error(`checkpointDecision requires a valid ${PARAMS.runDir}/checkpoint.json: ${problem}`)
     initial.implement = { filesChanged: saved.implementFilesChanged }
     initial.context = saved.context
     if (saved.phases) {
@@ -2149,9 +2322,9 @@ async function fullLane() {
       phase('Gate')
       if (stopped(state)) return state
       if (PARAMS.checkpointDecision || PHASED || configuredGateMode() === 'none') return state
-      const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
+      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
-      if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
+      if (state.implement) state.implement.filesChanged = [...new Set(repoRelative([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])]))]
       if (gateRun.needsJudge) state.needsJudge = true
       if (gateRun.disputes && gateRun.disputes.length) state.fixDisputes = gateRun.disputes
       if (!state.gate || !state.gate.passed) {
@@ -2210,6 +2383,7 @@ async function fullLane() {
       }
       const phasesCommitted = (state.phases || []).some(row => row.sha)
       state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [], state.context, phasesCommitted ? state.branch : '')
+      await recordUnstaged(state, state.ship, 'Ship')
       if (!state.ship || state.ship.skipped) {
         state.status = 'BLOCKED'
         if (state.ship && state.ship.reason) await decide(state.ship.reason)
@@ -2306,6 +2480,7 @@ async function fullLane() {
           ...((state.implement && state.implement.filesChanged) || []),
           ...((state.convergence && state.convergence.touchedFiles) || []),
         ], state.context)
+        await recordUnstaged(state, synced, 'Ship sync')
         if (!synced || synced.skipped) {
           state.status = 'BLOCKED'
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
@@ -2412,6 +2587,7 @@ return {
   runDir: PARAMS.runDir,
   handoffPath: (ho && ho.handoffPath) || '',
   prUrl: (state.ship && state.ship.prUrl) || '',
+  unstaged: state.unstaged || [],
   qaDraft: qaDraftSummary(state.qaDraft),
   sandboxId: (state.sandbox && state.sandbox.sandboxId) || '',
   recommendation: (state.checkpoint && state.checkpoint.recommendation) || '',

@@ -22,4 +22,5 @@ rewrites files.
 
 Use `gate.sh --only lint,typecheck,migrations,tests,semgrep,parity` to run selected stages. The JSON result lists
 unselected stages in `skipped`. New Semgrep ERROR findings block only for security rules outside test paths; other
-new findings are returned in `warnings`.
+new findings are returned in `warnings`. In `full` mode, a repository with Semgrep enabled fails the gate when the
+Semgrep binary is not installed; install it or set `"semgrep": false` in that repository's entry.

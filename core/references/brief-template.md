@@ -20,4 +20,5 @@ They are not edited after.
 Write briefs with the Write tool, or in Bash only with a quoted heredoc (`<<'EOF'`).
 Never tell an agent to delete a directory (`rm -rf` is denied); if a dir must be emptied, a worker runs `find <dir> -mindepth 1 -delete` then `rmdir <dir>`.
 Browser steps go to the `browser` agent, never to `worker`. Playwright MCP blocks file: URLs, so serve a rendered file over localhost and provide that URL.
+A locator's file:line list is a lead, not an edit list: it can miss hits. A brief that changes every mention of something puts the locator's search patterns in KNOWN and tells the agent to re-run them (`git grep -n`) before editing.
 A brief that hands an agent a file holding cookies, tokens, headers, or typed values (a Playwright trace.zip, whose action titles and params include filled passwords; a HAR; an auth storage-state file) names `python3 ~/.claude/skills/forge/scripts/trace-read.py <file>` in KNOWN as the structure-only probe (it prints redacted action and network rows), or `zipinfo -1 <file>` for a file listing, and forbids printing raw contents or action titles from it.

@@ -49,19 +49,8 @@
         "stallTimeoutSeconds": 300,
         "lockWaitSeconds": 1800
       },
-      "gate": {
-        "~/Projects/personal/agent-kit": {
-          "mode": "none",
-          "lint": "ruff check .",
-          "typecheck": "",
-          "migrations": "",
-          "lintExtensions": [".py"],
-          "semgrep": true,
-          "semgrepConfig": "auto",
-          "timeoutSeconds": {"lint": 600, "typecheck": 600, "migrations": 600}
-        }
-      },
-      "workspace": "~/Projects"
+      "gate": {},
+      "workspace": ""
     },
     "ship_pr": {"base_branches": {}},
     "doctor": {

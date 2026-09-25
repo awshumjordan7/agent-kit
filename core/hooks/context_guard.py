@@ -219,6 +219,29 @@ def emit_hook_context(event_name, message):
     )
 
 
+def handoff_successor_running(session_id):
+    """True when handoff.py left a marker for this session and one of the
+    successor pids it recorded is still alive."""
+    try:
+        with open(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}")) as f:
+            pids = json.load(f).get("pids", [])
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(pids, list):
+        return False
+    for pid in pids:
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+        return True
+    return False
+
+
 def emit_block(reason):
     print(json.dumps({"decision": "block", "reason": reason}))
 
@@ -327,7 +350,7 @@ def main() -> int:
             pass
 
     if event_name == "Stop":
-        if os.path.isfile(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}")):
+        if handoff_successor_running(session_id):
             return 0
         if measure >= BAND_340K and not payload.get("stop_hook_active") and not state["blocked"]:
             # Leave blocked unset so a later Stop can still block once the tasks finish.
