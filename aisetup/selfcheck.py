@@ -62,7 +62,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
     from aisetup.compose import KEPT_STATUSES, ComposeError, compose_tree
     from aisetup.layers import resolve_layers
     from aisetup.manifest import ManifestError
-    from aisetup.mcp import McpError, _matches, registration_for_layers
+    from aisetup.mcp import GET_TIMEOUT_SECONDS, McpError, _matches, registration_for_layers
     from aisetup.profile import ProfileError, load_profile
     from aisetup.update import ContentDrift, check_content
 
@@ -211,7 +211,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
                         [claude, "mcp", "get", plan.server.name],
                         capture_output=True,
                         text=True,
-                        timeout=10,
+                        timeout=GET_TIMEOUT_SECONDS,
                         check=False,
                     )
                     if completed.returncode != 0 or not _matches(plan, completed.stdout):
@@ -221,7 +221,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
                         [claude, "mcp", "get", name],
                         capture_output=True,
                         text=True,
-                        timeout=10,
+                        timeout=GET_TIMEOUT_SECONDS,
                         check=False,
                     )
                     if completed.returncode == 0:

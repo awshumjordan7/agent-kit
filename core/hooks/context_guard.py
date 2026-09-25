@@ -55,6 +55,10 @@ MESSAGES = {
 }
 
 
+HANDOFF_SUFFIX = ".handoff"
+BACKGROUND_LAUNCH_PREFIXES = ("Async agent launched successfully.", "Workflow launched in background")
+NOTIFIED_TOOL_USE_ID = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
+
 IMPLEMENTER_AGENT = "claude-implementer"
 PROGRESS_MARKER = "/impl-progress-"
 PROGRESS_TOOLS = ("Write", "Edit", "Read")
@@ -121,6 +125,60 @@ def measure_from_transcript(transcript_path):
         + (usage.get("cache_creation_input_tokens", 0) or 0)
         + (usage.get("cache_read_input_tokens", 0) or 0)
     )
+
+
+def _tool_result_text(block):
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
+        )
+    return ""
+
+
+def pending_background_tasks(path):
+    """Count background Agent/Workflow launches in the transcript that have no
+    task-notification yet. Reads the whole file, so call it only past 340k."""
+    launched = set()
+    notified = set()
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                # Mid-turn completions arrive as attachment or queue-operation
+                # records, so match notifications on the raw line, not the type.
+                line = raw.decode("utf-8", errors="replace")
+                if "<task-notification>" in line:
+                    notified.update(NOTIFIED_TOOL_USE_ID.findall(line))
+                ev = try_parse(raw)
+                if not isinstance(ev, dict) or ev.get("type") != "user":
+                    continue
+                message = ev.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                origin = ev.get("origin")
+                is_notification = isinstance(origin, dict) and origin.get("kind") == "task-notification"
+                if isinstance(content, str):
+                    if is_notification or "<task-notification>" in content:
+                        notified.update(NOTIFIED_TOOL_USE_ID.findall(content))
+                    continue
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        if _tool_result_text(block).startswith(BACKGROUND_LAUNCH_PREFIXES):
+                            launched.add(block.get("tool_use_id"))
+                    elif is_notification and block.get("type") == "text":
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            notified.update(NOTIFIED_TOOL_USE_ID.findall(text))
+    except OSError:
+        return 0
+    return len(launched - notified)
 
 
 def load_state(state_path):
@@ -263,9 +321,18 @@ def main() -> int:
             save_state(state_path, state["band"], state["blocked"])
         except OSError:
             return 0
+        try:
+            os.remove(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}"))
+        except OSError:
+            pass
 
     if event_name == "Stop":
+        if os.path.isfile(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}")):
+            return 0
         if measure >= BAND_340K and not payload.get("stop_hook_active") and not state["blocked"]:
+            # Leave blocked unset so a later Stop can still block once the tasks finish.
+            if pending_background_tasks(transcript_path) > 0:
+                return 0
             try:
                 save_state(state_path, state["band"], True)
             except OSError:
