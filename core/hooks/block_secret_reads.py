@@ -541,7 +541,8 @@ def parse_reader(raw: str) -> ReaderArgs | None:
     else:
         patterns, files = positionals[:1], positionals[1:]
     if command == "awk":
-        files = [f for f in files if not AWK_ASSIGNMENT.match(f)]
+        # An assignment's value can name the file a getline reads: `f=.env`.
+        files = [AWK_ASSIGNMENT.sub("", f) for f in files]
     family = "grep" if command in ("egrep", "fgrep") else command
     return ReaderArgs(family, options, patterns, files)
 
@@ -568,8 +569,11 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
     ]
     read_paths = args.files + [value for name, value in options if name in ("-f", "--file")] + includes
     read_paths += [value.partition(":")[2] or value for name, value in options if family == "rg" and name == "--type-add"]
+    read_paths += [value.partition("=")[2] for name, value in options if family == "awk" and name == "-v"]
     for path in read_paths:
-        if secret_path_hit(path):
+        # SECRET_BARE_WORDS misses `service_credentials.json`: `_` defeats its \b.
+        file_shape = re.search(SECRET_FILE_SHAPES, ALLOWLIST.sub(" ", path), re.IGNORECASE)
+        if secret_path_hit(path) or (file_shape and not AUTHORIZED_PATHS.search(path)):
             return Hit("reads a credential-bearing path", "reader-operand", path, raw)
     for name, value in options:
         if family == "rg" and name == "--pre" and re.search(SECRET_PATH_SHAPES, value, re.IGNORECASE):
@@ -610,8 +614,10 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
 
 
 # Commands whose quoted arguments are text to print or store (a report
-# message, a commit message), not code to run.
-MESSENGER_COMMANDS = {"echo", "printf", "git", "gh"}
+# message, a commit message), not code to run. Other git and gh forms can run
+# their text as shell code (`git submodule foreach`, `gh alias set --shell`).
+MESSENGER_COMMANDS = {"echo", "printf"}
+TEXT_ONLY_GIT = re.compile(r"(?:git\s+(?:commit|tag|notes)|gh\s+(?:pr|issue|release)\s+(?:create|comment|edit))\b")
 SCRIPT_INTERPRETERS = {"python", "python3", "node", "ruby", "perl"}
 SCRIPT_FILE = re.compile(r"\.(?:py|js|mjs|cjs|rb|pl)$")
 
@@ -620,14 +626,14 @@ def is_messenger(raw: str) -> bool:
     """Return True when a segment's quoted prose is a message, not a command.
 
     Command substitution runs even inside double quotes, so a segment with
-    `$(`, a backtick, or `<(` is never a messenger.
+    `$(`, a backtick, `<(`, or `>(` is never a messenger.
     """
-    if any(s in raw for s in ("$(", "`", "<(")):
+    if any(s in raw for s in ("$(", "`", "<(", ">(")):
         return False
     words = raw.split()
     if not words:
         return False
-    if words[0] in MESSENGER_COMMANDS or words[0].endswith(".py"):
+    if words[0] in MESSENGER_COMMANDS or words[0].endswith(".py") or TEXT_ONLY_GIT.match(raw.lstrip()):
         return True
     return words[0] in SCRIPT_INTERPRETERS and len(words) > 1 and bool(SCRIPT_FILE.search(words[1]))
 
@@ -856,8 +862,9 @@ PYNODE_LEN_STRIP = re.compile(rf"len\(\s*(?:{_ENV_REF_ANY})\s*\)", re.IGNORECASE
 SHELL_OUT = re.compile(r"os\.system|subprocess|popen|child_process|execSync|spawn|`", re.IGNORECASE)
 
 
-# Commands that hand quoted text to a new shell, which expands $VAR in it.
-REEVALUATE = re.compile(r"\b(?:watch|su|parallel)\b", re.IGNORECASE)
+# Commands that may later run quoted text as shell code, which expands $VAR in
+# it: a new shell, a trap, awk system() or `| getline`, GNU sed `e`.
+REEVALUATE = re.compile(r"\b(?:watch|su|parallel|trap|awk|gawk|sed)\b", re.IGNORECASE)
 
 
 def _reevaluates(command: str) -> bool:
