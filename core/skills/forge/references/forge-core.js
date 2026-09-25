@@ -1338,7 +1338,8 @@ function findingKey(finding) {
 }
 
 // Triage sees findings as F1..Fn in array order, so ids map back by position. Several findings
-// can share one file and line, so each verdict is used once and the id match comes first.
+// can share one file and line, so each verdict is used once, every finding takes its id match
+// before any fallback runs, and the file-and-line fallback only uses verdicts whose id names no finding.
 function triageId(index) {
   return `F${index + 1}`
 }
@@ -1355,9 +1356,11 @@ function partitionTriage(findings, verdicts, auto = false) {
     used.add(index)
     return pool[index]
   }
+  const ids = findings.map((finding, position) => triageId(position))
+  const byId = ids.map(id => take(item => item.id === id))
   findings.forEach((finding, position) => {
-    const id = triageId(position)
-    const verdict = take(item => item.id === id) || take(item => item.file === finding.file && item.line === finding.line)
+    const verdict = byId[position] ||
+      take(item => !ids.includes(item.id) && item.file === finding.file && item.line === finding.line)
     if (!verdict || verdict.real === 'uncertain') {
       if (auto) fix.push(finding)
       else disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
@@ -1894,7 +1897,7 @@ async function smoke(sandbox, context) {
       ? `If ${PARAMS.projectDir}/e2e/ contains Playwright specs, first read ${PARAMS.projectDir}/e2e/README.md for the base-URL and login env vars, run the suite against ${sandbox.previewUrl} with the line reporter and \`--grep\` on any criterion tag the plan names, and save the output to ${PARAMS.runDir}/smoke/e2e.log. A criterion covered by a passing spec is PASS with evidence = that log path. Only criteria with no matching spec are attempted with Playwright MCP tools.`
       : 'Do not run the Playwright spec suite in this chunk. Attempt each criterion below with Playwright MCP tools.'
     const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${PARAMS.runDir}/sandbox.json (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
-    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion as .playwright-mcp/<name>.png (Playwright MCP refuses paths outside its output dir), then mv it to ${PARAMS.runDir}/smoke/ and never leave it in the repository.Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
+    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion as .playwright-mcp/<name>.png (Playwright MCP refuses paths outside its output dir), then mv it to ${PARAMS.runDir}/smoke/ and never leave it in the repository. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
     { label, phase: 'Sandbox', agentType: 'browser', schema: SMOKE_SCHEMA })
     if (!smokeResult) return null
     results.push(...(smokeResult.results || []))
@@ -2008,7 +2011,7 @@ async function commitFiles(label, message, files) {
   const commit = result && result.commit
   if (commit && commit.sha) return { sha: commit.sha, empty: false, error: '' }
   const error = (commit && commit.error) || (result && (result.failures || [])[0] && result.failures[0].summary) || 'commit agent returned null'
-  if (/^no (?:staged changes to commit|committable --files paths remain)/.test(error)) return { sha: null, empty: true, error: '' }
+  if (/^no (?:staged changes to commit|committable --files paths remain)|every --files path was dropped/.test(error)) return { sha: null, empty: true, error: '' }
   return { sha: null, empty: false, error }
 }
 

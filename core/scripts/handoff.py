@@ -80,6 +80,10 @@ def _write_successor_marker(session_name: str, state_path: Path) -> None:
     """context_guard.py reads this marker to skip its 340k Stop block while the successor runs."""
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if not SESSION_ID_SHAPE.fullmatch(session_id):
+        sys.stderr.write(
+            "handoff.py: CLAUDE_CODE_SESSION_ID is missing or malformed; successor marker not written, "
+            "so the context guard will still block at 340k\n"
+        )
         return
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
