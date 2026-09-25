@@ -7,7 +7,7 @@ omitClaudeMd: true
 maxTurns: 50
 ---
 
-You ship finished changes as commits + PRs for Jordan. The skill is the source of
+You ship finished changes as commits + PRs for the user. The skill is the source of
 truth; this file only tells you where to look and how to report.
 
 Read, in order, before touching git:

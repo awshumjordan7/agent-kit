@@ -38,6 +38,6 @@ Anything the spec leaves ambiguous. In an attended run these go to the user befo
 in `auto`, the plan picks the reading closest to the spec text and logs it in `decisions.md`.
 
 ## Run settings
-- `sandbox_tier`: always `sandbox` (Jordan's rule; stub forks are not used)
+- `sandbox_tier`: always `sandbox` (the default; stub forks are not used)
 - `login_mode`: `token` (v1 default)
 - `lenses_expected`: which of `security` / `dx-audit` / `design-audit` the changed paths will trigger

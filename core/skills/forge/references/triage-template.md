@@ -39,6 +39,6 @@ Numbered steps. Each step names the file and the intent, not the code.
 
 ## Run settings
 - `lane_verdict`: `QUICK` if ≤3 files, no migration, no infra, no downstream-product contract change; else `ESCALATE_TO_DEV` with the reason
-- `sandbox_tier`: always `sandbox` (Jordan's rule; stub forks are not used)
+- `sandbox_tier`: always `sandbox` (the default; stub forks are not used)
 - `login_mode`: `token` (v1 default)
 - `ticket`: existing ticket key when supplied, else `none`

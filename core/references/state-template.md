@@ -6,7 +6,7 @@ Read this file first. Do not read plan.md, the Codex logs, or other run-dir file
 <one to three lines: what is true right now, what is in flight>
 ## Next
 1. <next action, who does it (main session / worker / Codex / steward)>
-## Blockers / waiting on Jordan
+## Blockers / waiting on the user
 - <item or "none">
 ## Pointers
 - plan: <path>   decisions: <path>   STATUS.json: <path>   captures: <path>
