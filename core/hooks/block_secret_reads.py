@@ -112,7 +112,7 @@ SECRET_FILE_SHAPES = (
 # Explicitly fine: sample/template files that carry no real values.
 ALLOWLIST = re.compile(
     r"\.env\.example|\.env\.sample|\.env\.template|\.env\.dist|"
-    r"secrets?\.md|credentials?\.md|token[_-]?claim|token[_-]?info",
+    r"secrets?\.md|credentials?\.md|token[_-]?claim|(?<![\w-])token[_-]?info",
     re.IGNORECASE,
 )
 
@@ -162,11 +162,16 @@ PATTERN_ONLY = re.compile(
     r"(?:\s+(?:-\S+|'[^']*'|\"[^\"]*\"))*\s*(?:>{1,2}\s*)?$"
 )
 
+# A double-quoted `$` expansion ("$XDG_CONFIG_HOME/gh/hosts.yml") may be the
+# file operand, so a segment holding one is never pattern-only.
+QUOTED_EXPANSION = re.compile(r"\"[^\"]*\$[\w{(][^\"]*\"")
+
 
 def word_scan(segment: str) -> str:
     """Return the segment with prose and .md names blanked for the word check."""
     scan = MD_TOKEN.sub(" ", QUOTED_PROSE.sub(" ", segment))
-    return QUOTED_ANY.sub(" ", scan) if PATTERN_ONLY.match(scan) else scan
+    pattern_only = PATTERN_ONLY.match(scan) and not QUOTED_EXPANSION.search(scan)
+    return QUOTED_ANY.sub(" ", scan) if pattern_only else scan
 
 
 def pattern_scan(segment: str) -> str:
@@ -176,7 +181,8 @@ def pattern_scan(segment: str) -> str:
     still a path for the file-name check.
     """
     scan = MD_TOKEN.sub(" ", segment)
-    return QUOTED_ANY.sub(" ", scan) if PATTERN_ONLY.match(scan) else segment
+    pattern_only = PATTERN_ONLY.match(scan) and not QUOTED_EXPANSION.search(scan)
+    return QUOTED_ANY.sub(" ", scan) if pattern_only else segment
 
 
 # A redirect out of a secret file, e.g. `< .env` or `while read < .env`.
@@ -374,13 +380,14 @@ class Hit(NamedTuple):
     context: str
 
 
-def split_segments(command: str) -> list[str]:
+def split_segments(command: str, piped: list[bool] | None = None) -> list[str]:
     """Split a command on unquoted `&&`, `||`, `|`, `;`, a lone `&`, and newlines.
 
     Each segment keeps its raw text, quotes included. Quote state resets at
     every newline, so an unbalanced quote on one line (`echo it's`) cannot
     hide the next line; a backslash-newline continues the line. The `&` of a
-    redirection (`2>&1`, `<&3`, `&>file`) does not split.
+    redirection (`2>&1`, `<&3`, `&>file`) does not split. When `piped` is
+    given, it gets one entry per segment: True when a single `|` ends it.
     """
     segments: list[str] = []
     buf: list[str] = []
@@ -390,6 +397,8 @@ def split_segments(command: str) -> list[str]:
         c = command[i]
         if c == "\n":
             segments.append("".join(buf))
+            if piped is not None:
+                piped.append(False)
             buf, quote = [], None
             i += 1
             continue
@@ -406,12 +415,16 @@ def split_segments(command: str) -> list[str]:
             quote = c
         elif c in ";|" or (c == "&" and command[i - 1 : i] not in ("<", ">") and command[i + 1 : i + 2] != ">"):
             segments.append("".join(buf))
+            if piped is not None:
+                piped.append(c == "|" and command[i + 1 : i + 2] != "|")
             buf = []
             i += 2 if c in "|&" and command[i + 1 : i + 2] == c else 1
             continue
         buf.append(c)
         i += 1
     segments.append("".join(buf))
+    if piped is not None:
+        piped.append(False)
     return segments
 
 
@@ -758,6 +771,15 @@ def _narrow_glob(glob: str) -> bool:
     return bool(CODE_EXTENSION.fullmatch(extension))
 
 
+def _code_file(path: str) -> bool:
+    """Return True when a path's last part ends in a literal source or docs extension.
+
+    For example `$R/app.py`.
+    """
+    name = path.rpartition("/")[2]
+    return "." in name and bool(CODE_EXTENSION.fullmatch(name.rpartition(".")[2]))
+
+
 def has_dot_part(path: str) -> bool:
     """Return True when a path has a part that starts with `.`, other than `.` or `..`."""
     return any(part.startswith(".") and part not in (".", "..") for part in path.strip("'\"").split("/"))
@@ -849,8 +871,8 @@ def is_messenger(raw: str) -> bool:
 # Commands that never run their input or arguments as code, so a message
 # piped into them or printed beside them stays text.
 QUIET_COMMANDS = {
-    "head", "tail", "grep", "egrep", "fgrep", "wc", "cut", "sort", "uniq", "tr", "jq", "cat", "column", "nl",
-    "echo", "printf", "true", "cd",
+    "head", "tail", "grep", "egrep", "fgrep", "wc", "cut", "uniq", "tr", "jq", "cat", "column",
+    "nl", "echo", "printf", "true", "cd",
 }
 # An output redirection and its target; `&` marks an fd duplication (`2>&1`).
 OUTPUT_REDIRECT_ANY = re.compile(r">{1,2}\|?(&)?\s*([^\s;&|<>()]*)")
@@ -966,12 +988,21 @@ def _node_parts(body: str) -> tuple[str, list[str]]:
     `'...'` and `"..."` end at a newline, so an apostrophe in text cannot
     hide later lines; a backtick template may span lines. The code of a
     template's `${...}` fields stays in the code. An unclosed literal stays code.
+    A `//` or `/*` after code on its line may sit in a regex literal
+    (`/[//]/`, `/[/*]/`), so the rest of that line stays code rather than
+    being dropped as a comment.
     """
     code: list[str] = []
     literals: list[str] = []
     i, n = 0, len(body)
     while i < n:
         c = body[i]
+        if body.startswith(("//", "/*"), i) and body[body.rfind("\n", 0, i) + 1 : i].strip():
+            j = body.find("\n", i)
+            j = n if j < 0 else j
+            code.append(body[i:j])
+            i = j
+            continue
         if body.startswith("//", i):
             j = body.find("\n", i)
             i = n if j < 0 else j
@@ -1080,7 +1111,8 @@ def verdict(command: str) -> Hit | None:
                 return Hit(
                     "runs code that names a credential-bearing path", "interpreter-body-secret", m.group(0), body
                 )
-    segments = split_segments(command)
+    piped: list[bool] = []
+    segments = split_segments(command, piped)
     # Any other command may run a messenger's text: `echo "..." | bash`.
     messengers = is_quiet(command)
     # A search after `cd ~/.config/gh` reads a dot-directory like a search
@@ -1088,7 +1120,7 @@ def verdict(command: str) -> Hit | None:
     dot_cd = False
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
-    for raw in segments:
+    for raw, feeds_pipe in zip(segments, piped):
         if cd := CD_TARGET.match(raw):
             dot_cd = dot_cd or any(has_dot_part(word) for word in cd.group(1).split())
         # Blank out only the allowlisted paths, never the whole segment:
@@ -1105,8 +1137,17 @@ def verdict(command: str) -> Hit | None:
                 return hit
             # A dot-directory (~/.config/gh/hosts.yml) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
-            dotted = dot_cd or any(has_dot_part(f) or "$" in f for f in reader.files)
-            if dotted and (m := READER_NEAR_SECRET_WORD.search(word_scan(segment))):
+            # A variable operand with a literal source extension ($R/app.py) is
+            # a source file. Names-only output (-l, -c) prints no line unless a
+            # pipe hands the names on: `grep -l token ~/.config/gh/* | xargs cat`.
+            dotted = dot_cd or any(
+                has_dot_part(f) or ("$" in f and not _code_file(f)) for f in reader.files
+            )
+            names_only = {name for name, _ in reader.options} & NAMES_ONLY_OPTS.get(
+                reader.family, set()
+            )
+            word = READER_NEAR_SECRET_WORD.search(word_scan(segment))
+            if dotted and (feeds_pipe or not names_only) and (m := word):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         else:
             # A file the command writes or excludes is not read.
@@ -1387,7 +1428,9 @@ def secret_var_verdict(command: str) -> str | None:
             if m.group(1) not in exempt:
                 return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
     if PYNODE_INVOCATION.search(command):
-        executed = [heredocs.head, *(body for body, _ in heredocs.interpreter_bodies), *heredocs.rerun_bodies]
+        executed = [
+            head, *(body for body, _ in heredocs.interpreter_bodies), *heredocs.rerun_bodies
+        ]
         stripped = PYNODE_LEN_STRIP.sub(" ", "\n".join(executed))
         if m := PYNODE_SECRET_REF.search(stripped) or PYNODE_WHOLESALE.search(stripped):
             return f"would print a secret-bearing variable {matched('interpreter-env-ref', m.group(0))}"
