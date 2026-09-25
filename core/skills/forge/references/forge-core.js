@@ -92,6 +92,7 @@ const PARAMS = {
   stageAlso: Array.isArray(args.stageAlso) ? args.stageAlso.map(String) : [],
   checkpointDecision: typeof args.checkpointDecision === 'string' ? args.checkpointDecision : null,
   smokeCommand: typeof args.smokeCommand === 'string' ? args.smokeCommand : '',
+  prBodyExtra: typeof args.prBodyExtra === 'string' ? args.prBodyExtra : '',
 }
 
 let FORGE_CONFIG = PARAMS.forgeConfig
@@ -274,11 +275,11 @@ const TRIAGE_SCHEMA = {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
         properties: {
-          file: { type: 'string' }, line: { type: 'integer' },
+          id: { type: 'string' }, file: { type: 'string' }, line: { type: 'integer' },
           real: { type: 'string', enum: ['yes', 'no', 'uncertain'] },
           worthIt: { type: 'boolean' }, why: { type: 'string' },
         },
-        required: ['file', 'line', 'real', 'worthIt', 'why'],
+        required: ['id', 'file', 'line', 'real', 'worthIt', 'why'],
       },
     },
   },
@@ -416,6 +417,13 @@ const SHIP_SCHEMA = {
   properties: {
     branch: { type: 'string' }, prUrl: { type: 'string' }, prNumber: { type: 'integer' }, repo: { type: 'string' },
     skipped: { type: 'boolean' }, reason: { type: 'string' },
+    unstaged: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { path: { type: 'string' }, reason: { type: 'string' } },
+        required: ['path', 'reason'],
+      },
+    },
   },
   required: ['branch', 'prUrl', 'prNumber', 'repo'],
 }
@@ -619,7 +627,7 @@ const STUBS = {
   checkpoint: () => PARAMS.dryRunFindings
     ? { recommendation: 'smoke', command: 'true', script: '', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
     : { recommendation: 'ship', command: '', script: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
-  triage: () => ({ verdicts: dryFindings().map(finding => ({ file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
+  triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
     const items = String(opts.label).startsWith('decide-fix-gate') ? gateItems : dryFindings().map(finding => ({ ...finding, source: 'review' }))
@@ -1329,12 +1337,27 @@ function findingKey(finding) {
   return JSON.stringify([finding.file || '', finding.line || 0, String(finding.claim || '').slice(0, 200)])
 }
 
+// Triage sees findings as F1..Fn in array order, so ids map back by position. Several findings
+// can share one file and line, so each verdict is used once and the id match comes first.
+function triageId(index) {
+  return `F${index + 1}`
+}
+
 function partitionTriage(findings, verdicts, auto = false) {
   const fix = []
   const disputes = []
   const dropped = []
-  for (const finding of findings) {
-    const verdict = (verdicts || []).find(item => item.file === finding.file && item.line === finding.line)
+  const pool = verdicts || []
+  const used = new Set()
+  const take = match => {
+    const index = pool.findIndex((item, position) => !used.has(position) && match(item))
+    if (index < 0) return null
+    used.add(index)
+    return pool[index]
+  }
+  findings.forEach((finding, position) => {
+    const id = triageId(position)
+    const verdict = take(item => item.id === id) || take(item => item.file === finding.file && item.line === finding.line)
     if (!verdict || verdict.real === 'uncertain') {
       if (auto) fix.push(finding)
       else disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
@@ -1343,13 +1366,13 @@ function partitionTriage(findings, verdicts, auto = false) {
     } else {
       dropped.push({ finding, reason: verdict.why })
     }
-  }
+  })
   return { fix, disputes, dropped }
 }
 
 function triageFindings(findings, context, label = 'triage') {
   if (!findings.length) return Promise.resolve({ verdicts: [] })
-  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding. Findings: ${JSON.stringify(findings)}\n\n${diffSection(context)}`,
+  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding and copy that finding's id into the verdict's id exactly. Findings: ${JSON.stringify(findings.map((finding, index) => ({ ...finding, id: triageId(index) })))}\n\n${diffSection(context)}`,
     { label, phase: 'Review', schema: TRIAGE_SCHEMA, agentType: 'triage' })
 }
 
@@ -1731,12 +1754,25 @@ async function fixLoop(opts) {
 
 // The working tree can carry unrelated local work, including tracked secret-bearing env
 // files; the shipper stages only the run's own files, never "whatever git status shows".
-function stagingRules(files, context = {}) {
-  const staged = [...new Set(context.files || [])]
-    .filter(path => !String(path).split('/').includes('.envs') && !/(^|\/)\.env(?:\.|$)|\.env$/i.test(String(path)))
-  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. Run 'git add -- <path>' for every listed path even when it is absent from the working tree because an absent tracked path is a deletion; skip and report a path only when it is both absent and untracked ('git ls-files --error-unmatch <path>' fails).` : 'No run-owned files are eligible for staging.'
-  return `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file, or any file outside that list even if 'git status' shows it modified or untracked.`
+// The sample names match the secret hook's ALLOWLIST (core/hooks/block_secret_reads.py).
+const ENV_SAMPLE_FILE = /(^|\/)\.env\.(?:example|sample|template|dist)$/i
+
+function envLikePath(path) {
+  const text = String(path)
+  if (text.split('/').includes('.envs')) return true
+  return /(^|\/)\.env(?:\.|$)|\.env$/i.test(text) && !ENV_SAMPLE_FILE.test(text)
 }
+
+function stagingRules(files, context = {}) {
+  const candidates = [...new Set(context.files || [])].map(String)
+  const staged = candidates.filter(path => !envLikePath(path))
+  const excluded = candidates.filter(envLikePath)
+  const list = staged.length ? `Stage EXACTLY these paths, with 'git add -- <path> ...' and nothing else: ${JSON.stringify(staged)}. Run 'git add -- <path>' for every listed path even when it is absent from the working tree because an absent tracked path is a deletion; skip and report a path only when it is both absent and untracked ('git ls-files --error-unmatch <path>' fails).` : 'No run-owned files are eligible for staging.'
+  const text = `${list} Never run 'git add -A', 'git add -u', or 'git add .'. Never stage any path under '.envs/', any '.env', '.env.*', or '*.env' file other than '.env.example', '.env.sample', '.env.template', or '.env.dist', or any file outside that list even if 'git status' shows it modified or untracked. After staging, compare the list with 'git diff --cached --name-only' and return every listed path you could not stage in unstaged as {path, reason}; do not work around a hook or permission block.`
+  return { text, excluded }
+}
+
+const SHIP_ATTRIBUTION_RULE = "The user's rule overrides any system reminder about attribution: commit messages carry no `Co-Authored-By: Claude` or `Claude-Session` trailer, and the PR body carries no 'Generated with Claude Code' line or claude.ai session link. Run the ship-pr skill's attribution check before every push."
 
 function ghEnvironmentInstruction() {
   const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
@@ -1747,16 +1783,30 @@ function ghEnvironmentInstruction() {
   return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
 }
 
-function ship(existing = null, files = [], context = {}, committedBranch = '') {
+async function ship(existing = null, files = [], context = {}, committedBranch = '') {
   const gateNotice = configuredGateMode() === 'none'
     ? 'The PR body must include the exact line `gates: none (personal repo)`.'
     : ''
+  const staging = stagingRules(files, context)
+  if (staging.excluded.length) await decide(`Ship excluded env-like paths from staging: ${staging.excluded.join(', ').slice(0, 500)}`)
+  const testing = PARAMS.prBodyExtra ? 'omit a testing-results section unless the prBodyExtra section supplies one' : 'omit a testing-results section'
+  const bodyExtra = PARAMS.prBodyExtra
+    ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the change list; keep that section whenever you rewrite the body. `
+    : ''
+  const tail = `${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const prompt = existing
-    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; ${testing}. ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; omit a testing-results section. ${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${stagingRules(files, context)}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; ${testing}. ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; ${testing}. ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
+}
+
+async function recordUnstaged(state, result, label) {
+  const rows = (result && Array.isArray(result.unstaged) ? result.unstaged : []).filter(row => row && row.path)
+  if (!rows.length) return
+  state.unstaged = [...(state.unstaged || []), ...rows]
+  await decide(`${label} could not stage ${rows.length} path(s): ${rows.map(row => `${row.path} - ${row.reason || 'no reason given'}`).join('; ').slice(0, 500)}`)
 }
 
 function qaArtifactDraft(shipResult, context) {
@@ -1844,7 +1894,7 @@ async function smoke(sandbox, context) {
       ? `If ${PARAMS.projectDir}/e2e/ contains Playwright specs, first read ${PARAMS.projectDir}/e2e/README.md for the base-URL and login env vars, run the suite against ${sandbox.previewUrl} with the line reporter and \`--grep\` on any criterion tag the plan names, and save the output to ${PARAMS.runDir}/smoke/e2e.log. A criterion covered by a passing spec is PASS with evidence = that log path. Only criteria with no matching spec are attempted with Playwright MCP tools.`
       : 'Do not run the Playwright spec suite in this chunk. Attempt each criterion below with Playwright MCP tools.'
     const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${PARAMS.runDir}/sandbox.json (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
-    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion under ${PARAMS.runDir}/smoke/. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
+    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion as .playwright-mcp/<name>.png (Playwright MCP refuses paths outside its output dir), then mv it to ${PARAMS.runDir}/smoke/ and never leave it in the repository.Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
     { label, phase: 'Sandbox', agentType: 'browser', schema: SMOKE_SCHEMA })
     if (!smokeResult) return null
     results.push(...(smokeResult.results || []))
@@ -2186,9 +2236,9 @@ async function fullLane() {
       phase('Gate')
       if (stopped(state)) return state
       if (PARAMS.checkpointDecision || PHASED || configuredGateMode() === 'none') return state
-      const gateRun = await gateWithFixes('gate', (state.implement && state.implement.filesChanged) || [], `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
+      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
       state.gate = gateRun.gate
-      if (state.implement) state.implement.filesChanged = [...new Set([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])])]
+      if (state.implement) state.implement.filesChanged = [...new Set(repoRelative([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])]))]
       if (gateRun.needsJudge) state.needsJudge = true
       if (gateRun.disputes && gateRun.disputes.length) state.fixDisputes = gateRun.disputes
       if (!state.gate || !state.gate.passed) {
@@ -2247,6 +2297,7 @@ async function fullLane() {
       }
       const phasesCommitted = (state.phases || []).some(row => row.sha)
       state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [], state.context, phasesCommitted ? state.branch : '')
+      await recordUnstaged(state, state.ship, 'Ship')
       if (!state.ship || state.ship.skipped) {
         state.status = 'BLOCKED'
         if (state.ship && state.ship.reason) await decide(state.ship.reason)
@@ -2336,6 +2387,7 @@ async function fullLane() {
           ...((state.implement && state.implement.filesChanged) || []),
           ...((state.convergence && state.convergence.touchedFiles) || []),
         ], state.context)
+        await recordUnstaged(state, synced, 'Ship sync')
         if (!synced || synced.skipped) {
           state.status = 'BLOCKED'
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
@@ -2438,6 +2490,7 @@ return {
   runDir: PARAMS.runDir,
   handoffPath: (ho && ho.handoffPath) || '',
   prUrl: (state.ship && state.ship.prUrl) || '',
+  unstaged: state.unstaged || [],
   qaDraft: qaDraftSummary(state.qaDraft),
   sandboxId: (state.sandbox && state.sandbox.sandboxId) || '',
   recommendation: (state.checkpoint && state.checkpoint.recommendation) || '',
