@@ -26,12 +26,13 @@ A plan with two or more `### Phase <id>: <title>` headings under `## Phases` run
 
 Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the checkpoint. A resumed run keeps `baseline.json` whenever `phases.json` exists, re-gates the pending and failed gates saved there, starts at the first uncommitted phase, and runs the final gate. The handoff removes the gate checkout; a run that stops for a judge or throws removes it directly.
 
-Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke. A new session relaunches with the args in `launch-args.json`, `planText` read from `planPath`, and `checkpointDecision`; it never passes `resumeFromRunId`.
+Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke. A new session relaunches with the args in `launch-args.json` plus `checkpointDecision`, changing nothing else. If the first launch passed `planText` inline, pass the unchanged contents of `planPath` inline; otherwise omit it. A new session passes `resumeFromRunId` only after carrying the journal over with `workflow_carry.py` (see `auto-mode.md`).
 
 ## Evidence rules
 
 - Put a `## Public API contract` in the plan for any client, CLI, library, data shape, or externally visible behavior. Implementation and verification must preserve it.
 - When live behavior matters, build or keep a runnable evidence harness before feature work. Emit per-capability evidence with pass, fail, or blocked status.
+- Harness and QA setup must be idempotent: use get_or_create/update_or_create, or clean up the rows it owns first, so the setup is safe to run twice against the same database.
 - The post-fix verifier receives only the original post-triage findings, the implementer's per-finding explanations, and the fix diff. It marks each of those findings `RESOLVED` or `UNRESOLVED` and cannot add findings; unresolved items stay open for the next round or the BLOCKED handoff. Codex reports inaccessible live targets as implemented-unverified.
 - Maintain `STATUS.json` with acceptance criteria, evidence paths, round state, and open findings. Merge updates; never truncate prior evidence.
 - When a deliverable mirrors a reference implementation, run both against the same target and compare observable results.

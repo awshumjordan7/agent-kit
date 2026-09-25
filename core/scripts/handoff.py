@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+import xml.parsers.expat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +42,27 @@ def _claude_pids(session_name: str) -> set[int]:
     if result.returncode not in {0, 1}:
         raise OSError(result.stderr.strip() or "pgrep failed")
     return {int(pid) for pid in result.stdout.split()}
+
+
+def _screen_locked() -> bool:
+    try:
+        result = subprocess.run(
+            ["ioreg", "-n", "Root", "-d1", "-a"], check=False, capture_output=True
+        )
+    except FileNotFoundError:
+        return False
+    if result.returncode:
+        return False
+    try:
+        root = plistlib.loads(result.stdout)
+    except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError):
+        return False
+    if not isinstance(root, dict):
+        return False
+    return any(
+        isinstance(user, dict) and user.get("CGSSessionScreenIsLocked")
+        for user in root.get("IOConsoleUsers", [])
+    )
 
 
 def _open_ghostty_tab(cwd: Path, input_text: str) -> subprocess.CompletedProcess[str]:
@@ -134,6 +157,12 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
         )
         return 1
     if sys.platform == "darwin":
+        if _screen_locked():
+            sys.stderr.write(
+                "handoff.py: the screen is locked, so Ghostty cannot open a tab; "
+                f"unlock the Mac and rerun handoff.py, or {run_yourself}\n"
+            )
+            return 1
         result = _open_ghostty_tab(cwd, input_text)
         if result.returncode:
             sys.stderr.write(
@@ -165,7 +194,10 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
             sys.stderr.write(f"handoff.py: failed to inspect Claude processes: {error}\n")
             return 1
     else:
-        sys.stderr.write(f"handoff: successor {session_name!r} did not start; {run_yourself}\n")
+        locked = " (the screen is locked)" if sys.platform == "darwin" and _screen_locked() else ""
+        sys.stderr.write(
+            f"handoff: successor {session_name!r} did not start{locked}; {run_yourself}\n"
+        )
         return 1
     _write_handoff_marker(session_name, state_path, new_pids)
     sys.stdout.write(f"session: {session_name}\n")

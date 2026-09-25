@@ -150,10 +150,47 @@ def _criteria(section: str) -> list[str]:
     return items
 
 
-def _diff_base(repo: Path, document: dict, base: str | None) -> str:
-    if base:
+def _ref_exists(repo: Path, ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _advanced_base(repo: Path, head: str, base: str) -> str:
+    # Merging a newer base into the branch mid-run brings in other PRs' files. Start the diff at
+    # the merge-base only when it descends from the baseline head, so the diff never widens.
+    ref = f"origin/{base}" if _ref_exists(repo, f"origin/{base}") else base
+    merge_base = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", ref, "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    candidate = merge_base.stdout.strip()
+    if merge_base.returncode or not candidate:
+        return head
+    is_ancestor = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", head, candidate],
+        check=False,
+        capture_output=True,
+    )
+    return candidate if is_ancestor.returncode == 0 else head
+
+
+def _diff_base(
+    repo: Path, document: dict, base: str | None, advance_only: bool = False
+) -> str:
+    head = document.get("head")
+    if base and advance_only and head:
+        return _advanced_base(repo, str(head).strip(), base)
+    if base and not advance_only:
         return str(_git(repo, "merge-base", base, "HEAD")).strip()
-    return str(document.get("head") or _git(repo, "rev-parse", "HEAD")).strip()
+    return str(head or _git(repo, "rev-parse", "HEAD")).strip()
 
 
 def _changed_since_baseline(
@@ -219,6 +256,7 @@ def write_diff(
     label: str,
     base: str | None = None,
     hints: list[str] | None = None,
+    advance_only: bool = False,
 ) -> tuple[Path, list[str], list[str], list[str]]:
     baseline_path = run_dir / "baseline.json"
     document = (
@@ -226,7 +264,7 @@ def write_diff(
         if baseline_path.is_file()
         else {}
     )
-    diff_base = _diff_base(repo, document, base)
+    diff_base = _diff_base(repo, document, base, advance_only)
     files, preexisting, dropped = _changed_since_baseline(repo, document, diff_base)
     _kept_hints, dropped_hints = _safe_paths(repo, hints or [])
     dropped = list(dict.fromkeys([*dropped, *dropped_hints]))
@@ -244,10 +282,11 @@ def context(
     all_dirty: bool = False,
     base: str | None = None,
     hints: list[str] | None = None,
+    advance_only: bool = False,
 ) -> dict:
     baseline_path = run_dir / "baseline.json"
     document = json.loads(baseline_path.read_text(encoding="utf-8"))
-    diff_base = _diff_base(repo, document, base)
+    diff_base = _diff_base(repo, document, base, advance_only)
     files, preexisting, dropped = _changed_since_baseline(
         repo, document, diff_base, all_dirty=all_dirty
     )
@@ -301,12 +340,14 @@ def main() -> None:
     context_parser.add_argument("--label", required=True)
     context_parser.add_argument("--all-dirty", action="store_true")
     context_parser.add_argument("--base")
+    context_parser.add_argument("--advance-only", action="store_true")
     context_parser.add_argument("--files", nargs="*")
     diff_parser = subparsers.add_parser("diff")
     diff_parser.add_argument("--run-dir", type=Path, required=True)
     diff_parser.add_argument("--repo", type=Path, required=True)
     diff_parser.add_argument("--label", required=True)
     diff_parser.add_argument("--base")
+    diff_parser.add_argument("--advance-only", action="store_true")
     diff_parser.add_argument("--files", nargs="*")
     smoke_run_parser = subparsers.add_parser("smoke-run")
     smoke_run_parser.add_argument("--run-dir", type=Path, required=True)
@@ -324,10 +365,11 @@ def main() -> None:
             args.all_dirty,
             args.base,
             args.files,
+            args.advance_only,
         )
     elif args.command == "diff":
         diff_path, _files, _preexisting, _dropped = write_diff(
-            args.run_dir, args.repo, args.label, args.base, args.files
+            args.run_dir, args.repo, args.label, args.base, args.files, args.advance_only
         )
         sys.stdout.write(str(diff_path) + "\n")
         return

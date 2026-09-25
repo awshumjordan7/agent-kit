@@ -1102,7 +1102,9 @@ function stopped(state) {
 
 function changedFiles(allDirty = false) {
   const mode = allDirty ? ' --all-dirty' : ''
-  const base = PARAMS.lane === 'review' ? ` --base ${shellQuote(args.base || 'main')}` : ''
+  const repo = shellQuote(PARAMS.projectDir)
+  const baseRef = args.base ? shellQuote(args.base) : `"$(cd ${repo} && bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || echo main)"`
+  const base = ` --base ${baseRef}${PARAMS.lane === 'build' ? ' --advance-only' : ''}`
   return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
   { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
 }
@@ -1863,11 +1865,12 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the change list; keep that section whenever you rewrite the body. `
     : ''
   const tail = `${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; ${testing}. ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; ${testing}. ${tail}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. The PR body contains a summary, change list, and links; ${testing}. ${tail}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} The PR body contains a summary, change list, and links; ${testing}. ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} The PR body contains a summary, change list, and links; ${testing}. ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -2046,6 +2049,12 @@ function writePhases(run, extraPending = []) {
     pendingGates: [...extraPending, ...run.unresolved, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
   }
   return writeFiles('write-phases', 'Implement', [{ path: `${PARAMS.runDir}/phases.json`, content: `${JSON.stringify(document, null, 2)}\n` }])
+}
+
+function planPrTitle() {
+  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || ''
+  const title = heading.replace(/^plan:\s*/i, '').trim() || (PHASES.length ? PHASES[0].title : '') || 'Forge change'
+  return [args.ticket, title].filter(Boolean).join(': ')
 }
 
 function planBranchName() {

@@ -49,8 +49,9 @@
                         past a cap the caption and path show as text, with a warning. Output
                         over 15 lines is collapsed.
                         clickPass is the automated check: {status: "PASS" | "FAIL" | "SKIP" |
-                        "PENDING", note, screenshot (URL, or a path resolved against the data
-                        file's directory; may be "")}. It renders as an "Automated check" line
+                        "BLOCKED" | "PENDING", note, screenshot (URL, or a path resolved against
+                        the data file's directory; may be "")}. BLOCKED is a live check that
+                        could not run for lack of access; put the reason in note. It renders as an "Automated check" line
                         and never sets the viewer's result.
     explore             Optional {minutes: int, focus: str}. Rendered last as "Explore freely
                         for N minutes" with id "explore" and result controls.
@@ -92,7 +93,7 @@
   Two-phase render. Render 1 runs right after the PR push: every clickPass is
   {status: "PENDING", note: "steward click pass pending", screenshot: ""} and every handoff
   key is "". Render 2 runs at handoff: the same file is re-rendered from qa-data.json with the
-  steward's PASS/FAIL rows and the handoff text.
+  steward's PASS/FAIL/SKIP/BLOCKED rows and the handoff text.
 -->
 <title>{{TICKET}} {{SHORT_TITLE}}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -231,6 +232,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .copy-code-btn { font-size: 11px; padding: 2px 6px; margin-left: 4px; vertical-align: middle; }
 .status .status-pass, .status .status-fail { margin: 0; }
 .status-pass { color: var(--good); } .status-fail { color: var(--bad); } .status-skip, .status-none, .status-pending { color: var(--muted); }
+.status-blocked { color: var(--warn); }
 .qa-strip { position: sticky; top: 0; z-index: 2; display: grid; gap: 6px; padding: 8px 0; margin-bottom: 10px; background: var(--ground); font-size: 13px; }
 .qa-counts, .qa-filter-rows, .filter-row, .qa-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; }
 .qa-counts { color: var(--muted); font-variant-numeric: tabular-nums; }
