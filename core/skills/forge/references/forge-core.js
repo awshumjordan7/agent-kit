@@ -1865,7 +1865,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the change list; keep that section whenever you rewrite the body. `
     : ''
   const tail = `${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
-  const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, fix it with gh pr edit <number> --title and that exact title.`
+  const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; ${testing}. ${tail}`
     : committedBranch
@@ -2053,7 +2053,8 @@ function writePhases(run, extraPending = []) {
 
 function planPrTitle() {
   const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || ''
-  return heading.replace(/^plan:\s*/i, '').trim() || (PHASES.length ? PHASES[0].title : '') || 'Forge change'
+  const title = heading.replace(/^plan:\s*/i, '').trim() || (PHASES.length ? PHASES[0].title : '') || 'Forge change'
+  return [args.ticket, title].filter(Boolean).join(': ')
 }
 
 function planBranchName() {
