@@ -12,7 +12,7 @@ Read this file first. Do not read plan.md, the Codex logs, or other run-dir file
 - plan: <path>   decisions: <path>   STATUS.json: <path>   captures: <path>
 - PR(s): <url>   branch: <name>   base: <name>   worktree: <path or "main checkout">
 - sandbox: <id> preview <url> (details in sandbox.json)
-- Workflow: <runId> in <session dir>
+- Workflow: <runId> (same-session resume only; a new session relaunches from launch-args.json)
 - optional review stage: <status or NOT configured>
 ## Do not redo
 - <verified facts a new session must not re-derive>

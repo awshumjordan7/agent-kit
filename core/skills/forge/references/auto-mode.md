@@ -33,8 +33,9 @@ Access-rule sentences are also written here and to `accessRules` in `plan-data.j
 
 Alongside the prose trail, the run dir carries `STATUS.json` (criteria → status/evidence/round,
 rounds, open findings). forge-core merges into it at smoke, each fix round, and handoff — it is
-never truncated, so it survives a crashed or killed run. A resume (`resumeFromRunId`) or a fresh
-session picks up from its weakest entry rather than from scratch; the handoff renders from it.
+never truncated, so it survives a crashed or killed run. A resume (`resumeFromRunId`, which works only
+in the launching session) or a successor session's relaunch from `launch-args.json` picks up from its
+weakest entry rather than from scratch; the handoff renders from it.
 `decisions.md` is append-only for the same reason.
 
 ## Reliability guards
@@ -42,8 +43,8 @@ session picks up from its weakest entry rather than from scratch; the handoff re
 - Spawn cap (`args.spawnCap`, default 32 agent spawns). Exceeded → `BLOCKED` with a decision line.
 - Per-agent timeouts bound wall-clock; the Workflow runtime has no clock of its own.
 - Isolated failures: a lens or smoke agent that dies becomes a `FAIL` row in the handoff, not an aborted run.
-- Workflow resume: re-running after a crash skips completed stages.
-- A successor session runs `workflow_carry.py <runId> --from <old-session-dir> --to <new-session-dir>` before resuming. A cached agent result whose `error` is non-empty replays as a failure; remove only that failed entry after preserving the journal.
+- Workflow resume: re-running after a crash skips completed stages. `resumeFromRunId` works only in the launching session; a successor session relaunches with the args in `launch-args.json`.
+- `workflow_carry.py <runId> --from <old-session-dir> --to <new-session-dir>` is only for a journal copied into the new session. A cached agent result whose `error` is non-empty replays as a failure; remove only that failed entry after preserving the journal.
 
 ## How it ends
 

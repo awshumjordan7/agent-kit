@@ -26,7 +26,7 @@ A plan with two or more `### Phase <id>: <title>` headings under `## Phases` run
 
 Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the checkpoint. A resumed run keeps `baseline.json` whenever `phases.json` exists, re-gates the pending and failed gates saved there, starts at the first uncommitted phase, and runs the final gate. The handoff removes the gate checkout; a run that stops for a judge or throws removes it directly.
 
-Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke.
+Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision; include the edited command for smoke. A new session relaunches with the args in `launch-args.json`, `planText` read from `planPath`, and `checkpointDecision`; it never passes `resumeFromRunId`.
 
 ## Evidence rules
 
