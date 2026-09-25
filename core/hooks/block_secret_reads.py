@@ -26,6 +26,8 @@ KNOWN GAPS, deliberately not covered:
   - Grep patterns and sed/awk scripts are search text, so a non-recursive
     grep, sed or awk of named files outside dot-directories may print lines
     that mention a secret word -- the same text `cat` of those files prints.
+  - A plain `rg <word> <dir>/` reads the non-hidden, non-ignored
+    secret-named files in `<dir>`.
   - Reading a secret indirectly: copy to a neutral name first, then read.
 Tighten only if the threat model changes; today's goal is preventing careless
 credential exposure, not defeating circumvention.
@@ -129,21 +131,21 @@ AUTHORIZED_PATHS = re.compile(
 # The shell "source" shorthand is a dot standing alone between whitespace; a dot inside a file
 # name (report_issue.py) is not a reader.
 READER_NEAR_SECRET = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_PATH_SHAPES})",
+    rf"(?:(?<![\w-])({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_PATH_SHAPES})",
     re.IGNORECASE,
 )
 
 # Secret-named data files after a reader. Matched against pattern_scan(segment),
 # so a quoted grep pattern searched in .md files does not trigger it.
 READER_NEAR_SECRET_FILE = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_FILE_SHAPES})",
+    rf"(?:(?<![\w-])({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_FILE_SHAPES})",
     re.IGNORECASE,
 )
 
 # Bare secret words after a reader. Matched against word_scan(segment), not the
 # raw segment, so .md file names and quoted prose do not trigger it.
 READER_NEAR_SECRET_WORD = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_BARE_WORDS})",
+    rf"(?:(?<![\w-])({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_BARE_WORDS})",
     re.IGNORECASE,
 )
 
@@ -153,7 +155,7 @@ QUOTED_PROSE = re.compile(r"'[^']*\s[^']*'|\"[^\"]*\s[^\"]*\"")
 QUOTED_ANY = re.compile(r"'[^']*'|\"[^\"]*\"")
 # A .md name only as a whole path token, so `cat {tokens.txt,x.md}` and
 # `cat tokens.txt>x.md` keep their secret-named part.
-MD_TOKEN = re.compile(r"(?<![^\s=])[\w./~@+-]*\.md(?=$|[\s;&|)])")
+MD_TOKEN = re.compile(r"(?<![^\s=])[\w./~@+$-]*\.md(?=$|[\s;&|)])")
 # A grep/sed/awk segment left with only flags and quoted arguments once .md
 # names are removed: every target was a .md file, so its quoted pattern is
 # search text, not a path.
@@ -608,6 +610,26 @@ READER_OPTS = {
         },
         set(),
     ),
+    # ripgrep. Options that run a program or change what is searched
+    # (--pre, --pre-glob, --type-add, --ignore-file, --no-ignore*, --no-config) are left out.
+    "rg": OptionTable(
+        set("efgtTmABCMjdEr"),
+        set("iSswxvFnNHIlcqopUaLbzu.0"),
+        {
+            "regexp", "file", "glob", "iglob", "type", "type-not", "max-count", "after-context",
+            "before-context", "context", "max-columns", "threads", "max-depth", "encoding", "replace",
+            "sort", "sortr", "color", "colors", "engine", "max-filesize", "path-separator",
+        },
+        {
+            "ignore-case", "smart-case", "case-sensitive", "word-regexp", "line-regexp", "invert-match",
+            "fixed-strings", "line-number", "no-line-number", "with-filename", "no-filename", "no-heading",
+            "heading", "files-with-matches", "files-without-match", "count", "count-matches", "quiet",
+            "only-matching", "pretty", "multiline", "text", "follow", "byte-offset", "search-zip",
+            "unrestricted", "hidden", "null", "column", "vimgrep", "json", "trim", "no-messages",
+            "crlf", "pcre2", "stats", "help", "version",
+        },
+        set("ABCmMjd"),
+    ),
     # POSIX awk.
     "awk": OptionTable(set("Fvf"), set(), set(), set(), set()),
 }
@@ -627,6 +649,7 @@ GREP_COMMANDS = ("grep", "egrep", "fgrep")
 # Output limited to file names or counts prints no matched line.
 NAMES_ONLY_OPTS = {
     "grep": {"-l", "-L", "-c", "-q", "--files-with-matches", "--files-without-match", "--count", "--quiet", "--silent"},
+    "rg": {"-l", "-c", "-q", "--files-with-matches", "--files-without-match", "--count", "--count-matches", "--quiet"},
     "git grep": {
         "-l", "-L", "-c", "-q", "--files-with-matches", "--files-without-match", "--name-only", "--count", "--quiet",
     },
@@ -641,7 +664,7 @@ GLOB_CHARS = re.compile(r"[*?\[]")
 
 
 class ReaderArgs(NamedTuple):
-    """A grep/git grep/sed/awk call split into options, patterns (or scripts), and file operands."""
+    """A grep/git grep/rg/sed/awk call split into options, patterns (or scripts), and file operands."""
 
     family: str
     options: list[tuple[str, str]]
@@ -678,7 +701,7 @@ def _skip_xargs_options(tokens: list[str]) -> list[str] | None:
 
 
 def parse_reader(raw: str) -> ReaderArgs | None:
-    """Parse a grep, egrep, fgrep, git grep, sed, awk, or `xargs grep` segment into its arguments.
+    """Parse a grep, egrep, fgrep, git grep, rg, sed, awk, or `xargs grep` segment into its arguments.
 
     Returns None when the segment is another command, when it holds command
     or process substitution, when its quotes do not balance, or when it uses
@@ -799,16 +822,23 @@ def _secret_word_hit(patterns: list[str], raw: str) -> Hit | None:
 
 
 def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
-    """Check the file operands and scripts of a parsed grep/git grep/sed/awk call.
+    """Check the file operands and scripts of a parsed grep/git grep/rg/sed/awk call.
 
     A grep pattern is search text and is never checked as a path. A broad
     search (recursive, every git grep, `xargs grep`, or a shell glob) for a secret word
     still blocks, since it prints matching lines from every secret file it
     reaches. A pattern with whitespace still counts: `"token: "` matches
-    `oauth_token: <value>` lines.
+    `oauth_token: <value>` lines. An rg search is broad when it reaches hidden,
+    ignored or symlinked files (`-u`, `--hidden`, `-L`, a positive `-g`), names
+    no path, or names `~`, `$HOME` or `/`.
     """
     family, options = args.family, args.options
-    includes = [value for name, value in options if family == "grep" and name == "--include"]
+    includes = [
+        value
+        for name, value in options
+        if (family == "grep" and name == "--include")
+        or (family == "rg" and name in ("-g", "--glob", "--iglob") and not value.startswith("!"))
+    ]
     read_paths = args.files + [value for name, value in options if name in ("-f", "--file")] + includes
     read_paths += [value.partition("=")[2] for name, value in options if family == "awk" and name == "-v"]
     for path in read_paths:
@@ -836,6 +866,19 @@ def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
         or any(name in ("-d", "--directories") and value and "recurse".startswith(value) for name, value in options)
         or glob
     )
+    if family == "rg":
+        # Plain rg skips hidden and git-ignored files, where .env files live;
+        # a positive -g glob overrides the ignore rules, and -L follows symlinks
+        # out of the named dir. rg's -r is --replace, not recursive.
+        broad = (
+            glob
+            or bool(includes)
+            or bool(set("u.L") & set(shorts))
+            or bool(names & {"--hidden", "--unrestricted", "--follow"})
+            # With no path rg searches the working directory.
+            or not args.files
+            or any((f.rstrip("/") or "/") in ("~", "$HOME", "${HOME}", "/") for f in args.files)
+        )
     if not broad or names & NAMES_ONLY_OPTS[family] or all_md:
         return None
     if includes and all(_narrow_glob(include) for include in includes):
