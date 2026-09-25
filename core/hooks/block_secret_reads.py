@@ -33,7 +33,9 @@ Exit codes: 2 = block (stderr is shown to Claude), 0 = allow.
 
 import json
 import re
+import shlex
 import sys
+from typing import NamedTuple
 
 # Commands that surface file contents, copy them somewhere readable, or load
 # them into the environment.
@@ -102,7 +104,7 @@ SECRET_FILE_SHAPES = (
 # Explicitly fine: sample/template files that carry no real values.
 ALLOWLIST = re.compile(
     r"\.env\.example|\.env\.sample|\.env\.template|\.env\.dist|"
-    r"secrets?\.md|credentials?\.md|token[_-]?claim",
+    r"secrets?\.md|credentials?\.md|token[_-]?claim|token[_-]?info",
     re.IGNORECASE,
 )
 
@@ -119,21 +121,21 @@ AUTHORIZED_PATHS = re.compile(
 # The shell "source" shorthand is a dot standing alone between whitespace; a dot inside a file
 # name (report_issue.py) is not a reader.
 READER_NEAR_SECRET = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_PATH_SHAPES})",
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_PATH_SHAPES})",
     re.IGNORECASE,
 )
 
 # Secret-named data files after a reader. Matched against pattern_scan(segment),
 # so a quoted grep pattern searched in .md files does not trigger it.
 READER_NEAR_SECRET_FILE = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_FILE_SHAPES})",
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_FILE_SHAPES})",
     re.IGNORECASE,
 )
 
 # Bare secret words after a reader. Matched against word_scan(segment), not the
 # raw segment, so .md file names and quoted prose do not trigger it.
 READER_NEAR_SECRET_WORD = re.compile(
-    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^;&|]*?({SECRET_BARE_WORDS})",
+    rf"(?:\b({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_BARE_WORDS})",
     re.IGNORECASE,
 )
 
@@ -268,50 +270,464 @@ def matched(rule: str, text: str) -> str:
     return f"(rule {rule}, matched `{fragment}`)"
 
 
-SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+class Hit(NamedTuple):
+    """Why a secret read is blocked: the reason, rule, matched text, and its segment or path."""
+
+    reason: str
+    rule: str
+    fragment: str
+    context: str
+
+
+def split_segments(command: str) -> list[str]:
+    """Split a command on unquoted `&&`, `||`, `|`, `;`, a lone `&`, and newlines.
+
+    Each segment keeps its raw text, quotes included. Quote state resets at
+    every newline, so an unbalanced quote on one line (`echo it's`) cannot
+    hide the next line; a backslash-newline continues the line. The `&` of a
+    redirection (`2>&1`, `<&3`, `&>file`) does not split.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote = None
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\n":
+            segments.append("".join(buf))
+            buf, quote = [], None
+            i += 1
+            continue
+        if c == "\\" and quote != "'" and i + 1 < n:
+            # The shell deletes a backslash-newline, joining the two lines.
+            if command[i + 1] != "\n":
+                buf.append(command[i : i + 2])
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c in ";|" or (c == "&" and command[i - 1 : i] not in ("<", ">") and command[i + 1 : i + 2] != ">"):
+            segments.append("".join(buf))
+            buf = []
+            i += 2 if c in "|&" and command[i + 1 : i + 2] == c else 1
+            continue
+        buf.append(c)
+        i += 1
+    segments.append("".join(buf))
+    return segments
+
+
+def _quote_end(text: str, i: int) -> int | None:
+    """Return the index just past the quote that closes the one at text[i], or None."""
+    quote, j, n = text[i], i + 1, len(text)
+    while j < n:
+        if text[j] == "\\" and quote == '"':
+            j += 2
+            continue
+        if text[j] == quote:
+            return j + 1
+        j += 1
+    return None
+
+
+def blank_quoted(text: str, kinds: str) -> str:
+    """Blank closed quoted spans whose quote character is in kinds.
+
+    Quote-aware: a `'` inside double quotes is literal. An unclosed quote
+    leaves the rest of the text as it is.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            end = _quote_end(text, i)
+            if end is None:
+                out.append(text[i:])
+                break
+            out.append(" " if c in kinds else text[i:end])
+            i = end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _word_end(text: str, i: int) -> int:
+    """Return the index just past the shell word that starts at text[i]."""
+    quote, n = None, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and quote != "'":
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c.isspace() or c in "<>":
+            break
+        i += 1
+    return min(i, n)
+
+
+def strip_redirections(segment: str) -> str:
+    """Remove unquoted redirections, operator and target, from one segment.
+
+    `N>&M`, `>&M` and `N>&-` are complete on their own; every other operator
+    (`>`, `>>`, `<`, `N>`, `&>`, `&>>`, a fused `2>err`) also drops its
+    target word. A quoted `'>'` is an argument, not a redirection.
+    """
+    out: list[str] = []
+    quote = None
+    i, n = 0, len(segment)
+    while i < n:
+        c = segment[i]
+        if c == "\\" and quote != "'":
+            out.append(segment[i : i + 2])
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c in "<>" or (c == "&" and segment.startswith(">", i + 1)):
+            j = len(out)
+            while j and out[j - 1].isdigit():
+                j -= 1
+            if j < len(out) and (j == 0 or out[j - 1].isspace()):
+                del out[j:]
+            if c == "&":
+                i += 1
+            while i < n and segment[i] in "<>":
+                i += 1
+            if segment.startswith("&", i):
+                i += 1
+                if i < n and (segment[i].isdigit() or segment[i] == "-"):
+                    while i < n and (segment[i].isdigit() or segment[i] == "-"):
+                        i += 1
+                    out.append(" ")
+                    continue
+            while i < n and segment[i] in " \t":
+                i += 1
+            i = _word_end(segment, i)
+            out.append(" ")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# Per command: short options that take a value, long options that take a
+# value, and short options whose value is numeric. Only options that always
+# take a value are listed: a missing entry makes its value look like a file
+# operand (errs toward blocking), a wrong entry could skip a real file.
+_GREP_OPTS = (
+    set("efmABCdD"),
+    {
+        "regexp", "file", "max-count", "after-context", "before-context", "context",
+        "directories", "devices", "include", "exclude", "exclude-dir", "label", "binary-files",
+    },
+    set("ABCm"),
+)
+_RG_OPTS = (
+    set("efgtTmABCMjdEr"),
+    {
+        "regexp", "file", "glob", "iglob", "type", "type-not", "max-count", "after-context",
+        "before-context", "context", "max-columns", "threads", "max-depth", "encoding", "replace",
+        "type-add", "pre", "pre-glob", "ignore-file", "sort", "sortr", "color", "colors", "engine",
+        "max-filesize", "path-separator",
+    },
+    set("ABCmMjd"),
+)
+READER_OPTS = {
+    "grep": _GREP_OPTS,
+    "egrep": _GREP_OPTS,
+    "fgrep": _GREP_OPTS,
+    "rg": _RG_OPTS,
+    "sed": (set("efl"), {"expression", "file", "line-length"}, set()),
+    "awk": (set("Fvf"), set(), set()),
+}
+# A numeric option consumes the next token only when it is all digits.
+NUMERIC_LONG_OPTS = {"max-count", "after-context", "before-context", "context", "max-columns", "threads", "max-depth"}
+AWK_ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
+# Output limited to file names or counts prints no matched line.
+NAMES_ONLY_OPTS = {
+    "grep": {"-l", "-L", "-c", "-q", "--files-with-matches", "--files-without-match", "--count", "--quiet", "--silent"},
+    "rg": {"-l", "-c", "-q", "--files-with-matches", "--files-without-match", "--count", "--count-matches", "--quiet"},
+}
+DATA_EXTENSION = re.compile(r"json|ya?ml|txt|ini|toml|cfg|conf|key", re.IGNORECASE)
+GLOB_CHARS = re.compile(r"[*?\[]")
+
+
+class ReaderArgs(NamedTuple):
+    """A grep/rg/sed/awk call split into options, patterns (or scripts), and file operands."""
+
+    family: str
+    options: list[tuple[str, str]]
+    patterns: list[str]
+    files: list[str]
+
+
+def parse_reader(raw: str) -> ReaderArgs | None:
+    """Parse a grep, egrep, fgrep, rg, sed, or awk segment into its arguments.
+
+    Returns None when the segment is another command, when it holds command
+    or process substitution, or when its quotes do not balance; the caller
+    then applies the text checks instead.
+    """
+    if any(s in raw for s in ("$(", "`", "<(", ">(")):
+        return None
+    try:
+        tokens = shlex.split(strip_redirections(raw))
+    except ValueError:
+        return None
+    if not tokens or tokens[0] not in READER_OPTS:
+        return None
+    command = tokens[0]
+    short_values, long_values, numeric_short = READER_OPTS[command]
+    options: list[tuple[str, str]] = []
+    positionals: list[str] = []
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+        if token == "--":
+            positionals.extend(tokens[i:])
+            break
+        if token.startswith("--"):
+            name, eq, value = token.partition("=")
+            if not eq and name[2:] in long_values:
+                numeric = name[2:] in NUMERIC_LONG_OPTS
+                if i < len(tokens) and (not numeric or tokens[i].isdigit()):
+                    value = tokens[i]
+                    i += 1
+            options.append((name, value))
+            continue
+        if not token.startswith("-") or token == "-":
+            positionals.append(token)
+            continue
+        j = 1
+        while j < len(token):
+            flag = token[j]
+            j += 1
+            if command == "sed" and flag == "i":
+                # GNU `-i.bak` fuses the suffix; BSD `-i ''` passes an empty one.
+                if j == len(token) and i < len(tokens) and tokens[i] == "":
+                    i += 1
+                options.append(("-i", token[j:]))
+                break
+            if flag in short_values:
+                value = token[j:]
+                if not value and i < len(tokens) and (flag not in numeric_short or tokens[i].isdigit()):
+                    value = tokens[i]
+                    i += 1
+                options.append((f"-{flag}", value))
+                break
+            options.append((f"-{flag}", ""))
+    names = {name for name, _ in options}
+    if names & {"-e", "--regexp", "--expression", "-f", "--file"}:
+        patterns = [value for name, value in options if name in ("-e", "--regexp", "--expression")]
+        files = positionals
+    else:
+        patterns, files = positionals[:1], positionals[1:]
+    if command == "awk":
+        files = [f for f in files if not AWK_ASSIGNMENT.match(f)]
+    family = "grep" if command in ("egrep", "fgrep") else command
+    return ReaderArgs(family, options, patterns, files)
+
+
+def _narrow_glob(glob: str) -> bool:
+    """Return True when an include glob names one non-data extension, such as `*.py`."""
+    extension = glob.rpartition(".")[2] if "." in glob else ""
+    return bool(re.fullmatch(r"\w+", extension)) and not DATA_EXTENSION.fullmatch(extension)
+
+
+def reader_verdict(args: ReaderArgs, raw: str) -> Hit | None:
+    """Check the file operands and scripts of a parsed grep/rg/sed/awk call.
+
+    A grep pattern is search text and is never checked as a path. A broad
+    search (recursive, hidden files, or a shell glob) for a secret word still
+    blocks, since it prints matching lines from every secret file it reaches.
+    """
+    family, options = args.family, args.options
+    includes = [
+        value
+        for name, value in options
+        if (family == "grep" and name == "--include")
+        or (family == "rg" and name in ("-g", "--glob", "--iglob") and not value.startswith("!"))
+    ]
+    read_paths = args.files + [value for name, value in options if name in ("-f", "--file")] + includes
+    read_paths += [value.partition(":")[2] or value for name, value in options if family == "rg" and name == "--type-add"]
+    for path in read_paths:
+        if secret_path_hit(path):
+            return Hit("reads a credential-bearing path", "reader-operand", path, raw)
+    for name, value in options:
+        if family == "rg" and name == "--pre" and re.search(SECRET_PATH_SHAPES, value, re.IGNORECASE):
+            return Hit("reads a credential-bearing path", "reader-operand", value, raw)
+    if family in ("sed", "awk"):
+        # `sed 'r FILE'`, GNU `sed e`, and awk `getline < FILE` read files.
+        for script in args.patterns:
+            if m := re.search(SECRET_PATH_SHAPES, ALLOWLIST.sub(" ", script), re.IGNORECASE):
+                return Hit("runs a script that reads a credential-bearing path", "reader-script", m.group(0), raw)
+        return None
+    names = {name for name, _ in options}
+    shorts = "".join(name[1] for name, _ in options if len(name) == 2)
+    if family == "grep":
+        broad = (
+            bool(set("rR") & set(shorts))
+            or bool(names & {"--recursive", "--dereference-recursive"})
+            or any(name in ("-d", "--directories") and value == "recurse" for name, value in options)
+        )
+    else:
+        # Plain rg skips hidden and git-ignored files, where .env files live.
+        unrestricted = shorts.count("u") + sum(name == "--unrestricted" for name, _ in options)
+        broad = "--hidden" in names or "." in shorts or unrestricted >= 2
+    broad = broad or any(GLOB_CHARS.search(f) for f in args.files)
+    if not broad or names & NAMES_ONLY_OPTS[family]:
+        return None
+    if includes and all(_narrow_glob(glob) for glob in includes):
+        return None
+    for pattern in args.patterns:
+        # A pattern with whitespace is prose, as in QUOTED_PROSE.
+        if not re.search(r"\s", pattern) and re.search(SECRET_BARE_WORDS, pattern, re.IGNORECASE):
+            return Hit(
+                "searches every file, secret files included, for a secret word",
+                "recursive-grep-secret-word",
+                pattern,
+                raw,
+            )
+    return None
+
+
+# Commands whose quoted arguments are text to print or store (a report
+# message, a commit message), not code to run.
+MESSENGER_COMMANDS = {"echo", "printf", "git", "gh"}
+SCRIPT_INTERPRETERS = {"python", "python3", "node", "ruby", "perl"}
+SCRIPT_FILE = re.compile(r"\.(?:py|js|mjs|cjs|rb|pl)$")
+
+
+def is_messenger(raw: str) -> bool:
+    """Return True when a segment's quoted prose is a message, not a command.
+
+    Command substitution runs even inside double quotes, so a segment with
+    `$(`, a backtick, or `<(` is never a messenger.
+    """
+    if any(s in raw for s in ("$(", "`", "<(")):
+        return False
+    words = raw.split()
+    if not words:
+        return False
+    if words[0] in MESSENGER_COMMANDS or words[0].endswith(".py"):
+        return True
+    return words[0] in SCRIPT_INTERPRETERS and len(words) > 1 and bool(SCRIPT_FILE.search(words[1]))
+
+
+def blank_prose_literals(body: str) -> str:
+    """Blank string literals that contain whitespace in interpreter code.
+
+    Literal state resets at each newline outside triple quotes, so an
+    apostrophe in a comment (`# don't`) cannot open a literal that hides a
+    later line. A literal without whitespace may be a path and stays.
+    """
+    out: list[str] = []
+    i, n = 0, len(body)
+    while i < n:
+        c = body[i]
+        if c not in "'\"":
+            out.append(c)
+            i += 1
+            continue
+        delim = c * 3 if body.startswith(c * 3, i) else c
+        j = i + len(delim)
+        while j < n and not body.startswith(delim, j) and (len(delim) == 3 or body[j] != "\n"):
+            j += 2 if body[j] == "\\" else 1
+        if j < n and body.startswith(delim, j):
+            end = j + len(delim)
+            inner = body[i + len(delim) : j]
+            out.append(" " if re.search(r"\s", inner) else body[i:end])
+        else:
+            end = min(j, n)
+            out.append(body[i:end])
+        i = end
+    return "".join(out)
+
+
+def secret_path_hit(path: str) -> tuple[str, str] | None:
+    """Return (rule, matched text) when a path names credential material, else None.
+
+    ALLOWLIST names are blanked, not exempted, so a token-info file under
+    ~/.aws/ still blocks. AUTHORIZED_PATHS exempts the whole path: its
+    `/.secrets/` directory form covers every file below it.
+    """
+    if AUTHORIZED_PATHS.search(path):
+        return None
+    scan = ALLOWLIST.sub(" ", path)
+    if m := re.search(SECRET_PATH_SHAPES, scan, re.IGNORECASE):
+        return "secret-path", m.group(0)
+    if not path.lower().endswith(".md") and (m := re.search(SECRET_BARE_WORDS, scan, re.IGNORECASE)):
+        return "secret-word", m.group(0)
+    return None
 
 
 # Heredoc bodies are data unless a shell or interpreter on the header line
 # will execute them; strip_heredoc_bodies() applies that split before
 # segments are checked below.
-def verdict(command: str) -> str | None:
-    """Return a human-readable reason to block, or None to allow."""
+def verdict(command: str) -> Hit | None:
+    """Return why to block a command, or None to allow."""
     command, interpreter_bodies = strip_heredoc_bodies(command)
     for body in interpreter_bodies:
-        body = ALLOWLIST.sub(" ", body)
-        body = AUTHORIZED_PATHS.sub(" ", body)
-        if m := INTERPRETER_BODY_SECRET.search(body):
-            return f"runs code that names a credential-bearing path {matched('interpreter-body-secret', m.group(0))}"
+        # A string handed to a shell is a command, so its literals stay.
+        scan = body if SHELL_OUT.search(body) else blank_prose_literals(body)
+        scan = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", scan))
+        if m := INTERPRETER_BODY_SECRET.search(scan):
+            return Hit("runs code that names a credential-bearing path", "interpreter-body-secret", m.group(0), body)
+    segments = split_segments(command)
+    # A shell anywhere in the command may run a messenger's text: `echo "..." | bash`.
+    messengers = not any(HEREDOC_SHELL.search(s.split()[0]) for s in segments if s.strip())
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
-    for segment in SEGMENT_SPLIT.split(command):
-        if not segment.strip():
-            continue
+    for raw in segments:
         # Blank out only the allowlisted paths, never the whole segment:
         # `diff .env .env.example` reads the real file and must still block.
-        segment = ALLOWLIST.sub(" ", segment)
-        segment = AUTHORIZED_PATHS.sub(" ", segment)
+        segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", raw))
         if not segment.strip():
             continue
         if m := SECRET_COMMANDS.search(segment):
-            return f"prints a stored credential {matched('secret-command', m.group(0))}"
-        if m := READER_NEAR_SECRET.search(segment):
-            return f"reads a credential-bearing path {matched('reader-near-secret', m.group(0))}"
-        if m := READER_NEAR_SECRET_FILE.search(pattern_scan(segment)):
-            return f"reads a credential-bearing path {matched('reader-near-secret-file', m.group(0))}"
-        if m := READER_NEAR_SECRET_WORD.search(word_scan(segment)):
-            return f"reads a credential-bearing path {matched('reader-near-secret-word', m.group(0))}"
+            return Hit("prints a stored credential", "secret-command", m.group(0), raw)
+        # Tokenized from the raw segment: allowlist blanking must not shift
+        # which token is the pattern.
+        if (reader := parse_reader(raw)) is not None:
+            if hit := reader_verdict(reader, raw):
+                return hit
+        else:
+            scan = QUOTED_PROSE.sub(" ", segment) if messengers and is_messenger(raw) else segment
+            if m := READER_NEAR_SECRET.search(scan):
+                return Hit("reads a credential-bearing path", "reader-near-secret", m.group(0), raw)
+            if m := READER_NEAR_SECRET_FILE.search(pattern_scan(scan)):
+                return Hit("reads a credential-bearing path", "reader-near-secret-file", m.group(0), raw)
+            if m := READER_NEAR_SECRET_WORD.search(word_scan(segment)):
+                return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         if m := REDIRECT_FROM_SECRET.search(segment):
-            return f"redirects input from a credential-bearing path {matched('redirect-from-secret', m.group(0))}"
+            return Hit("redirects input from a credential-bearing path", "redirect-from-secret", m.group(0), raw)
         if m := REDIRECT_FROM_SECRET_WORD.search(segment):
-            return f"redirects input from a credential-bearing path {matched('redirect-from-secret-word', m.group(0))}"
+            return Hit("redirects input from a credential-bearing path", "redirect-from-secret-word", m.group(0), raw)
     return None
 
 
 def raw_dump_verdict(command: str) -> str | None:
     """Return a reason to block a raw dump of a trace, HAR, or storage-state file."""
     command, _ = strip_heredoc_bodies(command)
-    for segment in SEGMENT_SPLIT.split(command):
+    for segment in split_segments(command):
         if RAW_DUMP_COMMAND.match(segment) and RAW_DUMP_TARGET.search(OUTPUT_REDIRECT.sub(" ", segment)):
             return f"dumps a trace, HAR, or auth-state file raw {matched('raw-dump', segment)}"
     return None
@@ -320,7 +736,13 @@ def raw_dump_verdict(command: str) -> str | None:
 # --- Secret-bearing shell variables (values, not paths) -------------------
 #
 # A variable name shaped like a credential: $API_KEY, ${TOKEN}, "$DB_PASSWORD".
-SECRET_VAR_NAME = r"\w*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)\w*"
+# Token-count settings (OPENAI_MAX_TOKENS, HANDOFF_CONTEXT_TOKENS) are not
+# credentials; the exemption needs the plural at the end of the name, so
+# INPUT_TOKEN and MAX_TOKENS_SECRET still count.
+SECRET_VAR_NAME = (
+    r"(?!(?:\w*_)?(?:CONTEXT|MAX|MIN|NUM|COUNT|LIMIT|INPUT|OUTPUT|PROMPT|COMPLETION|TOTAL)_TOKENS\b)"
+    r"\w*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)\w*"
+)
 SECRET_VAR_EXPANSION = re.compile(rf"\$\{{?({SECRET_VAR_NAME})\b", re.IGNORECASE)
 
 # Commands that would put a variable's expanded value into the transcript.
@@ -434,6 +856,19 @@ PYNODE_LEN_STRIP = re.compile(rf"len\(\s*(?:{_ENV_REF_ANY})\s*\)", re.IGNORECASE
 SHELL_OUT = re.compile(r"os\.system|subprocess|popen|child_process|execSync|spawn|`", re.IGNORECASE)
 
 
+# Commands that hand quoted text to a new shell, which expands $VAR in it.
+REEVALUATE = re.compile(r"\b(?:watch|su|parallel)\b", re.IGNORECASE)
+
+
+def _reevaluates(command: str) -> bool:
+    """Return True when quoted text in the command may run as shell code later."""
+    return bool(
+        HEREDOC_SHELL.search(blank_quoted(command, "'\""))
+        or REEVALUATE.search(command)
+        or SHELL_OUT.search(command)
+    )
+
+
 def _scrub_presence_checks(head: str) -> str:
     """Blank SECRET_TEST_SAFE checks that start an unquoted command.
 
@@ -511,7 +946,11 @@ def secret_var_verdict(command: str) -> str | None:
     if m := PRINTENV_SECRET.search(head) or DECLARE_P_SECRET.search(head):
         return f"would print a secret-bearing variable {matched('printenv-secret', m.group(0))}"
     scrubbed = _scrub_presence_checks(CURL_AUTH_SAFE.sub(" ", head))
-    if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and (m := SECRET_VAR_EXPANSION.search(scrubbed)):
+    expanded = scrubbed
+    if quoted and not _reevaluates(command):
+        # The shell does not expand $VAR inside single quotes.
+        expanded = blank_quoted(scrubbed, "'")
+    if DUMP_TRANSFORM_COMMANDS.search(scrubbed) and (m := SECRET_VAR_EXPANSION.search(expanded)):
         return f"would print a secret-bearing variable {matched('dump-secret-var', m.group(0))}"
     if PYNODE_INVOCATION.search(command):
         stripped = PYNODE_LEN_STRIP.sub(" ", command)
@@ -532,14 +971,11 @@ PATH_FIELDS = {
 }
 
 
-def path_verdict(file_path: str) -> str | None:
-    """Return a reason to block a direct file read, or None to allow."""
-    if ALLOWLIST.search(file_path) or AUTHORIZED_PATHS.search(file_path):
-        return None
-    if re.search(SECRET_PATH_SHAPES, file_path, re.IGNORECASE):
-        return f"reads a credential-bearing path {matched('secret-path', file_path)}"
-    if not file_path.lower().endswith(".md") and re.search(SECRET_BARE_WORDS, file_path, re.IGNORECASE):
-        return f"reads a credential-bearing path {matched('secret-word', file_path)}"
+def path_verdict(file_path: str) -> Hit | None:
+    """Return why to block a direct file read, or None to allow."""
+    if found := secret_path_hit(file_path):
+        rule, fragment = found
+        return Hit("reads a credential-bearing path", rule, fragment, file_path)
     return None
 
 
@@ -575,28 +1011,38 @@ def main() -> int:
             return 2
         if reason := raw_dump_verdict(target):
             return block_raw_dump("command", reason)
-        reason, noun = verdict(target), "command"
+        hit, noun = verdict(target), "command"
     elif tool_name in PATH_FIELDS:
         if tool_name == "Read" and isinstance(tool_input.get("file_path"), str):
             if reason := raw_dump_path_verdict(tool_input["file_path"]):
                 return block_raw_dump("tool call", reason)
-        reason, noun = None, "tool call"
+        hit, noun = None, "tool call"
         for field in PATH_FIELDS[tool_name]:
             value = tool_input.get(field) or ""
             if isinstance(value, str):
-                reason = reason or path_verdict(value)
+                hit = hit or path_verdict(value)
     else:
         return 0
 
-    if reason is None:
+    if hit is None:
         return 0
+    return block_secret_read(noun, hit)
 
+
+def block_secret_read(noun: str, hit: Hit) -> int:
+    # The rule sits in parentheses on the first line so a parser can read it.
+    if noun == "command":
+        context = f"Segment: `{' '.join(hit.context.split())[:120]}`"
+    else:
+        context = f"Path: `{hit.context}`"
     print(
-        f"Blocked by block_secret_reads hook: this {noun} {reason}.\n"
-        "Secret files are off-limits. The settings.json deny rules are inert "
-        "under bypassPermissions, so this hook is the enforcement point for "
-        "both Bash and Read. If you genuinely need a value from one, ask the "
-        "user to provide it rather than printing the file.",
+        f"Blocked by block_secret_reads hook (rule {hit.rule}): this {noun} {hit.reason}.\n"
+        f"{context}\n"
+        f"Matched: `{' '.join(hit.fragment.split())[:80]}`\n"
+        "If this reads a credential file, ask the user for the value instead of printing it.\n"
+        "If the matched text is a search pattern or prose, not a file: search with the Grep "
+        "tool, or put the text in a file and pass the file name.\n"
+        "Files tracked in git already exist in every git worktree; do not copy them.",
         file=sys.stderr,
     )
     return 2
