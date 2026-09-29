@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 
 BAND_160K = 160_000
 BAND_200K = 200_000
@@ -200,6 +201,22 @@ def save_state(state_path, band, blocked):
     os.replace(tmp_path, state_path)
 
 
+def prune_stale_state(max_age_days=14):
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        entries = list(os.scandir(STATE_DIR))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                os.remove(entry.path)
+        except OSError:
+            continue
+
+
 def highest_crossed_band(measure):
     crossed = 0
     for band in BANDS:
@@ -369,6 +386,8 @@ def main() -> int:
     if crossed > BAND_300K:
         crossed = BAND_300K  # 340k is announced only via the Stop block
     if crossed > state["band"]:
+        if not os.path.exists(state_path):
+            prune_stale_state()
         try:
             save_state(state_path, crossed, state["blocked"])
         except OSError:
