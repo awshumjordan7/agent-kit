@@ -131,24 +131,32 @@ AUTHORIZED_PATHS = re.compile(
 )
 
 # Loading a repository's local dev env files into the shell for a test run
-# (`set -a; . .envs/.postgres; set +a`) prints nothing. Only the bare
-# `.`/`source` statement on a relative `.envs/` path is exempt: any reader of
-# the file, any absolute or home path, and any printing of the loaded values
-# still blocks.
+# (`set -a; . .envs/.postgres; set +a`) prints nothing. Only a bare
+# `.`/`source` statement on a relative `.envs/` path is exempt, and only as
+# the first word of a simple command: at the start, after `;`, `&`, `|`, `(`
+# or a newline, or opening a shell's `-c` argument. `cat . .envs/x` reads the
+# file. The lead is captured and must be kept in the replacement.
 SOURCED_REPO_ENV = re.compile(
-    r"(?<![^\s;&|('\"`])(?:source|\.)\s+(?:\./)?\.envs/(?![^\s;&|)'\"`]*prod)"
+    r"(?P<lead>(?:^|[;&|(\n]|\b(?:ba|z|da|k)?sh(?:\s+-[\w-]+)*\s+-\w*c\s*['\"])\s*)"
+    r"(?:source|\.)\s+(?:\./)?\.envs/(?![^\s;&|)'\"`]*prod)"
     r"(?:\.[\w-]+/)?\.[\w-]+(?=$|[\s;&|)'\"`])",
     re.IGNORECASE,
 )
-# SOURCED_REPO_ENV applies only when the command has none of these words:
-# `declare -p`, `typeset -p`, `env | sort` and a bare `set` print the loaded
-# values, and _ENV_DUMP_CMD does not catch all of those forms.
-ENV_DUMP_WORD = re.compile(r"\b(?:declare|typeset|env|printenv|export|compgen)\b|\bset\b(?!\s+[-+]a\b)")
+# SOURCED_REPO_ENV applies only when the command matches none of these, since
+# each can print the loaded values: `declare -p`, `typeset -p`, `env | sort`
+# and a bare `set` (which _ENV_DUMP_CMD does not fully catch); a shell traced
+# with `-x`/`-v` or `xtrace`/`verbose`; any `$` parameter expansion; and an
+# interpreter reading its environment.
+ENV_DUMP_WORD = re.compile(
+    r"\b(?:declare|typeset|env|printenv|export|compgen)\b|\bset\b(?!\s+[-+]a\b)"
+    r"|\b(?:ba|z|da|k)?sh(?:\s+-[\w-]+)*\s+-[a-z]*[xv][a-z]*(?![\w-])|\b(?:xtrace|verbose)\b"
+    r"|\$[\w{@*#?!$-]|\b(?:environ|getenv)\b|\bprocess\.env\b|\bENV\[|%ENV\b"
+)
 
-# The shell "source" shorthand is a dot standing alone between whitespace; a dot inside a file
-# name (report_issue.py) is not a reader.
+# The shell "source" shorthand is a dot standing alone after whitespace or an opening quote
+# (`sh -c '. file'`) and before whitespace; a dot inside a file name (report_issue.py) is not a reader.
 READER_NEAR_SECRET = re.compile(
-    rf"(?:(?<![\w-])({READERS})\b|(?<![^\s])\.(?=\s))[^\n]*?({SECRET_PATH_SHAPES})",
+    rf"(?:(?<![\w-])({READERS})\b|(?<![^\s'\"])\.(?=\s))[^\n]*?({SECRET_PATH_SHAPES})",
     re.IGNORECASE,
 )
 
@@ -1173,7 +1181,7 @@ def verdict(command: str) -> Hit | None:
         for scan in interpreter_body_scans(body, words):
             scan = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", scan))
             if sources_repo_env:
-                scan = SOURCED_REPO_ENV.sub(" ", scan)
+                scan = SOURCED_REPO_ENV.sub(r"\g<lead> ", scan)
             if m := INTERPRETER_BODY_SECRET.search(scan):
                 return Hit(
                     "runs code that names a credential-bearing path", "interpreter-body-secret", m.group(0), body
@@ -1194,7 +1202,7 @@ def verdict(command: str) -> Hit | None:
         # `diff .env .env.example` reads the real file and must still block.
         segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", raw))
         if sources_repo_env:
-            segment = SOURCED_REPO_ENV.sub(" ", segment)
+            segment = SOURCED_REPO_ENV.sub(r"\g<lead> ", segment)
         if not segment.strip():
             continue
         if m := SECRET_COMMANDS.search(segment):
