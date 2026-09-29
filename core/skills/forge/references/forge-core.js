@@ -2571,13 +2571,17 @@ async function fullLane() {
       return state
     },
     async state => {
-      phase('FF Review')
       if (stopped(state) || !state.ship || !sandboxAllowed(configuredStage('ff_review'), PARAMS.repo, FORGE_CONFIG.repos)) return state
+      phase('FF Review')
+      if (state.ship.repo && String(state.ship.repo).toLowerCase() !== String(PARAMS.repo).toLowerCase()) {
+        await decide(`FF review skipped: ship repo ${state.ship.repo} differs from configured repo ${PARAMS.repo}.`)
+        return state
+      }
       PARAMS.spawnCap += 4
       const empty = { skipped: false, reason: '', prNumber: 0, repo: '', headSha: '', exitCode: 0, commentCount: 0, commentsPath: '', summary: '', verdicts: [], triageNull: false }
       const run = await ffReview(state.ship)
       if (!run) {
-        state.ffReview = { ...empty, skipped: true, reason: 'agent returned null' }
+        state.ffReview = { ...empty, skipped: true, reason: 'agent returned null or timed out (55 min)' }
         await decide('FF review agent returned null.')
         return state
       }
@@ -2588,7 +2592,9 @@ async function fullLane() {
         await decide(`FF review skipped: ${run.reason}`)
         return state
       }
+      if (alreadyPosted) await decide(`FF review already posted on head ${run.headSha || 'unknown'}; triaged the existing bot comments on ${state.ship.repo}#${state.ship.prNumber}.`)
       const triage = (run.commentCount || alreadyPosted) ? await ffTriage(state.ship, run) : { verdicts: [] }
+      if (!triage) await decide(`FF triage agent returned null; the bot comments on ${state.ship.repo}#${state.ship.prNumber} were not verified.`)
       state.ffReview = { ...empty, ...run, verdicts: (triage && triage.verdicts) || [], triageNull: !triage }
       return state
     },
