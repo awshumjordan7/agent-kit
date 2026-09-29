@@ -186,6 +186,11 @@ entry_file=''
 if ! $print_mode; then
   mkdir -p "$run_dir" 2>/dev/null || die "gate.sh: cannot create run directory: $run_dir"
   run_dir=$(cd "$run_dir" 2>/dev/null && pwd -P) || die "gate.sh: cannot open run directory: $run_dir"
+  # Lets gate commands scope shared resources, such as a test database, to this run. The basename
+  # alone repeats across runs, so a hash of the full path is kept; 40 chars fits Postgres names.
+  run_dir_hash=$(printf %s "$run_dir" | shasum | cut -c1-8)
+  run_dir_base=${run_dir##*/}
+  export FORGE_GATE_RUN_ID="${run_dir_base:0:31}-$run_dir_hash"
 
   state_prefix="$run_dir/.gate-$label"
   entry_file="$state_prefix-config.json"
@@ -405,6 +410,73 @@ done <"$files_file"
 # In --commit mode an empty list reaches the commit step, which reports it as nothing to commit.
 if [[ $files_given == true && -z $commit_message ]] && ((${#files[@]} == 0)); then
   die 'gate.sh: every --files path was dropped (outside the repository or containing ..)'
+fi
+# An entry that names nothing makes every stage skip, so the gate would pass with nothing run.
+# --commit mode reports such entries itself as `dropped`.
+if [[ $files_given == true && -z $commit_message ]]; then
+  missing_entries=$(python3 - "$repo" "$files_file" "$sha" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+repo, files_path, sha = sys.argv[1:]
+with open(files_path, "rb") as handle:
+    entries = [item.decode("utf-8", "surrogateescape") for item in handle.read().split(b"\0") if item]
+
+
+# Same lookup as the --commit step's path_location.
+def path_location(path):
+    if os.path.lexists(os.path.join(repo, path)):
+        return "worktree"
+    indexed = subprocess.run(
+        ["git", "-C", repo, "ls-files", "--error-unmatch", "--", path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if indexed.returncode == 0:
+        return "worktree"
+    in_head = subprocess.run(
+        ["git", "-C", repo, "ls-tree", "-r", "--name-only", "HEAD", "--", path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if in_head.returncode == 0 and in_head.stdout.strip():
+        return "head"
+    return None
+
+
+# A phase gate passes every earlier phase's files, so a deletion can sit anywhere in history.
+def in_history(path):
+    for rev in ["HEAD"] + ([sha] if sha else []):
+        logged = subprocess.run(
+            ["git", "-C", repo, "log", "-1", "--format=%H", rev, "--", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if logged.returncode == 0 and logged.stdout.strip():
+            return True
+    return False
+
+
+missing = []
+for entry in entries:
+    candidates = [entry]
+    # Implementers sometimes annotate entries, as in "gone/ (3 files removed)".
+    annotated = re.match(r"^(.*\S)\s+\([^()]*\)$", entry)
+    if annotated:
+        candidates.append(annotated.group(1))
+    if not any(path_location(path) is not None or in_history(path) for path in candidates):
+        missing.append(entry)
+print(", ".join(missing))
+PY
+  ) || die 'gate.sh: cannot check --files entries'
+  [[ -z $missing_entries ]] || die "gate.sh: --files entries match no file on disk, in the index, or in git history: $missing_entries (pass one path per argument or comma-separated)"
 fi
 
 diff_command=(python3 "$script_dir/run_context.py" diff --run-dir "$run_dir" --repo "$repo" --label "$label")
@@ -635,6 +707,7 @@ run_configured_tool() {
   local tool=$1
   local command=$2
   local extensions_key=$3
+  local paths_file=${4:-$files_file}
   local timeout_seconds
   local selected_file="$state_prefix-$tool-paths.nul"
   local selected=()
@@ -647,7 +720,7 @@ run_configured_tool() {
     run_tool "$tool" "$command" "$timeout_seconds"
     return 0
   fi
-  python3 - "$repo" "$entry_file" "$extensions_key" "$files_file" "$selected_file" <<'PY'
+  python3 - "$repo" "$entry_file" "$extensions_key" "$paths_file" "$selected_file" <<'PY'
 import json
 import os
 import sys
@@ -732,7 +805,54 @@ if [[ $worktree_mode == true && $no_stages != true ]]; then
   fi
 fi
 
-stage_enabled lint && run_configured_tool lint "$lint_command" lintExtensions
+targets_file=$files_file
+if stage_enabled lint || stage_enabled tests; then
+  targets_file="$state_prefix-targets.nul"
+  python3 - "$repo" "$files_file" "$targets_file" <<'PY'
+import os
+import subprocess
+import sys
+
+repo, files_path, output_path = sys.argv[1:]
+with open(files_path, "rb") as handle:
+    files = [item.decode("utf-8", "surrogateescape") for item in handle.read().split(b"\0") if item]
+# Files that still import a deleted module break, and deleting a package can change how ruff
+# sorts imports of a library with the same name, so importers of deleted paths are targets too.
+modules = set()
+for path in files:
+    normalized = path.replace(os.sep, "/").removeprefix("./").rstrip("/")
+    if os.path.lexists(os.path.join(repo, normalized)):
+        continue
+    parts = normalized.removesuffix(".py").split("/")
+    for end in range(len(parts), 0, -1):
+        if end < len(parts) and os.path.isdir(os.path.join(repo, *parts[:end])):
+            break
+        for start in range(end):
+            name = parts[start:end]
+            if all(part.isidentifier() for part in name):
+                modules.add(".".join(name))
+importers = []
+if modules:
+    names = "|".join(sorted(name.replace(".", r"\.") for name in modules))
+    pattern = rf"^[[:space:]]*(from|import)[[:space:]]+({names})([^A-Za-z0-9_]|$)"
+    found = subprocess.run(
+        ["git", "-C", repo, "grep", "-l", "-E", "-e", pattern, "--", "*.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if found.returncode not in (0, 1):
+        print(f"gate.sh: git grep for importers failed: {found.stderr.strip()}", file=sys.stderr)
+        raise SystemExit(2)
+    importers = found.stdout.splitlines()
+with open(output_path, "wb") as handle:
+    for path in dict.fromkeys([*files, *importers]):
+        handle.write(path.encode("utf-8", "surrogateescape") + b"\0")
+PY
+  targets_status=$?
+  ((targets_status == 0)) || die 'gate.sh: cannot find importers of deleted paths'
+fi
+stage_enabled lint && run_configured_tool lint "$lint_command" lintExtensions "$targets_file"
 stage_enabled typecheck && run_configured_tool typecheck "$typecheck_command" typecheckExtensions
 if stage_enabled migrations && [[ -n $migrations_command ]]; then
   run_tool migrations "$migrations_command" "$(timeout_for migrations)"
@@ -746,7 +866,7 @@ elif [[ -z $tests_command ]]; then
   record_command 'tests skipped by config'
 else
   test_commands_file="$state_prefix-test-commands.nul"
-  python3 - "$repo" "$entry_file" "$files_file" "$test_commands_file" "$tests_command" "$create_db_arg" <<'PY'
+  python3 - "$repo" "$entry_file" "$targets_file" "$test_commands_file" "$tests_command" "$create_db_arg" <<'PY'
 import fnmatch
 import json
 import os
@@ -777,7 +897,13 @@ for path in files:
     if not os.path.exists(full_path):
         continue
     if "/tests/" in f"/{normalized}" or os.path.basename(normalized).startswith("test_"):
-        add_target(default_command, normalized)
+        # pytest rejects a non-Python path (fixture JSON, snapshots) as "not found".
+        if os.path.isdir(full_path) or normalized.endswith(".py"):
+            add_target(default_command, normalized)
+        elif "/tests/" in f"/{normalized}":
+            parts = normalized.split("/")
+            last_tests = len(parts) - 1 - parts[::-1].index("tests")
+            add_target(default_command, "/".join(parts[: last_tests + 1]))
         continue
     if os.path.splitext(normalized)[1] not in source_suffixes:
         continue
