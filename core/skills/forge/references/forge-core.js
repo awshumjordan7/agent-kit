@@ -200,7 +200,7 @@ const IMPL_RESULT = {
     status: { type: 'string', enum: ['DONE', 'PARTIAL'] },
     progressFile: { type: ['string', 'null'] },
   },
-  required: ['filesChanged', 'testsWritten', 'summary', 'unverified', 'error'],
+  required: ['filesChanged', 'testsWritten', 'summary', 'unverified', 'error', 'status'],
 }
 const FORGE_CONFIG_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -404,6 +404,11 @@ const CHECKPOINT_FILE_SCHEMA = {
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
   required: ['recommendation', 'command', 'reason', 'summary', 'decidedBy', 'implementFilesChanged', 'context'],
+}
+const CHECKPOINT_READ_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { checkpoint: CHECKPOINT_FILE_SCHEMA, canonLength: { type: 'integer' }, fnv1a: { type: 'integer' } },
+  required: ['checkpoint', 'canonLength', 'fnv1a'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -638,7 +643,7 @@ function dryFindings() {
 const STUBS = {
   implementer: opts => opts.schema === FIX_SCHEMA
     ? { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: 'dry-run fix diff', notes: 'dry-run fix', results: dryFindings().map(finding => ({ id: findingKey(finding), reason: 'dry-run fix explanation' })) }
-    : { filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null },
+    : { filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null, status: 'DONE', progressFile: null },
   reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
     : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
@@ -681,8 +686,8 @@ const STUBS = {
     ? { files: (opts.expect || []).map(item => ({ ...item, moved: true })) }
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
-    : opts.schema === CHECKPOINT_FILE_SCHEMA
-    ? { recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } }
+    : opts.schema === CHECKPOINT_READ_SCHEMA
+    ? (checkpoint => ({ checkpoint, canonLength: canonicalJson(checkpoint).length, fnv1a: fnv1a(canonicalJson(checkpoint)) }))({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -697,7 +702,7 @@ const STUBS = {
       contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
     },
   readConfig: opts => opts.schema === PLAN_READ_SCHEMA
-    ? { planText: DRY_RUN_PLAN, utf16Length: DRY_RUN_PLAN.length, fnv1a: fnv1a(DRY_RUN_PLAN), error: '' }
+    ? { planText: DRY_RUN_PLAN, utf16Length: DRY_RUN_PLAN.replace(/\n+$/, '').length, fnv1a: fnv1a(DRY_RUN_PLAN.replace(/\n+$/, '')), error: '' }
     : ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
@@ -897,7 +902,8 @@ function assertImplementation(result, where) {
   const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
   if ((configuredRole(role) || {}).provider !== 'claude') return assertCodex(result, where)
   if (capBlocked && !result) return false
-  // claudeImplement resolves every PARTIAL through continuations or throws, so one here skipped that path.
+  if (result && result.limitReached) return false
+  // claudeImplement resolves every other PARTIAL through continuations, so one here skipped that path.
   if (result && result.status === 'PARTIAL') {
     throw new Error(`Claude implementation returned PARTIAL outside the continuation path at ${where}`)
   }
@@ -916,23 +922,30 @@ function fnv1a(text) {
   return hash
 }
 
+// Both sides drop trailing newlines because an echoing agent may add or drop one.
 function planReadProblem(read) {
   if (!read) return 'the reader agent returned null'
   if (read.error) return read.error
-  if (!read.planText) return 'the plan file is empty'
-  if (read.planText.length !== read.utf16Length) return `length check failed: received ${read.planText.length} UTF-16 code units, the file has ${read.utf16Length}`
-  if (fnv1a(read.planText) !== read.fnv1a) return 'FNV-1a check failed: the received text differs from the file at the same length'
+  const text = String(read.planText || '').replace(/\n+$/, '')
+  if (!text) return 'the plan file is empty'
+  if (text.length !== read.utf16Length) return `length check failed: received ${text.length} UTF-16 code units, the file has ${read.utf16Length}`
+  if (fnv1a(text) !== read.fnv1a) return 'FNV-1a check failed: the received text differs from the file at the same length'
   return ''
 }
 
 // Reading the plan through an agent keeps the plan text out of Workflow args, notices, and relaunches.
 async function loadPlanText() {
   if (PARAMS.planText) return
-  PARAMS.spawnCap += 1
-  const script = 'import functools, json, pathlib, sys; path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8") if path.is_file() else None; data = (text or "").encode("utf-16-le"); units = [data[i] | (data[i + 1] << 8) for i in range(0, len(data), 2)]; print(json.dumps({"planText": text, "utf16Length": len(units), "fnv1a": functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units, 2166136261), "error": ""} if text is not None else {"planText": "", "utf16Length": 0, "fnv1a": 0, "error": f"{path} is missing or not a file"}))'
-  const read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying planText character for character: python3 -c ${shellQuote(script)} ${shellQuote(PARAMS.planPath)}`,
-    { label: 'read-plan', phase: 'Implement', schema: PLAN_READ_SCHEMA })
-  const problem = planReadProblem(read)
+  PARAMS.spawnCap += 2
+  const script = 'import functools, json, pathlib, sys; path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8") if path.is_file() else None; data = (text or "").rstrip("\\n").encode("utf-16-le"); units = [data[i] | (data[i + 1] << 8) for i in range(0, len(data), 2)]; print(json.dumps({"planText": text, "utf16Length": len(units), "fnv1a": functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units, 2166136261), "error": ""} if text is not None else {"planText": "", "utf16Length": 0, "fnv1a": 0, "error": f"{path} is missing or not a file"}))'
+  let read = null
+  let problem = ''
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying planText character for character: python3 -c ${shellQuote(script)} ${shellQuote(PARAMS.planPath)}`,
+      { label: attempt === 1 ? 'read-plan' : 'read-plan-retry', phase: 'Implement', schema: PLAN_READ_SCHEMA })
+    problem = planReadProblem(read)
+    if (!problem || (read && read.error)) break
+  }
   if (!problem) {
     PARAMS.planText = read.planText
     return
@@ -1012,7 +1025,7 @@ function phaseScope(phase) {
   return `Implement only Phase ${phase.id}: ${phase.title}. The full plan is context: earlier phases are already committed, and later phases are implemented separately.${partial}`
 }
 
-// A PARTIAL result, or a null that did not come from the spawn cap, starts a fresh implementer
+// A result that is neither DONE nor an error, or a null that did not come from the spawn cap, starts a fresh implementer
 // from the progress file; the context guard hook is what makes an implementer hand off.
 async function claudeImplement(prompt, opts, progressFile) {
   const filesChanged = new Set()
@@ -1024,12 +1037,19 @@ async function claudeImplement(prompt, opts, progressFile) {
   let result = await agentT('implementer', prompt, opts)
   collect(result)
   for (let n = 1; ; n++) {
-    const partial = Boolean(result && result.status === 'PARTIAL')
-    if (result && !partial) return { ...result, filesChanged: [...filesChanged], unverified: [...unverified] }
+    if (result && (result.status === 'DONE' || result.error)) return { ...result, filesChanged: [...filesChanged], unverified: [...unverified] }
+    const partial = Boolean(result)
     if (!result && capBlocked) return null
-    if (n > MAX_IMPL_CONTINUATIONS) throw new Error(`Claude implementation handoff limit reached at ${opts.label}`)
+    if (n > MAX_IMPL_CONTINUATIONS) {
+      await decide(`${opts.label} reached the handoff limit (${MAX_IMPL_CONTINUATIONS} continuations); partial work stays in the tree and ${(result && result.progressFile) || progressFile} for a resume.`)
+      return {
+        filesChanged: [...filesChanged], testsWritten: Boolean(result && result.testsWritten), summary: String((result && result.summary) || ''),
+        unverified: [...unverified], status: 'PARTIAL', progressFile: (result && result.progressFile) || progressFile,
+        error: `Claude implementation handoff limit reached at ${opts.label}`, limitReached: true,
+      }
+    }
     const context = partial ? /\b(\d+)k context\b/.exec(String(result.summary || '')) : null
-    await decide(`${opts.label} handoff ${n} of ${MAX_IMPL_CONTINUATIONS}: reason=${partial ? 'PARTIAL' : 'null result'} context=${context ? `${context[1]}k` : 'unknown'}`)
+    await decide(`${opts.label} handoff ${n} of ${MAX_IMPL_CONTINUATIONS}: reason=${partial ? (result.status || 'no status') : 'null result'} context=${context ? `${context[1]}k` : 'unknown'}`)
     PARAMS.spawnCap += 1
     const continuation = `## Continuation (${n} of ${MAX_IMPL_CONTINUATIONS})
 
@@ -1232,11 +1252,15 @@ ${blocks}`,
 }
 
 // Saved context drops the long prompt fields; a relaunch recomputes the context before review.
-function writeCheckpoint(checkpoint) {
+// smoke.py is written on its own, as raw text, and checkpoint.json keeps only its command, so a
+// relaunch never copies the script again.
+async function writeCheckpoint(checkpoint) {
   const context = checkpoint.context && { ...checkpoint.context, standards: '', contract: '', reviewerContract: '', checklist: '' }
-  const files = [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, context }, null, 2)}\n` }]
-  if (checkpoint.script) files.push({ path: `${PARAMS.runDir}/smoke.py`, content: checkpoint.script })
-  return writeFiles('write-checkpoint', 'Checkpoint', files)
+  if (checkpoint.script) {
+    PARAMS.spawnCap += 1
+    if (!await writeFiles('write-smoke', 'Checkpoint', [{ path: `${PARAMS.runDir}/smoke.py`, content: checkpoint.script }])) return false
+  }
+  return writeFiles('write-checkpoint', 'Checkpoint', [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, script: '', context }, null, 2)}\n` }])
 }
 
 function savedCheckpointProblem(saved) {
@@ -1252,17 +1276,37 @@ function savedCheckpointProblem(saved) {
 // fields that carry meaning as null are restored after the read.
 const PY_NO_NULLS = 'clean = lambda v: "" if v is None else ({k: clean(x) for k, x in v.items()} if isinstance(v, dict) else ([clean(x) for x in v] if isinstance(v, list) else v))'
 
+// Matches Python json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True) for
+// strings, integers, booleans, arrays and objects; checkpoint.json holds no floats or nulls.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${canonicalJson(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  if (typeof value === 'string') return JSON.stringify(value).replace(/[\u007f-\uffff]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return JSON.stringify(value)
+}
+
 function restorePhaseRow(row) {
   return { ...row, sha: row.sha || null, gate: row.gate || null }
 }
 
+// The command prints a digest of the canonical JSON so an echo that adds, drops or edits a field is caught.
 async function readCheckpoint() {
-  const script = `import json, pathlib, sys; ${PY_NO_NULLS}; print(json.dumps(clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")))))`
+  const script = `import functools, json, pathlib, sys; ${PY_NO_NULLS}; data = clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))); canon = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True); print(json.dumps({"checkpoint": data, "canonLength": len(canon), "fnv1a": functools.reduce(lambda h, c: ((h ^ ord(c)) * 16777619) & 0xFFFFFFFF, canon, 2166136261)}))`
   const path = `${PARAMS.runDir}/checkpoint.json`
-  const saved = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
-    { label: 'read-checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_FILE_SCHEMA })
-  if (saved && Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
-  return saved
+  PARAMS.spawnCap += 1
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
+      { label: attempt === 1 ? 'read-checkpoint' : 'read-checkpoint-retry', phase: 'Checkpoint', schema: CHECKPOINT_READ_SCHEMA })
+    if (!read) return null
+    const canon = canonicalJson(read.checkpoint)
+    if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) {
+      const saved = read.checkpoint
+      if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
+      return saved
+    }
+    await decide(`read-checkpoint attempt ${attempt} did not match the file digest.`)
+  }
+  return null
 }
 
 async function followCheckpoint(state, decision, command) {
@@ -2354,7 +2398,7 @@ async function fullLane() {
       initial.branch = saved.branch || ''
       initial.phases = saved.phases
     }
-    initial.checkpoint = { ...saved, decidedBy: 'user' }
+    initial.checkpoint = { ...saved, script: '', decidedBy: 'user' }
     await decide(`Pre-ship checkpoint decision: ${PARAMS.checkpointDecision} (user)`)
     if (!await writeCheckpoint(initial.checkpoint)) throw new Error(`could not update ${PARAMS.runDir}/checkpoint.json for the user decision`)
   }
