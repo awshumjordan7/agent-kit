@@ -1,7 +1,7 @@
 ---
 name: precommit-hook-env-failure
 description: >-
-  Use this skill when a `git commit` invocation fails because a pre-commit hook (husky, lefthook, pre-commit framework) errors with a missing environment variable, missing tool, or denied auth. Common triggers: "Environment variable not found (GITHUB_TOKEN)" from yarn, "command not found" from pnpm or bun, "401 Unauthorized" from a private package registry, "husky - pre-commit script failed (code 1)", or any pre-commit failure that is rooted in shell environment differences between the user's interactive terminal and Claude's Bash tool. Also use when a hook calls `yarn`, `npm`, `pnpm`, `bun`, or any tool that needs a token from `~/.zshrc` / `~/.bashrc` that the Bash tool doesn't inherit. Do NOT use for hooks that fail due to actual code defects (lint errors, type errors, failing tests) — those need real fixes, not bypass strategies. Do NOT use for `--no-gpg-sign` failures (those need a separate signing-key conversation) or for hooks that fail because of file permissions or git configuration.
+  Use when `git commit` fails because a pre-commit hook (husky, lefthook, pre-commit) is missing an env var, tool, or registry auth that the user's interactive shell has, for example "Environment variable not found (GITHUB_TOKEN)", "command not found" for yarn/pnpm/bun, or a registry 401. Not for hooks that fail on real lint, type, or test errors.
 ---
 
 # Pre-commit Hook Environment Failure
@@ -43,7 +43,7 @@ The user can type `! git commit -m "..." && git push` directly in the Claude Cod
 
 Only if the user **explicitly** asks ("use no-verify", "skip the hook", "bypass it"). Per default Claude Code policy, never skip hooks without explicit user request. When the user does request it:
 
-- Explain that you've already manually run the equivalent validation (e.g., `tsc --noEmit` + `eslint --fix`) so bypassing the hook is safe in this specific case.
+- Before committing with `--no-verify`, run the checks the hook runs (for example `yarn tsc --noEmit`) and report each result as it came out. They often need the same missing env var; if a check cannot run, say so, so the user decides knowing it did not run.
 - Run `git commit --no-verify -m "<message>"` from the Bash tool.
 - Do not assume future commits also have `--no-verify` authorization. The authorization is single-use unless the user says otherwise.
 
@@ -63,14 +63,14 @@ Files are staged. Three paths:
 
 2. **Use `! git commit ...`** in this prompt — runs in your shell, output comes back here.
 
-3. **Authorize `--no-verify`** — I already ran tsc + eslint manually and both pass.
-   Say "use no-verify" if you want me to commit from here.
+3. **Authorize `--no-verify`** — I would run tsc + eslint myself first and report
+   what they show (or that they cannot run here). Say "use no-verify" if you want me to commit from here.
 ```
 
 ## Do This
 
 - Surface the actual error message verbatim so the user sees what failed.
-- Confirm validation already passed manually (if you ran `tsc`, `eslint`, etc., outside the hook). This justifies path 3.
+- Report the result of any check you ran outside the hook (`tsc`, `eslint`, etc.), and name any check you could not run. The user weighs path 3 with that result.
 - Offer all three paths in the same message; let the user choose.
 - Default-recommend path 1 (interactive shell). It is the lowest-risk option.
 - Remember the staged state. If the user picks path 1, the files are already `git add`-ed.
