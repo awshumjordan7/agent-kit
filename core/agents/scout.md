@@ -28,6 +28,8 @@ Rules:
   docs, not just local files.
 - Distinguish clearly between what you VERIFIED (read the code/doc) and what you
   INFERRED. Say which is which.
+- Before handing over a run command, check which project file it resolves from its cwd
+  (for `uv run`, the nearest pyproject.toml at or above that directory) and cite it.
 - Your final message is consumed by an orchestrator, not a human: structured
   report, front-loaded conclusions, no filler. Include a short "what I did not
   check" note so coverage gaps are visible.

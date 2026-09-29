@@ -35,4 +35,4 @@ Return exactly:
 
 `{ "filesChanged": string[], "testsWritten": boolean, "summary": string, "unverified": string[], "error": string|null, "status": "DONE"|"PARTIAL", "progressFile": string|null }`
 
-Set `status` to `DONE` when the work is complete, and `progressFile` to the progress file path, or null when the prompt names none. A fix round returns its own schema instead.
+Always set `status`: `DONE` only when every step in scope is complete, otherwise `PARTIAL`; a result without `DONE` is treated as unfinished. A blocking error sets `error`, which ends the work without a continuation. Set `progressFile` to the progress file path, or null when the prompt names none. A fix round returns its own schema instead.

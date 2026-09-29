@@ -82,9 +82,9 @@ def baseline(run_dir: Path, repo: Path, reuse: bool = False) -> dict:
     return {"written": True}
 
 
-def smoke_run(run_dir: Path, repo: Path, command: str) -> dict:
+def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.log") -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
-    log_path = run_dir / "smoke.log"
+    log_path = run_dir / Path(log_name).name
     try:
         completed = subprocess.run(
             command,
@@ -353,6 +353,7 @@ def main() -> None:
     smoke_run_parser.add_argument("--run-dir", type=Path, required=True)
     smoke_run_parser.add_argument("--repo", type=Path, required=True)
     smoke_run_parser.add_argument("--command", dest="smoke_command", required=True)
+    smoke_run_parser.add_argument("--log-name", default="smoke.log")
     args = parser.parse_args()
     if args.command == "baseline":
         result = baseline(args.run_dir, args.repo, args.reuse)
@@ -374,7 +375,7 @@ def main() -> None:
         sys.stdout.write(str(diff_path) + "\n")
         return
     elif args.command == "smoke-run":
-        result = smoke_run(args.run_dir, args.repo, args.smoke_command)
+        result = smoke_run(args.run_dir, args.repo, args.smoke_command, args.log_name)
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
 
 

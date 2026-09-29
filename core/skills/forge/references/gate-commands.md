@@ -7,7 +7,9 @@ When a command needs credentials or local services, run it through the repositor
 Repository entries may define `env` for variables exported to every command and `setup` for shell preparation run
 before each command. A `testPathRules` entry can override the default test command with `command`; targets from
 rules sharing that command are grouped. Test commands may include `<create-db>`, which expands to ` --create-db`
-only when the changed files include a Python migration.
+only when the changed files include a Python migration. Every command sees `FORGE_GATE_RUN_ID`, a run-scoped id
+of at most 40 characters (the run dir's basename plus a short hash of its path), for naming per-run resources such
+as a test database.
 
 Repository entries may define `envFiles`, a list of repository-relative untracked files (for example `.env.local`)
 that are copied from the primary worktree into the gate checkout before `setup`. An absent key means none. An entry
