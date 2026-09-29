@@ -2591,6 +2591,7 @@ async function fullLane() {
           state.ship = synced
           if (state.checkpointSmokeCommand) {
             // The checkpoint smoke ran before review; the fix round changed the shipped head.
+            PARAMS.spawnCap += 1
             state.postFixSmoke = await smokeRun(state.checkpointSmokeCommand, 'post-fix-smoke', 'Fix', 'post-fix-smoke.log')
             if (!state.postFixSmoke || !state.postFixSmoke.passed) {
               state.status = 'BLOCKED'
