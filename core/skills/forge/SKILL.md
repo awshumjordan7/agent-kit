@@ -40,6 +40,7 @@ Workflow({
     lane, auto, runDir, projectDir, repo, ticket, criteria, base,
     planText, planPath, fullySpecified, stageAlso, ghEnvUnset,
     checkpointDecision, smokeCommand, prBodyExtra, resumeAttempt,
+    existingSandbox: { sandboxId, loginUrl, previewUrl, credentialsFile },
     forgeConfig: { roles, stages, thresholds, lenses, ticketUrl, repos, gate, ghEnvUnset }
   }
 })

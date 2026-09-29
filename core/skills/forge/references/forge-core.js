@@ -79,7 +79,7 @@ const PARAMS = {
     : typeof args.criteria === 'string' ? args.criteria.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : [],
   tier: TIERS[args.tier] ? args.tier : 'opus',
   tierSandbox: args.tier_sandbox || 'sandbox',
-  // Reuse a fork another run built (companion repo run): {sandboxId, loginUrl, previewUrl}.
+  // Reuse a fork another run built (companion repo run): {sandboxId, loginUrl, previewUrl, credentialsFile?}.
   // Changed files are uploaded into it instead of creating a second sandbox.
   existingSandbox: args.existingSandbox && typeof args.existingSandbox.sandboxId === 'string' ? args.existingSandbox : null,
   noShip: args.noShip === true,
@@ -1085,9 +1085,9 @@ Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exact
   { label, phase: 'Implement', schema: CODEX_RESULT }, { threadFile: CODEX_IMPL_THREAD, log: logPath })
 }
 
-function smokeRun(command) {
+function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint') {
   return agentT('changedFiles', `Start exactly this command with the Bash tool using run_in_background=true and timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)}\`. Poll the background task with TaskOutput calls using timeout=30000 until it completes. Return its stdout JSON unchanged. The background command has its own 900-second cap and must be allowed to finish; do not rerun it.`,
-    { label: 'checkpoint-smoke', phase: 'Checkpoint', schema: SMOKE_RUN_SCHEMA })
+    { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sha = '') {
@@ -1317,6 +1317,7 @@ async function followCheckpoint(state, decision, command) {
       await decide('Pre-ship checkpoint smoke command was empty; shipping was stopped.')
       return state
     }
+    state.checkpointSmokeCommand = command
     state.checkpointSmoke = await smokeRun(command)
     if (!state.checkpointSmoke || !state.checkpointSmoke.passed) {
       state.status = 'BLOCKED'
@@ -1925,15 +1926,16 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   if (staging.excluded.length) await decide(`Ship excluded env-like paths from staging: ${staging.excluded.join(', ').slice(0, 500)}`)
   const testing = PARAMS.prBodyExtra ? 'omit a testing-results section unless the prBodyExtra section supplies one' : 'omit a testing-results section'
   const bodyExtra = PARAMS.prBodyExtra
-    ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the change list; keep that section whenever you rewrite the body. `
+    ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the bullets; keep that section whenever you rewrite the body. `
     : ''
   const tail = `${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
   const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
-    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. The body contains a summary, change list, and links; ${testing}. ${tail}`
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run git fetch origin ${existing.branch} and, when origin has commits the local branch lacks, git pull --no-rebase origin ${existing.branch} before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. ${bodyRule} ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} The PR body contains a summary, change list, and links; ${testing}. ${tail}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch, create a descriptive branch, commit the implementation, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} The PR body contains a summary, change list, and links; ${testing}. ${tail}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch. If the current branch is the base branch or detached, create branch ${planBranchName()} from origin/<base>, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1947,9 +1949,9 @@ async function recordUnstaged(state, result, label) {
 function qaArtifactDraft(shipResult, context) {
   const criteria = acceptanceCriteria(context)
   return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
-1. Read the full header comment of ~/.claude/skills/forge/references/qa-artifact.html, from its first line up to its closing -->, for its complete data and placeholder contract. Read ${PARAMS.runDir}/sandbox.json with ranged reads if it exists.
-2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from sandbox.json when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
-Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered: ${JSON.stringify(criteria)}. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence="", pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is either a string with one action, location first (for example "On the Customers page, click Add"), or a command block {command, cwd, note?} whose cwd is the directory to run it in. Each command block is self-contained and copy-pasteable in zsh: write the full command every time and never use shell variables, export, or aliases defined in another step. Items that test how a verdict or note is saved take their test input from a separate item or from the note field, never from that item's own Pass/Fail/Blocked buttons, because the saved verdict must record whether the check passed. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from sandbox.json testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
+1. Read the full header comment of ~/.claude/skills/forge/references/qa-artifact.html, from its first line up to its closing -->, for its complete data and placeholder contract. Read ${sandboxFile()} with ranged reads if it exists.
+2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from ${sandboxFile()} when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
+Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered: ${JSON.stringify(criteria)}. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence="", pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is either a string with one action, location first (for example "On the Customers page, click Add"), or a command block {command, cwd, note?} whose cwd is the directory to run it in. Each command block is self-contained and copy-pasteable in zsh: write the full command every time and never use shell variables, export, or aliases defined in another step. Items that test how a verdict or note is saved take their test input from a separate item or from the note field, never from that item's own Pass/Fail/Blocked buttons, because the saved verdict must record whether the check passed. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from ${sandboxFile()} testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
 3. Run python3 ~/.claude/skills/forge/scripts/render_artifact.py qa --data ${PARAMS.runDir}/qa-data.json --out ${PARAMS.runDir}/qa-artifact.html; never write your own renderer. A nonzero exit is an error: return its stderr as the error text. Then run open ${PARAMS.runDir}/qa-artifact.html on macOS. If the Artifact tool is available, load the artifact-capabilities skill, then publish the rendered file titled "${PARAMS.ticket} <shortTitle> QA" with capabilities {"db": {}} on the first publish, and run one ArtifactData list on collection qa-results with that artifact's url to confirm the capability. Omit capabilities on every later republish of the same page.
 4. Return path=${PARAMS.runDir}/qa-artifact.html, the qaItems count as items, whether open succeeded as opened, and error="". On any error return that path, items=0, opened=false, and the error text.`,
   { label: 'qa-draft', phase: 'Ship', agentType: 'worker', schema: QA_DRAFT_SCHEMA })
@@ -1961,6 +1963,12 @@ function qaDraftSummary(draft) {
     items: draft && Number.isInteger(draft.items) ? draft.items : 0,
     opened: Boolean(draft && draft.opened),
   }
+}
+
+// A reused fork's sandbox.json (logins, test users) lives in the run that built it.
+function sandboxFile() {
+  const file = PARAMS.existingSandbox && PARAMS.existingSandbox.credentialsFile
+  return typeof file === 'string' && file ? file : `${PARAMS.runDir}/sandbox.json`
 }
 
 const sandboxToolFallback = `If the sandbox MCP tools are missing or fail with a connection error, follow the overlay's references/stages/sandbox.md fallback. Only when both configured methods fail return skipped=true and name both errors.`
@@ -2051,7 +2059,7 @@ async function smoke(sandbox, context) {
     const specStep = number === 1
       ? `If ${PARAMS.projectDir}/e2e/ contains Playwright specs, first read ${PARAMS.projectDir}/e2e/README.md for the base-URL and login env vars, run the suite against ${sandbox.previewUrl} with the line reporter and \`--grep\` on any criterion tag the plan names, and save the output to ${PARAMS.runDir}/smoke/e2e.log. A criterion covered by a passing spec is PASS with evidence = that log path. Only criteria with no matching spec are attempted with Playwright MCP tools.`
       : 'Do not run the Playwright spec suite in this chunk. Attempt each criterion below with Playwright MCP tools.'
-    const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${PARAMS.runDir}/sandbox.json (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
+    const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${sandboxFile()} (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
     `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion as .playwright-mcp/<name>.png (Playwright MCP refuses paths outside its output dir), then mv it to ${PARAMS.runDir}/smoke/ and never leave it in the repository. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
     { label, phase: 'Sandbox', agentType: 'browser', schema: SMOKE_SCHEMA })
     if (!smokeResult) return null
@@ -2144,7 +2152,7 @@ function planPrTitle() {
 }
 
 function planBranchName() {
-  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText) || [])[1] || PHASES[0].title
+  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || (PHASES[0] && PHASES[0].title) || ''
   const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   const words = slug(heading.replace(/^plan:\s*/i, '')).split('-').filter(Boolean).slice(0, 6).join('-')
   return [slug(PARAMS.ticket), words].filter(Boolean).join('-').slice(0, 60).replace(/-+$/, '') || 'forge-phases'
@@ -2387,7 +2395,7 @@ async function fullLane() {
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
       : `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed, then gated on its SHA in ${GATE_CHECKOUT} while the next phase runs.`)
   }
-  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null, ffReview: null }
+  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, checkpointSmokeCommand: '', postFixSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null, ffReview: null }
   if (PARAMS.checkpointDecision) {
     const saved = await readCheckpoint()
     const problem = savedCheckpointProblem(saved)
@@ -2581,6 +2589,14 @@ async function fullLane() {
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
         } else {
           state.ship = synced
+          if (state.checkpointSmokeCommand) {
+            // The checkpoint smoke ran before review; the fix round changed the shipped head.
+            state.postFixSmoke = await smokeRun(state.checkpointSmokeCommand, 'post-fix-smoke', 'Fix')
+            if (!state.postFixSmoke || !state.postFixSmoke.passed) {
+              state.status = 'BLOCKED'
+              await decide(`Post-fix smoke failed or timed out on the synced head; see ${(state.postFixSmoke && state.postFixSmoke.logPath) || `${PARAMS.runDir}/smoke.log`}.`)
+            }
+          }
         }
         if (sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos) && state.sandbox && state.sandbox.sandboxId && synced && !synced.skipped) {
           const refreshFiles = [...new Set([
