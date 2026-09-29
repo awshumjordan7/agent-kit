@@ -91,10 +91,12 @@ def bold_and_links(text: str) -> str:
 def inline(text: object) -> str:
     """Escape text; `code` spans become <code>, **bold** becomes <strong>, and [label](url)
     becomes a link when url is http(s). Inline code never gets a Copy button."""
-    parts = re.split(r"(`[^`]+`)", "" if text is None else str(text))
+    parts = re.split(r"(``.+?``|`[^`]+`)", "" if text is None else str(text))
     out = []
     for part in parts:
-        if part.startswith("`") and part.endswith("`") and len(part) > 1:
+        if part.startswith("``") and part.endswith("``") and len(part) > 4:
+            out.append(f"<code>{esc(part[2:-2].strip())}</code>")
+        elif part.startswith("`") and part.endswith("`") and len(part) > 1:
             out.append(f"<code>{esc(part[1:-1])}</code>")
         else:
             out.append(bold_and_links(part))
@@ -144,7 +146,7 @@ def slug(text: str) -> str:
 
 
 def split_row(line: str) -> list[str]:
-    cells = re.split(r"(?<!\\)\|", line.strip().strip("|"))
+    cells = re.split(r"(?<!\\)\|(?=(?:[^`]*`[^`]*`)*[^`]*$)", line.strip().strip("|"))
     return [c.strip().replace("\\|", "|") for c in cells]
 
 
@@ -190,23 +192,25 @@ def parse_blocks(lines: list[str]) -> list[tuple[str, object]]:
             continue
         m_ul = re.match(r"^[-*] (.*)$", line)
         m_ol = re.match(r"^(\d+)\. (.*)$", line)
-        if m_ul:
+        m_sub = re.match(r"^\s+[-*] (.*)$", line)
+        if m_sub and cur and cur[0] in ("ul", "ol"):
+            cur[1][-1][-1].append(m_sub.group(1))
+        elif m_ul:
             if not cur or cur[0] != "ul":
                 flush()
                 cur = ("ul", [])
-            cur[1].append(m_ul.group(1))
+            cur[1].append((m_ul.group(1), []))
         elif m_ol:
             if not cur or cur[0] != "ol":
                 flush()
                 cur = ("ol", [])
-            cur[1].append((m_ol.group(1), m_ol.group(2)))
+            cur[1].append((m_ol.group(1), m_ol.group(2), []))
         elif line.startswith(" ") and cur and cur[0] in ("ul", "ol"):
-            items = cur[1]
-            if cur[0] == "ul":
-                items[-1] = items[-1] + " " + line.strip()
+            *head, text, subs = cur[1][-1]
+            if subs:
+                subs[-1] += " " + line.strip()
             else:
-                n, t = items[-1]
-                items[-1] = (n, t + " " + line.strip())
+                cur[1][-1] = (*head, text + " " + line.strip(), subs)
         elif cur and cur[0] == "p":
             cur = ("p", cur[1] + " " + line.strip())
         else:
@@ -226,6 +230,10 @@ def render_table(rows: list[list[str]]) -> str:
     return f'<div class="tbl"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
+def sub_list(items: list[str]) -> str:
+    return '<ul class="sub-list">' + "".join(f"<li>{inline(i)}</li>" for i in items) + "</ul>" if items else ""
+
+
 def render_blocks(blocks: list[tuple[str, object]], ol_label: str = "Item") -> str:
     out = []
     in_sub = False
@@ -242,10 +250,10 @@ def render_blocks(blocks: list[tuple[str, object]], ol_label: str = "Item") -> s
         elif kind == "table":
             out.append(render_table(val))
         elif kind == "ul":
-            rows = "".join(f"<li>{inline(i)}</li>" for i in val)
+            rows = "".join(f"<li>{inline(t)}{sub_list(subs)}</li>" for t, subs in val)
             out.append(f'<ul class="rows">{rows}</ul>')
         elif kind == "ol":
-            rows = "".join(f'<tr><td class="num">{esc(n)}</td><td>{inline(t)}</td></tr>' for n, t in val)
+            rows = "".join(f'<tr><td class="num">{esc(n)}</td><td>{inline(t)}{sub_list(subs)}</td></tr>' for n, t, subs in val)
             out.append(
                 f'<div class="tbl"><table class="numbered"><thead><tr><th>#</th><th>{esc(ol_label)}</th></tr>'
                 f"</thead><tbody>{rows}</tbody></table></div>"
@@ -545,6 +553,9 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 MAX_IMAGE_BYTES = 1_572_864
 MAX_PAGE_IMAGE_BYTES = 8 * 1_048_576
 COLLAPSE_LINES = 15
+SHELL_STEP_RE = re.compile(
+    r"^\s*(\$\s*)?(pytest|python3?|uv run|docker( compose)? exec|kubectl|manage\.py|\./manage\.py|curl|sandboxctl)\b"
+)
 VERDICT_CONTROLS = (
     '<div class="verdict" role="group" aria-label="Result">'
     '<button type="button" class="verdict-btn" data-verdict="pass" aria-pressed="false">Pass</button>'
@@ -692,19 +703,31 @@ def qa_item_html(idx: int, item_id: str, item: dict, group_why: str, base: Path,
         key = esc(item.get("ticketKey") or url)
         rows.append(f"<dt>Ticket</dt><dd>{web_link(url, key) if is_web_url(url) else key}</dd>")
     why = str(item.get("why") or "").strip()
-    if not why and str(item.get("before") or "").strip():
-        why = str(item["before"]).strip()
+    before = str(item.get("before") or "").strip()
+    if not why and before:
+        why, before = before, ""
     if why and why != group_why.strip():
         rows.append(f"<dt>Why</dt><dd>{inline(why)}</dd>")
-    if item.get("whatChanged"):
-        rows.append(f'<dt>What changed</dt><dd>{inline(item["whatChanged"])}</dd>')
-    steps = "".join(f"<li>{text_or_command(s)}</li>" for s in item.get("steps") or [])
+    if item.get("whatChanged") or before:
+        now = inline(item.get("whatChanged", ""))
+        rows.append(f"<dt>What changed</dt><dd>{before_after(inline(before), now) if before else now}</dd>")
+    raw_steps = item.get("steps") or []
+    bad = [s for s in raw_steps if isinstance(s, dict) or SHELL_STEP_RE.search(str(s))]
+    if bad:
+        raise InputError(
+            f"qaItems {item_id}: {len(bad)} step(s) are commands; steps are UI click-path actions, "
+            "move commands and test runs to evidence"
+        )
+    steps = "".join(f"<li>{inline(s)}</li>" for s in raw_steps)
     rows.append(f"<dt>Steps</dt><dd><ol>{steps}</ol></dd>")
     rows.append(f'<dt>Expected</dt><dd>{inline(item.get("expected", ""))}</dd>')
     if "example" in item:
         rows.append(example_html(item_id, item["example"], base, images))
-    if item.get("evidence"):
-        rows.append(f'<dt>Evidence</dt><dd>{inline(item["evidence"])}</dd>')
+    evidence = item.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        rows.append("<dt>Evidence</dt><dd><ul>" + "".join(f"<li>{text_or_command(e)}</li>" for e in evidence) + "</ul></dd>")
+    elif evidence:
+        rows.append(f"<dt>Evidence</dt><dd>{inline(evidence)}</dd>")
     auto = automated_check(click, base) if click else ""
     return item_shell(idx, item_id, str(item.get("title", "")), str(item.get("pr", "")), group,
                       f'{auto}<dl>{"".join(rows)}</dl>')

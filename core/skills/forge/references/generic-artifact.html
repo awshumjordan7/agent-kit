@@ -19,7 +19,7 @@
     links     [[label, url], ...] or [{label, url}, ...]; each row gets a Copy button.
 
   The markdown supplies the sections: every "## " heading renders in order with a TOC entry.
-  Markdown handled: paragraphs, "- " lists, numbered lists (as a numbered table), "### "
+  Markdown handled: paragraphs, "- " lists (one nested "- " level), numbered lists (as a numbered table), "### "
   subheads, pipe tables, fenced code (with a Copy button), `code`, **bold**, and [label](url)
   links. Raw HTML is escaped.
 
@@ -161,6 +161,9 @@ ul.rows { list-style: none; margin: 0 0 12px; padding: 0; background: var(--surf
 ul.rows li { padding: 8px 12px 8px 26px; border-bottom: 1px solid var(--rule); position: relative; }
 ul.rows li:last-child { border-bottom: 0; }
 ul.rows li::before { content: ""; position: absolute; left: 12px; top: 1.05em; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+ul.rows ul.sub-list { list-style: disc; margin: 4px 0 0; padding-left: 18px; }
+ul.rows ul.sub-list li { padding: 2px 0; border: 0; }
+ul.rows ul.sub-list li::before { content: none; }
 .sub { display: grid; gap: 4px; margin-bottom: 18px; }
 .sub:last-child { margin-bottom: 0; }
 .links td:first-child { white-space: nowrap; }
