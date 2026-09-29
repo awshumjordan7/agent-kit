@@ -16,7 +16,7 @@ implementer round when it turns out to be missing.
 
 Output format. Print the review; the caller saves it to {{OUT_PATH}}:
 - One line verdict: PLAN OK | PLAN NEEDS CHANGES | PLAN WRONG.
-- Findings as a numbered list. Each: severity (CRITICAL | HIGH | MEDIUM | LOW), file:line evidence, what fails or is wrong, the concrete fix. CRITICAL only for something that makes the plan wrong. Do not pad.
+- Findings as a numbered list. Each: severity (CRITICAL | HIGH | MEDIUM | LOW), file:line evidence, what fails or is wrong, the concrete fix. CRITICAL only for something that makes the plan wrong. Report every issue you find, at any severity; the caller filters. Set severity honestly rather than dropping a minor finding.
 - One line per specific check above: check number, verdict (holds | fails | could not verify), evidence.
 - A short "Already exists, reuse instead" list if any.
 Do not modify any file. Do not implement anything.
