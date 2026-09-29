@@ -457,7 +457,7 @@ def expected_codex_agents(ctx: Context) -> tuple[str | None, str | None]:
     kept = strip_claude_only(
         lines,
         [str(name) for name in codex.get("exclude_sections", [])],
-        [str(text) for text in codex.get("exclude_bullets", [])],
+        [] if include else [str(text) for text in codex.get("exclude_bullets", [])],
         include,
     )
     return CODEX_HEADER + "\n".join(kept).strip() + "\n", None

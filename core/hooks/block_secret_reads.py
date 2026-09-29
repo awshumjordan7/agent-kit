@@ -144,13 +144,17 @@ SOURCED_REPO_ENV = re.compile(
 )
 # SOURCED_REPO_ENV applies only when the command matches none of these, since
 # each can print the loaded values: `declare -p`, `typeset -p`, `env | sort`
-# and a bare `set` (which _ENV_DUMP_CMD does not fully catch); a shell traced
-# with `-x`/`-v` or `xtrace`/`verbose`; any `$` parameter expansion; and an
-# interpreter reading its environment.
+# and any `set` but a lone `set -a`/`set +a` (which _ENV_DUMP_CMD does not fully
+# catch; `set -a -x` traces the sourced assignments); a shell traced with
+# `-x`/`-v` or `xtrace`/`verbose`; any `$` parameter expansion; and an
+# interpreter reading its environment. Case-insensitive, because a
+# case-insensitive file system can run `ENV` or `PRINTENV` as env or printenv.
 ENV_DUMP_WORD = re.compile(
-    r"\b(?:declare|typeset|env|printenv|export|compgen)\b|\bset\b(?!\s+[-+]a\b)"
+    r"\b(?:declare|typeset|env|printenv|export|compgen)\b"
+    r"|\bset\b(?!\s+[-+]a\s*(?:$|[;&|)'\"`\n]))"
     r"|\b(?:ba|z|da|k)?sh(?:\s+-[\w-]+)*\s+-[a-z]*[xv][a-z]*(?![\w-])|\b(?:xtrace|verbose)\b"
-    r"|\$[\w{@*#?!$-]|\b(?:environ|getenv)\b|\bprocess\.env\b|\bENV\[|%ENV\b"
+    r"|\$[\w{@*#?!$-]|\b(?:environ|getenv)|\bprocess\.env\b|\bENV\[|%ENV\b",
+    re.IGNORECASE,
 )
 
 # The shell "source" shorthand is a dot standing alone after whitespace or an opening quote

@@ -151,7 +151,9 @@ def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
             text=True,
             timeout=10,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+    except subprocess.CalledProcessError as error:
+        raise UpdateError(f"git failed for {path}: {error}: {error.stderr.strip()}") from error
+    except (subprocess.TimeoutExpired, OSError) as error:
         raise UpdateError(f"git failed for {path}: {error}") from error
 
 
