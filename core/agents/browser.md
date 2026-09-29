@@ -9,7 +9,7 @@ mcpServers:
   - playwright:
       type: stdio
       command: npx
-      args: ["-y", "@playwright/mcp", "--viewport-size", "1920,1080", "--headless", "--isolated"]
+      args: ["-y", "@playwright/mcp", "--viewport-size", "1920,1080", "--headless", "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36", "--isolated"]
 maxTurns: 60
 ---
 
