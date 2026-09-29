@@ -130,6 +130,21 @@ AUTHORIZED_PATHS = re.compile(
     re.IGNORECASE,
 )
 
+# Loading a repository's local dev env files into the shell for a test run
+# (`set -a; . .envs/.postgres; set +a`) prints nothing. Only the bare
+# `.`/`source` statement on a relative `.envs/` path is exempt: any reader of
+# the file, any absolute or home path, and any printing of the loaded values
+# still blocks.
+SOURCED_REPO_ENV = re.compile(
+    r"(?<![^\s;&|('\"`])(?:source|\.)\s+(?:\./)?\.envs/(?![^\s;&|)'\"`]*prod)"
+    r"(?:\.[\w-]+/)?\.[\w-]+(?=$|[\s;&|)'\"`])",
+    re.IGNORECASE,
+)
+# SOURCED_REPO_ENV applies only when the command has none of these words:
+# `declare -p`, `typeset -p`, `env | sort` and a bare `set` print the loaded
+# values, and _ENV_DUMP_CMD does not catch all of those forms.
+ENV_DUMP_WORD = re.compile(r"\b(?:declare|typeset|env|printenv|export|compgen)\b|\bset\b(?!\s+[-+]a\b)")
+
 # The shell "source" shorthand is a dot standing alone between whitespace; a dot inside a file
 # name (report_issue.py) is not a reader.
 READER_NEAR_SECRET = re.compile(
@@ -1151,11 +1166,14 @@ EXCLUDE_OPTION = re.compile(rf"(?<!\S)--exclude(?:-from|-dir)?(?:=|\s+){_OPTION_
 # segments are checked below.
 def verdict(command: str) -> Hit | None:
     """Return why to block a command, or None to allow."""
+    sources_repo_env = ENV_DUMP_WORD.search(command) is None
     heredocs = strip_heredoc_bodies(command)
     command = heredocs.head
     for body, words in heredocs.interpreter_bodies:
         for scan in interpreter_body_scans(body, words):
             scan = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", scan))
+            if sources_repo_env:
+                scan = SOURCED_REPO_ENV.sub(" ", scan)
             if m := INTERPRETER_BODY_SECRET.search(scan):
                 return Hit(
                     "runs code that names a credential-bearing path", "interpreter-body-secret", m.group(0), body
@@ -1175,6 +1193,8 @@ def verdict(command: str) -> Hit | None:
         # Blank out only the allowlisted paths, never the whole segment:
         # `diff .env .env.example` reads the real file and must still block.
         segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", raw))
+        if sources_repo_env:
+            segment = SOURCED_REPO_ENV.sub(" ", segment)
         if not segment.strip():
             continue
         if m := SECRET_COMMANDS.search(segment):
@@ -1520,6 +1540,12 @@ def raw_dump_path_verdict(file_path: str) -> str | None:
     return None
 
 
+NO_RESHAPE = (
+    "Use only the routes this message names. Do not rewrite the command to hide what matched "
+    "(split or build names, encode paths, move it into a script); if no route fits, stop and report the block."
+)
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -1539,7 +1565,7 @@ def main() -> int:
                 "Pass secrets to programs via their "
                 "own flags/env, never through od/xxd/echo/printf or an "
                 "unfiltered env dump; if you must inspect a value's shape, "
-                "report only its length.",
+                f"report only its length.\n{NO_RESHAPE}",
                 file=sys.stderr,
             )
             return 2
@@ -1576,7 +1602,7 @@ def block_secret_read(noun: str, hit: Hit) -> int:
         "If this reads a credential file, ask the user for the value instead of printing it.\n"
         "If the matched text is a search pattern or prose, not a file: search with the Grep "
         "tool, or put the text in a file and pass the file name.\n"
-        "Files tracked in git already exist in every git worktree; do not copy them.",
+        f"Files tracked in git already exist in every git worktree; do not copy them.\n{NO_RESHAPE}",
         file=sys.stderr,
     )
     return 2
@@ -1589,7 +1615,7 @@ def block_raw_dump(noun: str, reason: str) -> int:
         "headers, and typed values. For a redacted view of actions and "
         f"requests, run `{TRACE_READER}` (on the trace.zip, not the files "
         "`unzip -d` extracts from it). Copying, listing (`unzip -l`, "
-        "`zipinfo`), and `npx playwright show-trace` stay allowed.",
+        f"`zipinfo`), and `npx playwright show-trace` stay allowed.\n{NO_RESHAPE}",
         file=sys.stderr,
     )
     return 2

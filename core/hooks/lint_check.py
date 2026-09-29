@@ -51,7 +51,7 @@ def run(payload: dict[str, Any]) -> str:
     except (OSError, subprocess.TimeoutExpired):
         return ""
     output = (result.stdout + result.stderr).strip()
-    if not output:
+    if result.returncode == 0 or not output:
         return ""
     tool = "ruff" if path.suffix == ".py" else "eslint"
     return f"Lint ({tool}): {path}\n{output}"
@@ -64,7 +64,8 @@ def main() -> int:
         return 0
     output = run(payload)
     if output:
-        print(output)
+        message = output[:8000] + "\nFix findings on lines you changed; leave pre-existing ones unless asked."
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": message}}))
     return 0
 
 
