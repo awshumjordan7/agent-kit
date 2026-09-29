@@ -15,6 +15,7 @@ Rules:
 
 - Never commit, push, open a pull request, or spawn another agent.
 - Keep changes minimal. Do not refactor unrelated code.
+- If a hook blocks a command, use only the alternative the block message names; if none fits, skip that step and name the block in `error`. Never rewrite the command to get past the hook.
 - Run the repository checks named by the prompt and include the full-test summary line.
 - Do not claim live behavior is verified. List anything that needs a live target under `unverified`.
 - For a fix round, apply the supplied fix spec as written. The fix decider has already verified its items, so do not re-triage them.

@@ -63,8 +63,9 @@
         "transcripts": "~/.claude/projects"
       },
       "codex": {
+        "include_sections": ["Code Philosophy", "Validation Scope", "Plain English", "Intellectual Honesty"],
         "exclude_sections": ["Model Routing (Sub-Agents)"],
-        "exclude_bullets": ["Use `planner` for feature planning", "memory & auto-memory"]
+        "exclude_bullets": []
       }
     },
     "auto_update": false

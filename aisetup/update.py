@@ -151,7 +151,9 @@ def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
             text=True,
             timeout=10,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+    except subprocess.CalledProcessError as error:
+        raise UpdateError(f"git failed for {path}: {error}: {error.stderr.strip()}") from error
+    except (subprocess.TimeoutExpired, OSError) as error:
         raise UpdateError(f"git failed for {path}: {error}") from error
 
 
@@ -187,11 +189,7 @@ def check_repositories(profile: dict[str, Any]) -> list[RepoStatus]:
         _git(path, "fetch")
         upstream = pinned_core_tag if name == "agent-kit" and pinned_core_tag else f"origin/{track}"
         behind, ahead = _counts(path, upstream)
-        command = (
-            f"git -C {path} checkout {upstream}"
-            if name == "agent-kit" and pinned_core_tag
-            else f"git -C {path} merge --ff-only {upstream}"
-        )
+        command = f"git -C {path} merge --ff-only {upstream}"
         statuses.append(RepoStatus(name, path, behind, ahead, command))
     return statuses
 
@@ -214,7 +212,9 @@ def update_repositories(profile: dict[str, Any]) -> list[RepoStatus]:
         if status.repo == "overlay":
             continue
         if status.repo == "agent-kit" and pinned_core_tag:
-            _git(status.path, "checkout", pinned_core_tag)
+            # behind == 0 means the pinned tag is already an ancestor of HEAD.
+            if status.behind:
+                _git(status.path, "merge", "--ff-only", pinned_core_tag)
         elif status.behind:
             track = profile["layers"]["core"].get("track", "main")
             _git(status.path, "merge", "--ff-only", f"origin/{track}")

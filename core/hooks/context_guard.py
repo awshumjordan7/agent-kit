@@ -42,10 +42,12 @@ MESSAGES = {
     ),
     BAND_300K: (
         "Context guard: ~{n}k tokens. Start no new work. Let running agents and Codex "
-        "sessions finish, rewrite STATE.md, then run "
+        "sessions finish, rewrite STATE.md (list every live sandbox or fork the run owns), then "
+        "in a later tool call run "
         "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name>` and message the "
-        "successor. Exception: if this run is in its final stage (final review, QA, ship), "
-        "finish it first, then hand off. " + REPORT_ISSUE_LINE
+        "successor. If handoff.py exits 1, the handoff is not done: fix the cause it names and "
+        "rerun, or give the user the command it printed. Exception: if this run is in its final "
+        "stage (final review, QA, ship), finish it first, then hand off. " + REPORT_ISSUE_LINE
     ),
     BAND_340K: (
         "Context guard: ~{n}k tokens. Before ending this turn: wait for running agents, "

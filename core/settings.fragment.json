@@ -43,7 +43,8 @@
   },
   "model": "claude-opus-5-5[1m]",
   "env": {
-    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1"
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "8"
   },
   "hooks": {
     "SessionStart": [

@@ -1,6 +1,7 @@
 ---
 name: content-pipeline
-description: Turn source material into reviewed, brand-consistent content and publish it safely.
+description: >-
+  Draft marketing content (launch messaging, blog post, release email, messaging framework) from notes, a commit range, or URLs; check it against the brand voice and sources; publish after approval. Use when the user asks for one of those four outputs. Not for internal docs, READMEs, or PR descriptions.
 ---
 
 # Content pipeline

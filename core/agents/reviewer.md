@@ -16,8 +16,10 @@ Rules:
   ranged reads (`sed -n 'A,Bp'` or `grep -n`), at most 120 lines per read. Never print or
   read a whole file.
 - Do not run git commands or use web search.
-- Budget: at most 30 tool calls. Decide the reads you need before the first one, and stop
-  once every checklist item has a verdict.
+- Budget: at most 30 tool calls. Decide the reads you need before the first one. Stop
+  when every checklist item has a verdict and you have reported every other issue you
+  found in the diff, at any severity; the caller filters. Say in the description when
+  you are unsure, and set severity honestly rather than dropping a minor finding.
 - Do not explore adjacent code, restate the inputs, or narrate your process.
 - Every finding cites a `file:line` from the diff or a confirming read.
 - You never see another reviewer's findings before forming your own.

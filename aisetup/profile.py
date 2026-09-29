@@ -47,10 +47,12 @@ FORGE_KEYS = {
 ROLE_KEYS = {"provider", "model", "effort"}
 STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}
 DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
-CODEX_DOCTOR_KEYS = {"agents_md", "exclude_sections", "exclude_bullets"}
+CODEX_DOCTOR_KEYS = {"agents_md", "include_sections", "exclude_sections", "exclude_bullets"}
 METRICS_KEYS = {"since", "until", "timezone", "transcripts"}
 FORGE_ROLE_NAMES = ("impl", "quick-impl", "review", "plan-review")
 OVERRIDE_KEYS = ("agents", "forge")
+# Saved without layer defaults so a later data change is not shadowed by an old saved copy.
+PRUNED_KEYS = (*OVERRIDE_KEYS, "doctor")
 NULLABLE_AGENT_KEYS = ("maxTurns", "effort")
 PLAIN_PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -171,7 +173,7 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _unknown(doctor_codex, CODEX_DOCTOR_KEYS, "profile.doctor.codex")
     if "agents_md" in doctor_codex and not isinstance(doctor_codex["agents_md"], str):
         raise ProfileError("profile.doctor.codex.agents_md must be a string")
-    for key in ("exclude_sections", "exclude_bullets"):
+    for key in ("include_sections", "exclude_sections", "exclude_bullets"):
         if not isinstance(doctor_codex.get(key), list) or not all(
             isinstance(item, str) for item in doctor_codex[key]
         ):
@@ -321,18 +323,18 @@ def saved_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, .
     full = deepcopy(profile)
     _strip_agent_nulls(full)
     overrides = _prune_defaults(
-        {key: full[key] for key in OVERRIDE_KEYS if key in full}, profile_defaults(full)
+        {key: full[key] for key in PRUNED_KEYS if key in full}, profile_defaults(full)
     )
     pruned = {
         key: value
         for key, value in full.items()
-        if key not in OVERRIDE_KEYS or key in overrides
+        if key not in PRUNED_KEYS or key in overrides
     }
     pruned.update(overrides)
     reloaded = deep_merge(profile_defaults(pruned), pruned)
     difference = _first_difference(
-        {key: reloaded.get(key) for key in OVERRIDE_KEYS},
-        {key: full.get(key) for key in OVERRIDE_KEYS},
+        {key: reloaded.get(key) for key in PRUNED_KEYS},
+        {key: full.get(key) for key in PRUNED_KEYS},
     )
     if difference is not None:
         return full, difference

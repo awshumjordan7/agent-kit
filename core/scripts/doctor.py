@@ -40,11 +40,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ignore": {"globs": ["skills/synced/**"]},
     "thresholds": {"agent_max_lines": 60},
     "repos": {"roots": []},
-    # Codex reads its global AGENTS.md on every run, so it mirrors CLAUDE.md minus the
-    # sections that only mean something inside Claude Code.
+    # Codex reads its global AGENTS.md on every run as an unattended, read-only reviewer, so it
+    # gets only the listed CLAUDE.md sections; exclude_* apply only when include_sections is empty.
     "codex": {
+        "include_sections": ["Code Philosophy", "Validation Scope", "Plain English", "Intellectual Honesty"],
         "exclude_sections": ["Model Routing (Sub-Agents)"],
-        "exclude_bullets": ["Use `planner` for feature planning", "memory & auto-memory"],
+        "exclude_bullets": [],
     },
 }
 PATH_REF_RE = re.compile(
@@ -415,13 +416,19 @@ def check_code_standards_sync(ctx: Context) -> list[Finding]:
     message = "generated code standards are missing" if actual is None else "generated code standards differ"
     return [finding("FAIL", "code-standards-sync", ctx, target, message)]
 
-def strip_claude_only(lines: list[str], sections: list[str], bullets: list[str]) -> list[str]:
+def strip_claude_only(
+    lines: list[str], sections: list[str], bullets: list[str], include: list[str]
+) -> list[str]:
     kept: list[str] = []
     skipping_section = False
     skipping_bullet = False
     for line in lines:
         if re.match(r"#{1,2} ", line):
-            skipping_section = line[3:].strip() in sections if line.startswith("## ") else False
+            if line.startswith("## "):
+                name = line[3:].strip()
+                skipping_section = name not in include if include else name in sections
+            else:
+                skipping_section = False
             skipping_bullet = False
         elif skipping_bullet and (not line.strip() or not line.startswith(" ")):
             skipping_bullet = False
@@ -442,10 +449,16 @@ def expected_codex_agents(ctx: Context) -> tuple[str | None, str | None]:
     except FileNotFoundError:
         return None, "CLAUDE.md is missing"
     codex = ctx.config.get("codex", {})
+    include = [str(name) for name in codex.get("include_sections", [])]
+    headings = {line[3:].strip() for line in lines if line.startswith("## ")}
+    missing = [name for name in include if name not in headings]
+    if missing:
+        return None, f"CLAUDE.md lacks included Codex sections: {', '.join(missing)}"
     kept = strip_claude_only(
         lines,
         [str(name) for name in codex.get("exclude_sections", [])],
-        [str(text) for text in codex.get("exclude_bullets", [])],
+        [] if include else [str(text) for text in codex.get("exclude_bullets", [])],
+        include,
     )
     return CODEX_HEADER + "\n".join(kept).strip() + "\n", None
 

@@ -1,16 +1,7 @@
 ---
 name: brainstorming
-description: >
-  Structured discussion skill that produces a forge plan before implementation begins.
-  Guides focused exploration, grounds the design in the actual codebase, presents 2-3
-  approaches with trade-offs, defines the plan's tests, and hands the agreed approach to forge.
-  Use whenever: "brainstorm", "discuss this feature", "let's design", "new feature",
-  "I want to build", "explore approaches", "what do you think about building", "let's think
-  through", "design session", or before starting a complex feature that needs upfront
-  discussion. Also use when the user wants to explore trade-offs before committing to an
-  approach. Do NOT use for: bug fixes, quick tweaks, tasks where the user already has a plan,
-  or when the user says "just do it" / "quick fix". If the user already has a plan document,
-  use forge (or `forge implement`) instead.
+description: >-
+  Design discussion before building a feature: grounds the idea in the codebase, compares 2-3 approaches with trade-offs, agrees the plan's tests, and writes a forge plan. Use when the user asks to brainstorm, design, or explore approaches or trade-offs for a feature that has no plan yet ("let's design", "explore approaches", "design session"). Not for bug fixes, small tweaks, "just do it" requests, or work that already has a plan (use forge).
 ---
 
 # Brainstorming

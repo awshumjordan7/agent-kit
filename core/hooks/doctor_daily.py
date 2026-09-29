@@ -50,7 +50,7 @@ def run_daily(layers_root: Path, claude_home: Path, today: date | None = None) -
         return ""
     messages = [doctor.stdout.strip(), doctor.stderr.strip()]
     statuses = []
-    if check.returncode == 0:
+    if check.returncode in (0, 1):
         for line in check.stdout.splitlines():
             try:
                 status = json.loads(line)
