@@ -724,6 +724,7 @@ run_configured_tool() {
   local selected=()
   local path_args=''
   local expanded
+  local rest
   local extensions_label
   [[ -n $command ]] || return 0
   timeout_seconds=$(timeout_for "$tool") || die "gate.sh: cannot read $tool timeout"
@@ -765,7 +766,14 @@ PY
     path_args+=" $(shell_quote "$path")"
   done
   path_args=${path_args# }
-  expanded="${command//<paths>/"$path_args"}"
+  # Pattern substitution keeps inner quotes under bash 3.2 and expands & under bash 5.2+.
+  expanded=''
+  rest=$command
+  while [[ $rest == *'<paths>'* ]]; do
+    expanded+="${rest%%<paths>*}$path_args"
+    rest=${rest#*<paths>}
+  done
+  expanded+=$rest
   run_tool "$tool" "$expanded" "$timeout_seconds"
 }
 

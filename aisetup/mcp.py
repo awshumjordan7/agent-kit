@@ -144,9 +144,11 @@ def _matches(plan: McpPlan, output: str) -> bool:
     command_match = re.search(r"^\s*Command:\s*(.+?)\s*$", output, re.MULTILINE)
     args_match = re.search(r"^\s*Args:\s*(.*?)\s*$", output, re.MULTILINE)
     actual_args = tuple(shlex.split(args_match.group(1))) if args_match else ()
-    return bool(
-        command_match and command_match.group(1) == server.command and actual_args == server.args
+    # `claude mcp get` prints args space-joined, so an arg with spaces matches only the joined form.
+    args_ok = actual_args == server.args or bool(
+        args_match and args_match.group(1) == " ".join(server.args)
     )
+    return bool(command_match and command_match.group(1) == server.command and args_ok)
 
 
 def _normalize_scope(scope: str) -> str:

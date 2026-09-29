@@ -15,10 +15,10 @@ Ask every independent question in the same turn; go one at a time only when the 
 depends on the answer.
 
 **Ground in the codebase first.** When the feature touches existing code, before (or
-alongside) questioning, map the current state instead of assuming it: spawn one or more
-`scout` agents (Agent tool, `subagent_type: "scout"`; it pins Sonnet, while built-in agent
-types inherit the session model) in parallel to trace entry points, relevant files, and
-existing patterns, and have them report the key files to read. Use what they find
+alongside) questioning, map the current state instead of assuming it: use `locator` agents
+for where-is lookups (entry points, call sites, relevant files) and one `scout` agent
+(`subagent_type: "scout"`) per question that needs reading and judgment, such as existing
+patterns; have them report the key files to read. Use what they find
 to ask sharper questions and make the approaches concrete. Skip this for greenfield work with
 no existing code to explore.
 

@@ -12,8 +12,8 @@ Stall timeout is 300 s (`stallTimeoutSeconds`). `watch` always runs in the backg
 surfaces as a notification, never as a silent hang.
 
 - `references/codex-prompt-contract.md` is prepended to every prompt by `codex-exec.sh`
-  (section per role: `review` for plan review, code review, verify; `impl` for implementation
-  and first-round fixes). The role's budget numbers are filled in.
+  (section per role: `review` for plan review, code review, verify; `impl` for implementation).
+  The role's budget numbers are filled in.
 - `forge.config.json` per role: `maxToolCalls`, `maxToolOutputKB` (the harness kills the session
   past either), `toolOutputTokenLimit` (Codex's own per-call truncation), `webSearch: disabled`,
   `mcp` (normally false for reviewers and configurable for implementers), and
@@ -36,21 +36,6 @@ surfaces as a notification, never as a silent hang.
 
 ## Routing (2026-09-22)
 `roles.impl` runs on Claude Opus 5.5 at high effort, `roles.quick-impl` (small, fully specified work and most fix rounds) at medium, and `roles.plan-review` at xhigh. The Claude reviewer and pre-ship checkpoint run at xhigh; triage and the fix decider (`judge` agent) at high. The fix applier uses `roles.quick-impl`. Each fix loop raises the spawn cap by 3 per round (decider, applier, gate or verify), plus 1 per round for the phase commit in phased runs. `roles.review` runs on Codex gpt-6-sol at xhigh effort, the only Codex use. It replaced gpt-6-astra on 2026-09-22 because one astra review could use about 20% of the 5-hour limit. Watch per-review usage in `.state/usage.log`.
-
-## Sol implementer trial (from 2026-09-15)
-
-Ended 2026-09-22: implementation moved to Claude.
-
-`roles.impl` moved from gpt-5.6-luna to gpt-5.6-sol at high effort. Luna baseline from
-`.state/usage.log` (2026-09-10 billing-visibility run): implement sessions 81 to 108 tool calls,
-340 to 999 KB tool output, fix rounds up to 5, one `budget_exceeded`. Record the first three Sol
-`CODEX_OK` lines here and decide: fewer fix rounds and tool calls at acceptable cost keeps Sol;
-otherwise revert the one config line. Sol pricing: not recorded in the local model cache; check
-the Codex dashboard before comparing dollars.
-
-2026-09-15 forge-core.js edit (7 spec items, excerpts inline): CODEX_OK role=impl model=gpt-5.6-sol effort=high tool_calls=31 tool_output_kb=80 tokens_in=955829 tokens_cached=876160 tokens_out=13298 tokens_reasoning=5534. All items done in one pass, node --check clean, no fix round.
-2026-09-15 forge-core.js smoke edit (3 spec items, excerpts inline): CODEX_OK role=impl model=gpt-5.6-sol effort=high tool_calls=3 tool_output_kb=25 tokens_in=103700 tokens_cached=77184 tokens_out=3483 tokens_reasoning=1665. All items done in one pass, node --check clean, dry run DONE.
-2026-09-16 forge-core.js PR body, sandbox marker, smoke sign-in (3 spec items, excerpts inline): CODEX_OK role=impl model=gpt-5.6-sol effort=high tool_calls=1 tool_output_kb=0 tokens_in=69413 tokens_cached=59648 tokens_out=1125 tokens_reasoning=500. All items done in one pass, node --check clean. Third Sol line: all three forge-core edits landed first pass with 1 to 33 tool calls; Sol stays as impl.
 
 ## Why (retro, 2026-09-10)
 
@@ -76,15 +61,13 @@ review moved to the astra model 2026-09-04).
 
 ## Expected cost
 
-With inputs inline and the `review` budget (30 calls, 200 KB), a plan review or code review on
-the flagship at high effort is a few dollars, mostly cached input. The implementer stays on the
-cheap model. Compare each run's `CODEX_OK` line against these before starting the next repo of
-a multi-repo feature.
+With inputs inline and the Codex `review` budget (`maxToolCalls` 150, `maxToolOutputKB` 300),
+a code review on gpt-6-sol at xhigh effort is mostly cached input. Compare each run's
+`CODEX_OK` line against these before starting the next repo of a multi-repo feature.
 
 The Claude general reviewer runs in parallel with the Codex reviewer and reads the diff file in
-bounded ranges. Reference pricing at the time of writing (per 1M tokens, input / cached /
-output): gpt-6-astra 10 / 1 / 50; gpt-5.6-luna 0.20 / 0.02 / 1.20; requests above 272K input
-tokens bill at 2x input.
+bounded ranges. gpt-6-sol pricing is not recorded in the local model cache; check the Codex
+dashboard before comparing dollars.
 
 ## What the Codex CLI gives us (0.154.0)
 
@@ -121,8 +104,6 @@ tokens bill at 2x input.
   once it can take the checklist and plan summary.
 - Re-test Codex sub-agents on a cheaper model when the model-selection regression is closed.
 
-## quick-impl Codex role (from 2026-09-23)
+## quick-impl Codex role
 
-`codex.roles.quick-impl` uses gpt-6-sol at high effort, matching the other Codex roles. Forge
-runs implementation on Claude, so this role applies only when implementation is switched back to
-Codex. The Luna trial it replaces (2026-09-20 to 2026-09-22) recorded no runs.
+`codex.roles.quick-impl` (gpt-6-sol, high) applies only when implementation is switched back to Codex.

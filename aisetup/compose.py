@@ -88,7 +88,17 @@ class InstallPlan:
 
 DEFAULT_DIRECTORIES = ("hooks", "agents", "skills", "references", "scripts")
 COMPILED_SUFFIXES = {".pyc", ".pyo", ".pyd"}
-COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.pyd")
+COPY_IGNORE = shutil.ignore_patterns(
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    "*.pyd",
+    ".DS_Store",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+)
+IGNORED_CACHE_DIRS = frozenset({".ruff_cache", ".pytest_cache", ".mypy_cache"})
 MANAGED_PATHS_VERSION = 1
 MANAGED_PATHS_FILENAME = "managed-paths.json"
 SETTINGS_BASE_FILENAME = "settings.base.json"
@@ -121,7 +131,12 @@ BACKUP_RETENTION = timedelta(days=30)
 
 
 def _is_compiled_artifact(path: Path) -> bool:
-    return "__pycache__" in path.parts or path.suffix in COMPILED_SUFFIXES
+    return (
+        "__pycache__" in path.parts
+        or path.suffix in COMPILED_SUFFIXES
+        or path.name == ".DS_Store"
+        or not IGNORED_CACHE_DIRS.isdisjoint(path.parts)
+    )
 
 
 def _copy_layer_files(layer: Layer, destination: Path, auxiliary_root: Path) -> None:
