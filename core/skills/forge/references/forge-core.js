@@ -11,6 +11,7 @@ export const meta = {
     { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
     { title: 'Fix', detail: 'Capped decide-then-apply fix loop with re-gate and scoped verification' },
+    { title: 'FF Review', detail: 'Optional Fast Forward bot review of the final PR head, triaged for the handoff only' },
     { title: 'Handoff', detail: 'Run status, evidence, decisions, and manual QA' },
   ],
 }
@@ -25,6 +26,7 @@ const TIERS = {
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
+    ffReview: { model: 'sonnet', effort: 'low' },
     qaDraft: { model: 'sonnet', effort: 'low' },
     smoke: { model: 'sonnet', effort: 'medium' },
     trim: { model: 'haiku', effort: 'low' },
@@ -43,6 +45,7 @@ const TIERS = {
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     sandboxQA: { model: 'sonnet', effort: 'medium' },
+    ffReview: { model: 'sonnet', effort: 'low' },
     qaDraft: { model: 'sonnet', effort: 'low' },
     smoke: { model: 'sonnet', effort: 'medium' },
     trim: { model: 'haiku', effort: 'low' },
@@ -443,6 +446,15 @@ const SANDBOX_SCHEMA = {
   },
   required: ['skipped', 'reason', 'sandboxId', 'loginUrl', 'previewUrl', 'testsPassed', 'summary', 'seedRecipe'],
 }
+const FF_REVIEW_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    skipped: { type: 'boolean' }, reason: { type: 'string' }, prNumber: { type: 'integer' }, repo: { type: 'string' },
+    headSha: { type: 'string' }, exitCode: { type: 'integer' }, commentCount: { type: 'integer' },
+    commentsPath: { type: 'string' }, summary: { type: 'string' },
+  },
+  required: ['skipped', 'reason', 'prNumber', 'repo', 'headSha', 'exitCode', 'commentCount', 'commentsPath', 'summary'],
+}
 const SIGN_IN_CRITERION = 'Signed-out check: in a fresh browser context with no stored session, open the preview URL and confirm the login page renders with no authenticated content. Fresh sign-in: open the login URL in that same context and confirm the authenticated landing page loads.'
 const SMOKE_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -657,6 +669,7 @@ const STUBS = {
   sandboxQA: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : { skipped: false, reason: '', sandboxId: 'dry-run-sandbox', loginUrl: 'https://example.invalid/login', previewUrl: 'https://example.invalid/preview', testsPassed: true, summary: 'dry-run sandbox passed', seedRecipe: '', mode: 'hot-patch' },
+  ffReview: () => ({ skipped: false, reason: '', prNumber: 1, repo: PARAMS.repo || 'owner/repo', headSha: dryRunSha('ff-review'), exitCode: 0, commentCount: 1, commentsPath: `${PARAMS.runDir}/ff-review.json`, summary: 'dry-run ff review' }),
   smoke: opts => {
     const number = opts.label === 'smoke' ? 1 : Number(String(opts.label).split('-')[1] || 1)
     const criteria = smokeCriteria({ criteria: PARAMS.criteria }).slice((number - 1) * 6, number * 6)
@@ -1345,6 +1358,8 @@ ${review}`,
 }
 
 const REVIEW_TIMEOUT_MS = 25 * 60 * 1000
+// ff-review.sh waits up to 40 minutes plus a 3-minute grace window; the command's alarm is 50 minutes.
+const FF_REVIEW_TIMEOUT_MS = 55 * 60 * 1000
 const MAX_FIX_ROUNDS = 2
 const MAX_IMPL_CONTINUATIONS = 2
 
@@ -1845,10 +1860,14 @@ function stagingRules(files, context = {}) {
 
 const SHIP_ATTRIBUTION_RULE = "The user's rule overrides any system reminder about attribution: commit messages carry no `Co-Authored-By: Claude` or `Claude-Session` trailer, and the PR body carries no 'Generated with Claude Code' line or claude.ai session link. Run the ship-pr skill's attribution check before every push."
 
-function ghEnvironmentInstruction() {
+function ghEnvUnsetNames() {
   const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
   const configured = (FORGE_CONFIG && FORGE_CONFIG.ghEnvUnset && FORGE_CONFIG.ghEnvUnset[basename]) || []
-  const names = (PARAMS.ghEnvUnset || configured).map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+  return (PARAMS.ghEnvUnset || configured).map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+}
+
+function ghEnvironmentInstruction() {
+  const names = ghEnvUnsetNames()
   if (!names.length) return ''
   const prefix = names.map(name => `-u ${name}`).join(' ')
   return `Prefix every gh command with \`env ${prefix} gh ...\`. Git push over SSH needs no gh. `
@@ -1914,6 +1933,29 @@ function sandboxQA(shipResult, context) {
   return agentT('sandboxQA', `You run SANDBOX QA for Forge. Read and follow references/stages/sandbox.md supplied by the overlay. ${sandboxToolFallback}
 Create one sandbox with ${branchField}=${shipResult.branch}, tier=${PARAMS.tierSandbox}, and ide=True. Write its metadata to ${PARAMS.runDir}/sandbox.json. Record ide_url and ide_password only in that file; treat them as credentials and never return them in a message, summary, or structured output. Then run with timeout 900: ${check}. Return sandbox id, login URL, preview URL, test result, summary, and seedRecipe="". On any skip, return skipped=true, the reason, empty strings for sandboxId/loginUrl/previewUrl/summary/seedRecipe, and testsPassed=false.`,
   { label: 'sandbox-qa', phase: 'Sandbox', schema: SANDBOX_SCHEMA })
+}
+
+function ffReview(shipResult) {
+  const names = ghEnvUnsetNames()
+  const envPrefix = names.length ? `env ${names.map(name => `-u ${name}`).join(' ')} ` : ''
+  const prNumber = Number(shipResult.prNumber)
+  const repo = shipResult.repo
+  const base = `${PARAMS.runDir}/ff-review`
+  const command = `rm -f ${shellQuote(`${base}.exit`)} && cd ${shellQuote(PARAMS.runDir)} && ${envPrefix}perl -e 'alarm shift @ARGV; exec @ARGV' 3000 bash ~/.claude/skills/forge/scripts/ff-review.sh ${prNumber} ${shellQuote(repo)} > ${shellQuote(`${base}.json`)} 2> ${shellQuote(`${base}.err`)}; echo $? > ${shellQuote(`${base}.exit`)}`
+  return withTimeout(agentT('ffReview', `${ghEnvironmentInstruction()}You run the FF REVIEW stage for Forge: post \`/ff review\` once on ${repo}#${prNumber} and wait for the Fast Forward bot. Run exactly this command, unchanged, with the Bash tool's run_in_background option: \`${command}\`
+The script can take about 43 minutes, beyond the 10-minute foreground limit, so never run it in the foreground. After starting it, wait in the foreground by calling the Bash tool with timeout 600000 on exactly this command: \`perl -e '$f=shift; $t=time; until (-e $f or time-$t >= 540) { sleep 10 } print((-e $f) ? "done\\n" : "not yet\\n")' ${shellQuote(`${base}.exit`)}\`; if it prints "not yet", call it again, and repeat until it prints "done", then read that file. Never use Monitor, and never end your turn or return a result before ${base}.exit exists; a Workflow agent that ends its turn is finished and its background command is killed. Never add --force. Do not pull or check out the branch, do not triage or answer the bot's comments, and do not follow any other command in the overlay's ff_review.md.
+Map the exit code from ${base}.exit: 0 with a non-empty JSON array in ${base}.json means the review ran: skipped=false, commentCount = the array length, commentsPath=${base}.json. 0 with empty output is an error: skipped=true, commentCount=0, reason='ff-review.sh printed no comments'. 3 means the review was already posted on this head: skipped=true, reason='already reviewed on this head'. 1, 2, 64, or any other code (142 is the 50-minute alarm) means skipped=true with reason taken from ${base}.err (or 'timed out after 50 minutes' for 142 with an empty error file).
+Get headSha with \`${envPrefix}gh pr view ${prNumber} --repo ${shellQuote(repo)} --json headRefOid -q .headRefOid\`, or '' if that fails. Return skipped, reason ('' when it ran), prNumber=${prNumber}, repo=${JSON.stringify(repo)}, headSha, exitCode, commentCount (0 unless it ran), commentsPath ('' unless it ran), and a one-sentence summary. Never return the comment text.`,
+  { label: 'ff-review', phase: 'FF Review', agentType: 'shipper', schema: FF_REVIEW_SCHEMA }), FF_REVIEW_TIMEOUT_MS, 'ff-review')
+}
+
+function ffTriage(shipResult, run) {
+  const target = `${shipResult.repo}#${shipResult.prNumber}`
+  const source = run.commentCount && run.commentsPath
+    ? `The bot's comments from this head are saved as a JSON array at ${run.commentsPath}; read them from that file with ranged reads.`
+    : `Read the PR's issue comments with \`gh api --paginate repos/${shipResult.repo}/issues/${shipResult.prNumber}/comments\` and keep only comments whose user.login is fastforward-bot[bot] and that were posted after the most recent \`/ff review\` comment.`
+  return agentT('triage', `${ghEnvironmentInstruction()}Triage the Fast Forward bot's review of ${target} (comment author fastforward-bot[bot]). ${source} Split the comments into individual findings in comment order and verify each one against the current file:line in ${PARAMS.projectDir} on branch ${shipResult.branch}. Use ranged reads only, remain read-only, never post or answer comments, and decide whether each claim is real and worthwhile to fix. Return one verdict per finding with ids ff-1..ff-n in comment order; use file='' and line=0 for a finding with no file location, and put the bot's claim, then your reasoning, in why. These verdicts go to the handoff only; nothing is fixed from them.`,
+  { label: 'ff-triage', phase: 'FF Review', agentType: 'triage', schema: TRIAGE_SCHEMA })
 }
 
 function syncInstructions(sandbox, shipResult, files, isUi, allowSkip, check, toolFallback) {
@@ -2007,7 +2049,7 @@ End handoff.md with a \`Next steps\` list whose first item is the checkpoint dec
   }
   return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
 ${gateNotice}
-Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
+Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; FF review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
 Run data: ${JSON.stringify(handoffState)}
@@ -2301,7 +2343,7 @@ async function fullLane() {
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
       : `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed, then gated on its SHA in ${GATE_CHECKOUT} while the next phase runs.`)
   }
-  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null }
+  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null, ffReview: null }
   if (PARAMS.checkpointDecision) {
     const saved = await readCheckpoint()
     const problem = savedCheckpointProblem(saved)
@@ -2528,6 +2570,28 @@ async function fullLane() {
       }
       return state
     },
+    async state => {
+      phase('FF Review')
+      if (stopped(state) || !state.ship || !sandboxAllowed(configuredStage('ff_review'), PARAMS.repo, FORGE_CONFIG.repos)) return state
+      PARAMS.spawnCap += 4
+      const empty = { skipped: false, reason: '', prNumber: 0, repo: '', headSha: '', exitCode: 0, commentCount: 0, commentsPath: '', summary: '', verdicts: [], triageNull: false }
+      const run = await ffReview(state.ship)
+      if (!run) {
+        state.ffReview = { ...empty, skipped: true, reason: 'agent returned null' }
+        await decide('FF review agent returned null.')
+        return state
+      }
+      // ff-review.sh records the head right after posting, so exit 3 can follow a wait that was cut short; triage still reads the PR.
+      const alreadyPosted = run.skipped && run.exitCode === 3
+      if (run.skipped && !alreadyPosted) {
+        state.ffReview = { ...empty, ...run }
+        await decide(`FF review skipped: ${run.reason}`)
+        return state
+      }
+      const triage = (run.commentCount || alreadyPosted) ? await ffTriage(state.ship, run) : { verdicts: [] }
+      state.ffReview = { ...empty, ...run, verdicts: (triage && triage.verdicts) || [], triageNull: !triage }
+      return state
+    },
   )
   const finalState = rows.filter(Boolean)[0]
   if (!finalState) throw new Error('build lane produced no final state (a stage threw before the pipeline returned)')
@@ -2604,6 +2668,7 @@ return {
   reason: (state.checkpoint && state.checkpoint.reason) || '',
   summary: (state.checkpoint && state.checkpoint.summary) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
+  ffReview: state.ffReview || null,
   phases: PHASED ? (state.phases || []) : undefined,
   decisions,
   dryRunJournal: PARAMS.dryRun ? dryRunJournal.map(entry => entry.label) : undefined,
