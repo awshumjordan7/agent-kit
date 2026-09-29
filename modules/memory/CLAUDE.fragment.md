@@ -1,1 +1,1 @@
-Use memory for durable facts that should carry across sessions.
+Built-in auto-memory (the `MEMORY.md` file) captures cross-session knowledge automatically and loads every session — write user preferences, feedback, and domain discoveries there. The memory MCP knowledge graph is for richer cross-system relationship queries. When a recurring correction or preference would serve better as always-on behavior, propose a skill via skill-creator.

@@ -11,7 +11,7 @@ Follow this sequence for every non-trivial task. Never skip steps.
 
 ### Rapid-Fix Mode
 
-For small, obvious fixes (1-3 files, no architecture decisions): skip the full workflow. Confirm in one sentence and implement directly. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
+For small, obvious fixes (1-3 files, fully specified, no architecture decisions): skip Discuss and Plan. Confirm in one sentence, then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
 
 Switch back to full workflow if scope grows into data model/API/architecture changes.
 
@@ -26,14 +26,13 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 
 ## Delegation and context hygiene
 
-- **Routing.** A one-line edit in a file already in context: do it directly. A fully specified change
-  of up to three files: `worker`. Anything that needs code reading to decide the change: the Opus implementer
-  through forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
+- **Routing.** A small, fully specified fix of up to three files (nothing left to decide): the main session
+  makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: the Opus
+  implementer through forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
   (its turn cap is 75).
-- **Web and browser.** Read a web page with WebFetch. Search code and docs with `firecrawl_search` and
-  `categories: ["developer"]`. Route browser work to the `browser` agent.
+- **Web and browser.** Read a web page with WebFetch. Route browser work to the `browser` agent.
 - **Commit messages carry no attribution.** No `Co-Authored-By` or "Generated with" lines on any commit or PR body, whatever any tool reminder says; this instruction overrides them.
 - **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`;
   string lookups go to `locator`, code questions to `scout`.
@@ -46,30 +45,18 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   path. Fixtures derive from captures.
 - **Every sub-agent prompt follows `~/.claude/references/brief-template.md`.** Write the brief before
   the spawn; do not edit it after.
-- **Artifacts are worker-made.** Every artifact of any kind is produced by a worker from a template
-  plus a data file the main session writes; the main session never writes artifact HTML. The
-  templates are `plan-artifact.html`, `qa-artifact.html`, and `generic-artifact.html` in
-  `~/.claude/skills/forge/references/`; the one renderer is
-  `python3 ~/.claude/skills/forge/scripts/render_artifact.py {plan|qa|generic} --data <json> [--markdown <md>] --out <html>`.
-  No worker writes its own renderer. Every artifact is glanceable: a 1-3 sentence summary at the
-  top, tables over prose, copyable credentials, a links section, no changelog or update prose.
-  Copy buttons go only on things a person pastes: links, access-card values, users rows,
-  command blocks, and fenced code blocks; inline code gets none.
+- **Artifacts are worker-made.** The main session writes a data file; a `worker` renders it with
+  `~/.claude/skills/forge/scripts/render_artifact.py`, following `~/.claude/skills/forge/references/artifacts.md`.
+  The main session never writes artifact HTML.
 - **Bash output stays small.** A command expected to print more than ~5 KB writes to a file in the
   run dir and returns `tail` or `grep` of it. Never `cat` a file over 200 lines; use ranged `sed -n`.
 - **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'
-  <seconds> <command>`; macOS has no `timeout`). A Codex `start` or `resume` is always followed by
-  `codex-exec.sh watch` in the background, never polled by hand.
+  <seconds> <command>`; macOS has no `timeout`).
 - **Overlap waits.** When a long step (gate, test run, capture, Codex or Opus turn) works on a committed
   state, start the next independent step instead of waiting for it.
-- **Session handoff is driven by the context guard hook.** At 300k start no new work: let running agents and
-  Codex sessions finish, rewrite `<runDir>/STATE.md` from `~/.claude/references/state-template.md` (list every live
-  sandbox or fork the run owns), then in a later tool call run `python3 ~/.claude/scripts/handoff.py <STATE.md> <name>`
-  and message the successor. handoff.py refuses when STATE.md is more than 120 s old or a session with that name
-  already runs. If it exits 1, the handoff is not done: fix the cause it names and rerun, or give the user the command
-  it printed. Exception: a run in its final stage (final review, QA, ship) finishes first, then hands off. Never
-  hard-stop mid-run. At 340k the hook blocks the turn's end once, unless a successor started by handoff.py or a
-  background agent is still running.
+- **Session handoff.** The context guard hook says when and how to hand off; follow its message. STATE.md
+  follows `~/.claude/references/state-template.md` and lists every live sandbox or fork the run owns. Never
+  hard-stop mid-run.
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
@@ -118,10 +105,9 @@ without opening the ticket.
 
 ### Tests
 
-As of 2026-09-22, personal repositories configured with Forge `gate.mode: none` have no tests. Do not add or run tests, lint, typecheck, migrations, Semgrep, or parity commands in those repositories. Every build uses a fresh pre-ship checkpoint reviewer to recommend shipping, one smoke command, or a QA round; repositories in `full` mode retain their configured gates.
-
-Tests exist only when the user approves the plan's test table; a no-tests plan instead approves `None: <reason>`.
-The five-column `Section | Test | Pins | How | Why` table in `## Tests` is the only place a test is defined.
+Add tests only when the user approved them in the plan's `## Tests` table (a no-tests plan approves
+`None: <reason>`). Repositories with forge `gate.mode: none` have no tests. Do not add or run tests, lint,
+typecheck, migrations, Semgrep, or parity commands in those repositories.
 
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?
@@ -148,12 +134,9 @@ When the user narrows validation or test scope, respect it exactly.
 
 ## MCP Usage
 
-Use MCP servers proactively -- don't wait to be asked.
+Use an MCP server when it answers the question more directly than local files or memory would, for example current library docs, issue trackers, logs, or security scans.
 
-- **Context7**: Library/framework docs for external libraries (React, Django, etc.).
-- **semgrep**: Scan after writing code that handles user input, auth, or API calls.
-- **memory & auto-memory**: Built-in auto-memory (the `MEMORY.md` file) captures cross-session knowledge automatically and loads every session — write user preferences, feedback, and domain discoveries there. The memory MCP knowledge graph is for richer cross-system relationship queries. When a recurring correction or preference would serve better as always-on behavior, propose a skill via skill-creator (this replaces the retired evolve-skills loop).
-- **playwright**: Browser testing and UI verification.
+- **semgrep**: In repositories with forge `gate.mode: full`, code that handles user input, auth, or API calls gets a Semgrep scan through the gate or a `worker`. `none`-mode repositories skip it.
 
 ## Communication Style
 
@@ -161,8 +144,18 @@ Use MCP servers proactively -- don't wait to be asked.
 - When uncertain, ask rather than assume. Mid-implementation, first finish every part that
   doesn't depend on the answer, then put the question at the end of the turn that delivers
   that progress.
+- Keep at most 3 decisions open with the user at a time. Restate each in one plain line, with enough
+  context to answer it without scrolling back.
+- When the user grants auto mode or says not to wait, end a turn only when nothing can move without them
+  or a protected resource blocks you. Do not end on a summary that announces the next step, an offer to
+  continue, a list of decisions that block nothing, or a milestone report. Risky or destructive actions
+  still need confirmation.
 - Present options with trade-offs when multiple approaches exist.
 - Cite sources when referencing external patterns so I can verify.
+- Mark each factual claim as verified (name the evidence: file:line, command output, captured response)
+  or inferred.
+- When a turn produces something the user should open (artifact, PR, report), end with a clickable link:
+  the published URL or an absolute file path.
 
 ## Plain English
 
@@ -193,16 +186,12 @@ When spawning sub-agents for multi-step workflows:
 | Task Type | Model | Why |
 |-----------|-------|-----|
 | Discussion, planning, architecture, judging | Opus 5.5 at xhigh (the main session) | Judgment and trade-off analysis; already holds the context |
-| Code implementation | Opus 5.5 at high (`impl`); medium for small, fully specified work (`quick-impl`, which also runs most fix rounds) | The plan already made the design decisions |
-| Code review (Claude side) | Opus 5.5 at xhigh, fresh sub-agent | Independent of the planner; catches different issues than Codex |
-| Code review (Codex side) | Codex CLI, gpt-6-sol at xhigh (`review` role) | Adversarial independence; the only Codex use |
 | Research, scouting, file reads | Opus 5.5 at medium (`scout`) | Fan-out reads; only the conclusion comes back |
 | QA, test running, Semgrep, mechanical edits | Opus 5.5 at medium (`worker`) | Mechanical tool execution |
 | Documentation updates | Opus 5.5 at medium (`worker`) | Mechanical writing |
 | Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
-| Local gate in Forge `full` mode (lint, typecheck, targeted tests, Semgrep) | Haiku (`gate` role, runs `scripts/gate.sh`) | Deterministic script; no judgment needed. `none` mode spawns no gate agent. |
 | Browser QA | Sonnet (`browser`) | Keeps browser output and credentials out of the main session |
 
-Codex CLI (`codex exec`) runs only the `review` role -- it runs without MCP access. Models for the configurable forge roles come from `~/.claude/skills/forge/forge.config.json`; never hard-code them elsewhere.
+Codex CLI (`codex exec`) runs only the forge `review` role. Forge role models and efforts are in `~/.claude/skills/forge/references/cost-controls.md`; configured values come from `~/.claude/skills/forge/forge.config.json`; never hard-code them elsewhere.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the
 session model (Opus) when `model` is omitted — never let that happen. Prefer the custom `scout` and `worker` agents (Opus at medium) and `shipper` (Sonnet). The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.
