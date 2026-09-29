@@ -188,7 +188,7 @@ if ! $print_mode; then
   run_dir=$(cd "$run_dir" 2>/dev/null && pwd -P) || die "gate.sh: cannot open run directory: $run_dir"
   # Lets gate commands scope shared resources, such as a test database, to this run. The basename
   # alone repeats across runs, so a hash of the full path is kept; 40 chars fits Postgres names.
-  run_dir_hash=$(printf %s "$run_dir" | shasum | cut -c1-8)
+  run_dir_hash=$(python3 -c 'import hashlib, os, sys; print(hashlib.sha1(os.fsencode(sys.argv[1])).hexdigest()[:8])' "$run_dir") && [[ -n $run_dir_hash ]] || die 'gate.sh: cannot hash the run directory path'
   run_dir_base=${run_dir##*/}
   export FORGE_GATE_RUN_ID="${run_dir_base:0:31}-$run_dir_hash"
 
@@ -465,18 +465,29 @@ def in_history(path):
 
 
 missing = []
+resolved = []
 for entry in entries:
     candidates = [entry]
     # Implementers sometimes annotate entries, as in "gone/ (3 files removed)".
     annotated = re.match(r"^(.*\S)\s+\([^()]*\)$", entry)
     if annotated:
         candidates.append(annotated.group(1))
-    if not any(path_location(path) is not None or in_history(path) for path in candidates):
+    match = next((path for path in candidates if path_location(path) is not None or in_history(path)), None)
+    if match is None:
         missing.append(entry)
+    else:
+        resolved.append(match)
+with open(files_path, "wb") as handle:
+    for path in dict.fromkeys(resolved):
+        handle.write(path.encode("utf-8", "surrogateescape") + b"\0")
 print(", ".join(missing))
 PY
   ) || die 'gate.sh: cannot check --files entries'
   [[ -z $missing_entries ]] || die "gate.sh: --files entries match no file on disk, in the index, or in git history: $missing_entries (pass one path per argument or comma-separated)"
+  files=()
+  while IFS= read -r -d '' file; do
+    files+=("$file")
+  done <"$files_file"
 fi
 
 diff_command=(python3 "$script_dir/run_context.py" diff --run-dir "$run_dir" --repo "$repo" --label "$label")
@@ -819,6 +830,7 @@ with open(files_path, "rb") as handle:
 # Files that still import a deleted module break, and deleting a package can change how ruff
 # sorts imports of a library with the same name, so importers of deleted paths are targets too.
 modules = set()
+stdlib_names = set(getattr(sys, "stdlib_module_names", ()))
 for path in files:
     normalized = path.replace(os.sep, "/").removeprefix("./").rstrip("/")
     if os.path.lexists(os.path.join(repo, normalized)):
@@ -829,14 +841,21 @@ for path in files:
             break
         for start in range(end):
             name = parts[start:end]
-            if all(part.isidentifier() for part in name):
+            if all(part.isidentifier() for part in name) and not (start > 0 and name[0] in stdlib_names):
                 modules.add(".".join(name))
 importers = []
 if modules:
     names = "|".join(sorted(name.replace(".", r"\.") for name in modules))
     pattern = rf"^[[:space:]]*(from|import)[[:space:]]+({names})([^A-Za-z0-9_]|$)"
+    # Relative imports (`from . import mod`) and parenthesized multi-line imports are not matched.
+    from_patterns = [
+        rf"^[[:space:]]*from[[:space:]]+{parent}[[:space:]]+import[[:space:]]+(.*[^A-Za-z0-9_])?{leaf}([^A-Za-z0-9_]|$)"
+        for parent, leaf in (
+            (base.replace(".", r"\."), leaf) for base, leaf in (n.rsplit(".", 1) for n in sorted(n for n in modules if "." in n))
+        )
+    ]
     found = subprocess.run(
-        ["git", "-C", repo, "grep", "-l", "-E", "-e", pattern, "--", "*.py"],
+        ["git", "-C", repo, "grep", "-l", "-E", *[arg for p in [pattern, *from_patterns] for arg in ("-e", p)], "--", "*.py"],
         capture_output=True,
         text=True,
         check=False,

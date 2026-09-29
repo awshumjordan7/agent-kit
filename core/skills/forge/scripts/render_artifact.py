@@ -146,7 +146,8 @@ def slug(text: str) -> str:
 
 
 def split_row(line: str) -> list[str]:
-    cells = re.split(r"(?<!\\)\|(?=(?:[^`]*`[^`]*`)*[^`]*$)", line.strip().strip("|"))
+    pattern = r"(?<!\\)\|(?=(?:[^`]*`[^`]*`)*[^`]*$)" if line.count("`") % 2 == 0 else r"(?<!\\)\|"
+    cells = re.split(pattern, line.strip().strip("|"))
     return [c.strip().replace("\\|", "|") for c in cells]
 
 
@@ -554,7 +555,7 @@ MAX_IMAGE_BYTES = 1_572_864
 MAX_PAGE_IMAGE_BYTES = 8 * 1_048_576
 COLLAPSE_LINES = 15
 SHELL_STEP_RE = re.compile(
-    r"^\s*(\$\s*)?(pytest|python3?|uv run|docker( compose)? exec|kubectl|manage\.py|\./manage\.py|curl|sandboxctl)\b"
+    r"^\s*`?\s*(\$\s*)?(pytest|python3?|uv run|docker( compose)? (exec|run)|kubectl|manage\.py|\./manage\.py|curl|sandboxctl|bash|sh|zsh|npm|npx|node|make|git|psql)\b"
 )
 VERDICT_CONTROLS = (
     '<div class="verdict" role="group" aria-label="Result">'
