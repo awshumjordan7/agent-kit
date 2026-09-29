@@ -16,7 +16,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 - The local gate and the sandbox gate.
 - Scope limits. A run that needs a materially different plan stops with the evidence and reason.
 - The capped fix loop. It stops BLOCKED at `MAX_FIX_ROUNDS` (2) rounds, or earlier when a round shrinks neither the open review set nor the failing gate count, with the open items and decider notes in the handoff. Review items the decider rejects, defers, or cannot decide still stop for a human ruling.
-- Bot-review triage stops for the user. Auto never addresses bot findings by itself.
+- Bot-review findings are triaged and reported in the handoff only; auto never fixes them, and they never enter the fix loop.
 
 ## The trail — `decisions.md`
 

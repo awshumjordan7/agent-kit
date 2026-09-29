@@ -36,7 +36,7 @@ CODEX_HEADER = (
 # Codex reads its global AGENTS.md only from $CODEX_HOME, and install always writes it here.
 CODEX_AGENTS_MD = "~/.codex/AGENTS.md"
 DEFAULT_CONFIG: dict[str, Any] = {
-    "models": {"codex_version": "5.6", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
+    "models": {"codex_version": "6", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
     "ignore": {"globs": ["skills/synced/**"]},
     "thresholds": {"agent_max_lines": 60},
     "repos": {"roots": []},
@@ -56,7 +56,7 @@ HOOK_PATH_RE = re.compile(
     r"(?:(?:\$HOME|~)/\.claude/|(?:/[^\s\"'`]+)?/\.claude/)"
     r"[^\s\"'`;|&]+"
 )
-GPT_RE = re.compile(r"(?i)gpt[- ]?5\.(\d+)")
+GPT_RE = re.compile(r"(?i)(?<![\w/])gpt[- ]?(\d+(?:\.\d+)?)")
 CLAUDE_MODEL_RE = re.compile(r"(?i)\bmodels?\b[^\n]{0,40}\b(haiku|sonnet|opus|fable)\b")
 # Built-in Agent types inherit the session model; skills and agents must name scout/worker instead.
 BUILTIN_AGENT_RE = re.compile(
@@ -239,14 +239,14 @@ def model_sources(ctx: Context) -> list[Path]:
 def check_model_names(ctx: Context) -> list[Finding]:
     findings: list[Finding] = []
     models = ctx.config.get("models", {})
-    canonical = str(models.get("codex_version", "5.6"))
+    canonical = str(models.get("codex_version", "6"))
     claude_tiers = {str(tier).lower() for tier in models.get("claude_tiers", [])}
     for source in model_sources(ctx):
         for line_number, line in enumerate(ctx.read(source).splitlines(), 1):
             if HISTORY_RE.search(line):
                 continue
             for match in GPT_RE.finditer(line):
-                version = f"5.{match.group(1)}"
+                version = match.group(1)
                 if version != canonical:
                     message = f"GPT-{version} does not match canonical GPT-{canonical}"
                     findings.append(finding("FAIL", "model-names", ctx, source, message, line_number))
