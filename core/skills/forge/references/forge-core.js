@@ -497,12 +497,13 @@ const THREAD_CHECK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
 }
-const PLAN_READ_SCHEMA = {
+const PLAN_CHUNK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    planText: { type: 'string' }, utf16Length: { type: 'integer' }, fnv1a: { type: 'integer' }, error: { type: 'string' },
+    chunk: { type: 'string' }, index: { type: 'integer' }, count: { type: 'integer' }, utf16Length: { type: 'integer' }, fnv1a: { type: 'integer' },
+    totalLength: { type: 'integer' }, totalFnv1a: { type: 'integer' }, error: { type: 'string' },
   },
-  required: ['planText', 'utf16Length', 'fnv1a', 'error'],
+  required: ['chunk', 'index', 'count', 'utf16Length', 'fnv1a', 'totalLength', 'totalFnv1a', 'error'],
 }
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -701,8 +702,8 @@ const STUBS = {
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
       contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
     },
-  readConfig: opts => opts.schema === PLAN_READ_SCHEMA
-    ? { planText: DRY_RUN_PLAN, utf16Length: DRY_RUN_PLAN.replace(/\n+$/, '').length, fnv1a: fnv1a(DRY_RUN_PLAN.replace(/\n+$/, '')), error: '' }
+  readConfig: opts => opts.schema === PLAN_CHUNK_SCHEMA
+    ? (plan => ({ chunk: plan, index: 0, count: 1, utf16Length: plan.length, fnv1a: fnv1a(plan), totalLength: plan.length, totalFnv1a: fnv1a(plan), error: '' }))(DRY_RUN_PLAN.replace(/\n+$/, ''))
     : ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
@@ -922,32 +923,79 @@ function fnv1a(text) {
   return hash
 }
 
-// Both sides drop trailing newlines because an echoing agent may add or drop one.
-function planReadProblem(read) {
+// An agent copying a whole plan back drifts (reworded or dropped phrases), so the plan is read in chunks
+// that each carry their own length and hash; chunk cuts avoid whitespace, which an echoing agent may trim.
+const PLAN_CHUNK_UNITS = 6000
+const PLAN_CHUNK_BATCH = 4
+const PLAN_CHUNK_ATTEMPTS = 3
+const PLAN_CHUNK_SCRIPT = [
+  'import functools, json, pathlib, sys',
+  'path, index, size = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])',
+  'def units(s):',
+  '    d = s.encode("utf-16-le")',
+  '    return [d[k] | (d[k + 1] << 8) for k in range(0, len(d), 2)]',
+  'def fnv(s):',
+  '    return functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units(s), 2166136261)',
+  'if not path.is_file():',
+  '    print(json.dumps({"chunk": "", "index": index, "count": 0, "utf16Length": 0, "fnv1a": 0, "totalLength": 0, "totalFnv1a": 0, "error": f"{path} is missing or not a file"}))',
+  '    sys.exit()',
+  'text = path.read_text(encoding="utf-8").rstrip("\\n")',
+  'cuts = [0]',
+  'while len(text) - cuts[-1] > size:',
+  '    b = cuts[-1] + size',
+  '    while b > cuts[-1] + 1 and (text[b - 1].isspace() or text[b].isspace()):',
+  '        b -= 1',
+  '    cuts.append(b)',
+  'cuts.append(len(text))',
+  'count = len(cuts) - 1',
+  'chunk = text[cuts[index]:cuts[index + 1]] if index < count else ""',
+  'error = "" if index < count else f"chunk {index} is out of range ({count} chunks)"',
+  'print(json.dumps({"chunk": chunk, "index": index, "count": count, "utf16Length": len(units(chunk)), "fnv1a": fnv(chunk), "totalLength": len(units(text)), "totalFnv1a": fnv(text), "error": error}))',
+].join('\n')
+
+function planChunkProblem(read, index) {
   if (!read) return 'the reader agent returned null'
   if (read.error) return read.error
-  const text = String(read.planText || '').replace(/\n+$/, '')
-  if (!text) return 'the plan file is empty'
-  if (text.length !== read.utf16Length) return `length check failed: received ${text.length} UTF-16 code units, the file has ${read.utf16Length}`
-  if (fnv1a(text) !== read.fnv1a) return 'FNV-1a check failed: the received text differs from the file at the same length'
+  if (read.index !== index) return `chunk ${index}: the reader returned chunk ${read.index}`
+  const text = String(read.chunk || '')
+  if (!text) return read.totalLength === 0 ? 'the plan file is empty' : `chunk ${index} is empty`
+  if (text.length !== read.utf16Length) return `chunk ${index} length check failed: received ${text.length} UTF-16 code units, the chunk has ${read.utf16Length}`
+  if (fnv1a(text) !== read.fnv1a) return `chunk ${index} FNV-1a check failed: the received text differs from the file at the same length`
   return ''
 }
 
-// Reading the plan through an agent keeps the plan text out of Workflow args, notices, and relaunches.
-async function loadPlanText() {
-  if (PARAMS.planText) return
-  PARAMS.spawnCap += 2
-  const script = 'import functools, json, pathlib, sys; path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8") if path.is_file() else None; data = (text or "").rstrip("\\n").encode("utf-16-le"); units = [data[i] | (data[i + 1] << 8) for i in range(0, len(data), 2)]; print(json.dumps({"planText": text, "utf16Length": len(units), "fnv1a": functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units, 2166136261), "error": ""} if text is not None else {"planText": "", "utf16Length": 0, "fnv1a": 0, "error": f"{path} is missing or not a file"}))'
+async function readPlanChunk(index) {
   let read = null
   let problem = ''
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying planText character for character: python3 -c ${shellQuote(script)} ${shellQuote(PARAMS.planPath)}`,
-      { label: attempt === 1 ? 'read-plan' : 'read-plan-retry', phase: 'Implement', schema: PLAN_READ_SCHEMA })
-    problem = planReadProblem(read)
+  for (let attempt = 1; attempt <= PLAN_CHUNK_ATTEMPTS; attempt++) {
+    PARAMS.spawnCap += 1
+    read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying chunk character for character: python3 -c ${shellQuote(PLAN_CHUNK_SCRIPT)} ${shellQuote(PARAMS.planPath)} ${index} ${PLAN_CHUNK_UNITS}`,
+      { label: `read-plan-${index + 1}${attempt > 1 ? `-retry-${attempt - 1}` : ''}`, phase: 'Implement', schema: PLAN_CHUNK_SCHEMA })
+    problem = planChunkProblem(read, index)
     if (!problem || (read && read.error)) break
   }
+  return { read, problem }
+}
+
+// Reading the plan through agents keeps the plan text out of Workflow args, notices, and relaunches.
+async function loadPlanText() {
+  if (PARAMS.planText) return
+  const first = await readPlanChunk(0)
+  let problem = first.problem
+  const chunks = [first.read ? first.read.chunk : '']
+  const count = first.read ? first.read.count : 0
+  for (let start = 1; !problem && start < count; start += PLAN_CHUNK_BATCH) {
+    const indexes = Array.from({ length: Math.min(PLAN_CHUNK_BATCH, count - start) }, (_, offset) => start + offset)
+    const reads = await Promise.all(indexes.map(index => readPlanChunk(index)))
+    reads.forEach((result, offset) => { chunks[indexes[offset]] = result.read ? result.read.chunk : '' })
+    problem = (reads.find(result => result.problem) || {}).problem || ''
+  }
+  const text = chunks.join('')
+  if (!problem && (text.length !== first.read.totalLength || fnv1a(text) !== first.read.totalFnv1a)) {
+    problem = `the joined chunks (${text.length} UTF-16 code units) differ from the file (${first.read.totalLength}); the file may have changed while it was read`
+  }
   if (!problem) {
-    PARAMS.planText = read.planText
+    PARAMS.planText = text
     return
   }
   if (PARAMS.lane === 'build') throw new Error(`could not read the plan at ${PARAMS.planPath} (${problem}); pass planText inline`)
