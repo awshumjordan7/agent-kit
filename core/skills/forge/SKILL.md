@@ -69,7 +69,7 @@ To run an already confirmed plan, follow `references/implement-mode.md`.
 
 Core ships optional stages disabled. An overlay may supply and enable `stages.sandbox`, `stages.ff_review`, `stages.qa_login`, and ticket handling; each reads its doc from the overlay at `references/stages/<stage>.md`.
 
-`stages.ff_review` runs after the final ship-sync on the configured frontend and backend repos, posts `/ff review` once per PR head, verifies the bot's comments with the `triage` agent, and reports them in the handoff only; bot findings never enter the fix loop.
+`stages.ff_review` runs after the final ship-sync on the configured frontend and backend repos, runs the overlay's `scripts/stages/ff_review.sh`, which posts the review trigger once per PR head (the overlay's `references/stages/ff_review.md` names the bot login and trigger), verifies the bot's comments with the `triage` agent, and reports them in the handoff only; bot findings never enter the fix loop.
 
 ## Guardrails
 
