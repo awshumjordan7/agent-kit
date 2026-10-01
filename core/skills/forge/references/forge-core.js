@@ -1968,7 +1968,9 @@ async function fixLoop(opts) {
   const blockedFields = blocked ? { reason, open: open.map(item => ({ id: findingKey(item), ...item })), deciderNotes } : { deciderNotes }
   if (kind === 'gate') return { gate, touchedFiles: touched, blocked, needsJudge, disputes: openDisputes, rounds, ...blockedFields }
   return {
-    unresolved: open, unresolvedDisputes: openDisputes, fixesApplied: touched.length > 0, rounds,
+    // A fix result can list no touched files (a decider that applied without an apply result), so the file list alone cannot say whether the tree changed.
+    unresolved: open, unresolvedDisputes: openDisputes, rounds,
+    fixesApplied: touched.length > 0 || rounds.some(record => record.appliedBy === 'decider' || Boolean(record.fix && (record.fix.fixed || []).length)),
     touchedFiles: touched, blocked, needsJudge,
     gatePassed: gateRan ? Boolean(gate && gate.passed) : true, gate, gateRan, ...blockedFields,
   }

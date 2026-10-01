@@ -889,6 +889,8 @@ if len(stored) == len(key):
             break
 if source:
     stored["reusedFrom"] = source
+    # No stage runs on reuse, so the source's warnings are the only record of them.
+    stored["warnings"] = candidate.get("warnings") or []
 with open(output_path, "w", encoding="utf-8") as handle:
     json.dump(stored, handle)
 print(source)
