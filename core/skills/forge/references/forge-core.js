@@ -360,9 +360,9 @@ const CHECKPOINT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, script: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
+    command: { type: 'string' }, scriptWritten: { type: 'boolean' }, reason: { type: 'string' }, summary: { type: 'string' },
   },
-  required: ['recommendation', 'command', 'script', 'reason', 'summary'],
+  required: ['recommendation', 'command', 'scriptWritten', 'reason', 'summary'],
 }
 const PHASE_ROW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -393,23 +393,21 @@ const BRANCH_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { branch: { type: 'string' } }, required: ['branch'],
 }
+// The facts checkpoint-facts prints. An unreadable file gives empty values and an error, so the two
+// enums allow an empty string; decidedBy keeps user for a file an older forge wrote.
 const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, script: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
-    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user'] },
+    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa', ''] },
+    command: { type: 'string' },
+    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user', ''] },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
+    planSha256: { type: 'string' }, planChanged: { type: 'boolean' }, error: { type: 'string' },
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
-  required: ['recommendation', 'command', 'reason', 'summary', 'decidedBy', 'implementFilesChanged', 'context'],
-}
-const CHECKPOINT_READ_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: { checkpoint: CHECKPOINT_FILE_SCHEMA, canonLength: { type: 'integer' }, fnv1a: { type: 'integer' } },
-  required: ['checkpoint', 'canonLength', 'fnv1a'],
+  required: ['recommendation', 'command', 'decidedBy', 'implementFilesChanged', 'context', 'planSha256', 'planChanged', 'error'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -481,19 +479,6 @@ const ACK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { written: { type: 'boolean' } }, required: ['written'],
 }
-const WRITE_ACK_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    files: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        properties: { path: { type: 'string' }, bytes: { type: 'integer' }, crc32: { type: 'integer' }, moved: { type: 'boolean' } },
-        required: ['path', 'bytes', 'crc32', 'moved'],
-      },
-    },
-  },
-  required: ['files'],
-}
 const THREAD_CHECK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
@@ -526,6 +511,20 @@ const PLAN_CRITERIA_SCHEMA = factsSchema({
   type: 'object', additionalProperties: false,
   properties: { criteria: { type: 'array', items: { type: 'string' } } },
   required: ['criteria'],
+})
+const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
+const CHECKPOINT_SAVE_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: {
+    written: { type: 'boolean' }, path: { type: 'string' }, sha256: { type: 'string' },
+    hasScript: { type: 'boolean' }, command: { type: 'string' }, files: { type: 'integer' }, error: { type: 'string' },
+  },
+  required: ['written', 'path', 'sha256', 'hasScript', 'command', 'files', 'error'],
+})
+const PHASES_SAVE_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: { written: { type: 'boolean' }, phases: { type: 'integer' }, error: { type: 'string' } },
+  required: ['written', 'phases', 'error'],
 })
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -621,8 +620,8 @@ const STUBS = {
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
     : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
   checkpoint: () => PARAMS.dryRunFindings
-    ? { recommendation: 'smoke', command: 'true', script: '', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
-    : { recommendation: 'ship', command: '', script: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
+    ? { recommendation: 'smoke', command: 'true', scriptWritten: false, reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
+    : { recommendation: 'ship', command: '', scriptWritten: false, reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
   triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
@@ -655,16 +654,18 @@ const STUBS = {
   },
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
-    : opts.schema === WRITE_ACK_SCHEMA
-    ? { files: (opts.expect || []).map(item => ({ ...item, moved: true })) }
+    : opts.schema === CHECKPOINT_SAVE_SCHEMA
+    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: PARAMS.dryRunFindings ? 'true' : '', files: 1, error: '' })
+    : opts.schema === PHASES_SAVE_SCHEMA
+    ? dryRunFacts({ written: true, phases: 0, error: '' })
     : opts.schema === PLAN_FACTS_SCHEMA
     ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '' })
     : opts.schema === PLAN_CRITERIA_SCHEMA
     ? dryRunFacts({ criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
-    : opts.schema === CHECKPOINT_READ_SCHEMA
-    ? (checkpoint => ({ checkpoint, canonLength: canonicalJson(checkpoint).length, fnv1a: fnv1a(canonicalJson(checkpoint)) }))({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true } })
+    : opts.schema === CHECKPOINT_FACTS_SCHEMA
+    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '' })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -692,8 +693,6 @@ const dryRunJournal = []
 const __test = {
   partitionTriage,
   pickImplRole,
-  utf8Bytes,
-  crc32,
   savedCheckpointProblem,
   sandboxAllowed,
   sandboxCheck,
@@ -749,7 +748,7 @@ async function agentT(role, prompt, opts = {}) {
   const profile = forceTier ? TIERS[PARAMS.tier][role] : tierProfile(role)
   if (!profile) throw new Error(`unknown tier role: ${role}`)
   spawnCount++
-  const { forceTier: _forceTier, expect: _expect, ...agentOpts } = opts
+  const { forceTier: _forceTier, ...agentOpts } = opts
   const callOpts = { ...agentOpts, model: profile.model, effort: profile.effort }
   if (PARAMS.dryRun) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
@@ -957,15 +956,17 @@ function shellQuote(value) {
 
 // One agent runs one command that prints { facts, canonLength, fnv1a }. The digest is recomputed over
 // the returned facts, so an echo that adds, drops or edits a field is a miss. The caller's spawn
-// budget covers the first attempt; only the retry raises the cap here.
-async function factsCommand(label, command, schema, phaseLabel) {
+// budget covers the first attempt; only the retry raises the cap here. normalize, when given, is
+// applied to the returned facts before the digest is recomputed.
+async function factsCommand(label, command, schema, phaseLabel, normalize = null) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) PARAMS.spawnCap += 1
     const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: ${command}`,
       { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
     if (read && read.facts && typeof read.facts === 'object') {
-      const canon = canonicalJson(read.facts)
-      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return read.facts
+      const facts = normalize ? normalize(read.facts) : read.facts
+      const canon = canonicalJson(facts)
+      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return facts
     }
     if (!read && capBlocked) return null
     await decide(`${label} attempt ${attempt} ${read ? 'did not match the facts digest' : 'returned no result'}.`)
@@ -1126,26 +1127,33 @@ function changedFiles(allDirty = false) {
     CONTEXT_FACTS_SCHEMA, 'Review')
 }
 
+// Runs as the default agent type, not reviewer, because it writes smoke.py itself and the reviewer
+// type has no Write tool. The prompt restates the reviewer rules that the agent type would carry.
 function checkpointReview(context, gate, implement, phases = null) {
   return agentT('checkpoint', `${planRef()}
 
-You are the fresh pre-ship checkpoint reviewer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, put a complete Python 3 program in script (real newlines, single backslashes, no heredoc) and leave command empty; forge saves it to ${PARAMS.runDir}/smoke.py and runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. Otherwise set script to an empty string and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Set command and script to empty strings unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+You are the fresh pre-ship checkpoint reviewer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present.
+
+RULES. You have a budget of 30 tool calls. Read a repository file only to confirm a file:line the diff touches, at most 120 lines per read, and do not explore adjacent code. Do not run git and do not search the web. Do not use the Agent, Edit or NotebookEdit tools. You may write exactly one file, ${PARAMS.runDir}/smoke.py, and only as described below; write nothing else.
+
+Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Otherwise set scriptWritten to false and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Unless recommendation is smoke, set command to an empty string, set scriptWritten to false and write no file. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
 ${phases ? `\nPHASE COMMITS AND GATES\n${JSON.stringify(phases)}\n` : ''}
 IMPLEMENTER RESULT
 ${JSON.stringify(implement || {})}`,
-  { label: 'checkpoint', phase: 'Checkpoint', agentType: 'reviewer', schema: CHECKPOINT_SCHEMA })
+  { label: 'checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_SCHEMA })
 }
 
 function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
   const smoke = checkpoint.recommendation === 'smoke'
-  const script = smoke && String(checkpoint.script || '').trim() ? String(checkpoint.script) : ''
+  const scriptWritten = smoke && checkpoint.scriptWritten === true
   return {
     recommendation: checkpoint.recommendation,
-    command: !smoke ? '' : script ? `python3 ${shellQuote(`${PARAMS.runDir}/smoke.py`)}` : checkpoint.command,
-    script,
+    // checkpoint-save fills the command in when the reviewer wrote smoke.py.
+    command: smoke && !scriptWritten ? checkpoint.command : '',
+    scriptWritten,
     reason: checkpoint.reason,
     summary: checkpoint.summary,
     decidedBy,
@@ -1155,98 +1163,36 @@ function checkpointDocument(checkpoint, implement, context, decidedBy, state = {
   }
 }
 
-// The Workflow runtime has no verified TextEncoder or Buffer, so UTF-8 and CRC32 are computed here.
-function utf8Bytes(text) {
-  const value = String(text)
-  const bytes = []
-  for (let index = 0; index < value.length; index++) {
-    let code = value.codePointAt(index)
-    if (code > 0xffff) index++
-    else if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd
-    if (code < 0x80) bytes.push(code)
-    else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f))
-    else if (code < 0x10000) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
-    else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
-  }
-  return bytes
-}
-
-const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
-  let value = index
-  for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
-  return value >>> 0
-})
-
-// Matches Python's zlib.crc32.
-function crc32(bytes) {
-  let value = 0xffffffff
-  for (const byte of bytes) value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8)
-  return (value ^ 0xffffffff) >>> 0
-}
-
-// Arguments are groups of <temp> <final> <bytes> <crc32>. Trailing newlines are ignored because the
-// Write tool may add or drop one. Files are moved into place only when every group matches.
-const VERIFY_WRITE_SCRIPT = [
-  'import json, os, sys, zlib',
-  'args = sys.argv[1:]',
-  'groups = [args[index:index + 4] for index in range(0, len(args), 4)]',
-  'observe = lambda path: (lambda data: (len(data), zlib.crc32(data)))(open(path, "rb").read().rstrip(b"\\n")) if os.path.isfile(path) else (-1, -1)',
-  'seen = [(temp, final, int(size), int(crc)) + observe(temp) for temp, final, size, crc in groups]',
-  'ok = bool(seen) and all(row[2] == row[4] and row[3] == row[5] for row in seen)',
-  'moved = [os.replace(row[0], row[1]) is None for row in seen] if ok else [False for row in seen]',
-  'print(json.dumps({"files": [{"path": row[1], "bytes": row[4], "crc32": row[5], "moved": flag} for row, flag in zip(seen, moved)]}))',
-].join('; ')
-
-let writeAttempts = 0
-
-// Writes run-dir files with the Write tool instead of passing content as a shell argument. Every
-// writer is a fresh agent and the Write tool refuses to overwrite a file the agent has not read, so
-// the agent writes new temp paths and the verify script moves them onto the final paths.
-// The runtime forbids Math.random, so a temp name is unique through the attempt counter and a
-// checksum of the label and content.
-async function writeFiles(label, phaseLabel, files) {
-  const expect = files.map(file => {
-    const bytes = utf8Bytes(String(file.content).replace(/\n+$/, ''))
-    return { path: file.path, bytes: bytes.length, crc32: crc32(bytes) }
-  })
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    writeAttempts++
-    const nonce = `${writeAttempts}-${crc32(utf8Bytes(`${label}\n${attempt}\n${files.map(file => file.content).join('\n')}`)).toString(16)}`
-    const temps = files.map(file => `${file.path}.${nonce}.tmp`)
-    const blocks = files.map((file, index) => {
-      const content = String(file.content)
-      return `<<<FORGE-FILE ${temps[index]}>>>\n${content}${content.endsWith('\n') ? '' : '\n'}<<<FORGE-END>>>`
-    }).join('\n')
-    const verifyArgs = expect.map((item, index) => [temps[index], item.path, item.bytes, item.crc32].map(shellQuote).join(' ')).join(' ')
-    const ack = await agentT('changedFiles', `You write ${files.length} file(s) for Forge. For each block below, use the Write tool to write exactly the text between its \`<<<FORGE-FILE <path>>>\` line and the next \`<<<FORGE-END>>>\` line, excluding those two marker lines, to the path named in the FORGE-FILE line. Copy the text character for character. If the Write tool refuses because the path exists and has not been read, Read it once, then Write it again. After every Write succeeds, run exactly one command with the Bash tool and return its stdout JSON unchanged: python3 -c ${shellQuote(VERIFY_WRITE_SCRIPT)} ${verifyArgs}
-If any Write or the command is refused, blocked by a hook, or fails, return {"files": []}. Never write a file another way: no Bash heredoc, echo, printf, or python write.
-
-${blocks}`,
-    { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema: WRITE_ACK_SCHEMA, expect })
-    const observed = (ack && Array.isArray(ack.files)) ? ack.files : []
-    const matched = observed.length === expect.length && expect.every((item, index) =>
-      observed[index].path === item.path && observed[index].moved === true &&
-      observed[index].bytes === item.bytes && observed[index].crc32 === item.crc32)
-    if (matched) return true
-    if (capBlocked) return false
-    await decide(`${label} attempt ${attempt} did not verify (${observed.length ? 'size or checksum mismatch' : 'no write acknowledgement'}).`)
-  }
-  return false
-}
-
-// Saved context drops the long prompt fields; a relaunch recomputes the context before review.
-// smoke.py is written on its own, as raw text, and checkpoint.json keeps only its command, so a
-// relaunch never copies the script again.
+// checkpoint.json is written by a command from small arguments and the context file the context
+// command saved. summary and reason stay out of it: they reach the user through the return value
+// and handoff.md.
 async function writeCheckpoint(checkpoint) {
-  if (checkpoint.script) {
-    PARAMS.spawnCap += 1
-    if (!await writeFiles('write-smoke', 'Checkpoint', [{ path: `${PARAMS.runDir}/smoke.py`, content: checkpoint.script }])) return false
+  const smoke = checkpoint.recommendation === 'smoke'
+  const proof = !smoke ? '' : checkpoint.scriptWritten ? ' --script' : ` --command=${shellQuote(checkpoint.command)}`
+  const files = checkpoint.implementFilesChanged
+  // --branch makes the command read phases.json, so it is passed only for a phased run.
+  const branch = checkpoint.phases ? ` --branch ${shellQuote(checkpoint.branch || '')}` : ''
+  const planSha = PLAN_FACTS.sha256 ? ` --plan-sha256 ${shellQuote(PLAN_FACTS.sha256)}` : ''
+  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)} --recommendation ${checkpoint.recommendation} --decided-by ${checkpoint.decidedBy}${proof}${branch}${planSha} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
+    CHECKPOINT_SAVE_SCHEMA, 'Checkpoint')
+  if (!saved) return false
+  if (!saved.written) {
+    await decide(`save-checkpoint did not write ${PARAMS.runDir}/checkpoint.json: ${saved.error || 'no error text'}`)
+    return false
   }
-  return writeFiles('write-checkpoint', 'Checkpoint', [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, script: '' }, null, 2)}\n` }])
+  const commandMatches = checkpoint.scriptWritten ? saved.hasScript === true && Boolean(saved.command) : saved.command === checkpoint.command
+  if (!commandMatches || saved.files !== files.length) {
+    await decide(`save-checkpoint saved a different command or file count than forge passed (command ${JSON.stringify(saved.command)}, ${saved.files} files).`)
+    return false
+  }
+  checkpoint.command = saved.command
+  return true
 }
 
 function savedCheckpointProblem(saved) {
   if (!saved) return 'the file could not be read'
+  if (saved.error) return saved.error
+  if (!saved.recommendation) return 'recommendation is empty'
   if (contextFailed(saved.context)) return 'context.commandSucceeded is not true'
   if (!String(saved.context.diffPath || '').endsWith('.diff')) return `context.diffPath does not end in .diff (${saved.context.diffPath || 'empty'})`
   if (!Array.isArray(saved.implementFilesChanged)) return 'implementFilesChanged is not an array'
@@ -1254,12 +1200,12 @@ function savedCheckpointProblem(saved) {
   return ''
 }
 
-// Agents echo JSON nulls unreliably, so the read commands print "" for every null and the
+// Agents echo JSON nulls unreliably, so the phases.json read prints "" for every null and the
 // fields that carry meaning as null are restored after the read.
 const PY_NO_NULLS = 'clean = lambda v: "" if v is None else ({k: clean(x) for k, x in v.items()} if isinstance(v, dict) else ([clean(x) for x in v] if isinstance(v, list) else v))'
 
 // Matches Python json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True) for
-// strings, integers, booleans, arrays and objects; checkpoint.json holds no floats or nulls.
+// strings, integers, booleans, arrays and objects; facts hold no floats or nulls.
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${canonicalJson(key)}:${canonicalJson(value[key])}`).join(',')}}`
@@ -1275,31 +1221,21 @@ function restorePhaseRow(row) {
 // a kept empty phases array would also make a single-pass run look phased.
 function dropEmptyOptionalKeys(checkpoint) {
   const kept = { ...checkpoint }
-  for (const key of ['script', 'branch', 'phases']) {
+  for (const key of ['branch', 'phases']) {
     if (kept[key] === '' || (Array.isArray(kept[key]) && !kept[key].length)) delete kept[key]
   }
   return kept
 }
 
-// The command prints a digest of the canonical JSON so an echo that adds, drops or edits a field is caught.
+// checkpoint-facts fills a key the file lacks with an empty value, so a file an older forge wrote
+// still reads, and it hashes the plan file itself to report a plan edited since the checkpoint.
 async function readCheckpoint() {
-  const script = `import functools, json, pathlib, sys; ${PY_NO_NULLS}; data = clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))); data = {k: v for k, v in data.items() if not (k in ("script", "branch", "phases") and v in ("", []))}; canon = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True); print(json.dumps({"checkpoint": data, "canonLength": len(canon), "fnv1a": functools.reduce(lambda h, c: ((h ^ ord(c)) * 16777619) & 0xFFFFFFFF, canon, 2166136261)}))`
-  const path = `${PARAMS.runDir}/checkpoint.json`
   PARAMS.spawnCap += 1
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
-      { label: attempt === 1 ? 'read-checkpoint' : 'read-checkpoint-retry', phase: 'Checkpoint', schema: CHECKPOINT_READ_SCHEMA })
-    if (!read) return null
-    const echoed = dropEmptyOptionalKeys(read.checkpoint)
-    const canon = canonicalJson(echoed)
-    if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) {
-      const saved = echoed
-      if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
-      return saved
-    }
-    await decide(`read-checkpoint attempt ${attempt} did not match the file digest.`)
-  }
-  return null
+  const saved = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)}`,
+    CHECKPOINT_FACTS_SCHEMA, 'Checkpoint', dropEmptyOptionalKeys)
+  if (!saved) return null
+  if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
+  return saved
 }
 
 async function followCheckpoint(state, decision, command) {
@@ -2111,7 +2047,7 @@ function sandboxRefresh(sandbox, shipResult, context) {
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
   const gateNotice = noGates
-    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint result at ${PARAMS.runDir}/checkpoint.json.`
+    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint recommendation and command from ${PARAMS.runDir}/checkpoint.json.`
     : ''
   const cleanup = usesGateCheckout()
     ? `Before anything else, run exactly this command once and continue regardless of its output: \`${gateCheckoutCleanupCommand()}\`. `
@@ -2130,7 +2066,8 @@ APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/decisions.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
+When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and neither the run data nor checkpoint.json holds the checkpoint summary and reason after a relaunch. Carry its checkpoint summary and reason into What changed and why.
 ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
@@ -2165,15 +2102,18 @@ async function readPhases() {
   return { ...saved, phases: (saved.phases || []).map(restorePhaseRow), lastCommittedPhase: saved.lastCommittedPhase || null, headSha: saved.headSha || null }
 }
 
-function writePhases(run, extraPending = []) {
-  const document = {
-    branch: run.branch,
-    phases: run.rows,
-    lastCommittedPhase: run.lastCommittedPhase,
-    headSha: run.headSha,
-    pendingGates: [...extraPending, ...run.unresolved, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
-  }
-  return writeFiles('write-phases', 'Implement', [{ path: `${PARAMS.runDir}/phases.json`, content: `${JSON.stringify(document, null, 2)}\n` }])
+// phases.json is written by a command from these small arguments; it takes the titles from the plan
+// file. An empty field in an <id>:<sha>:<gate> or <id>:<sha>:<label> value is saved as null.
+async function writePhases(run, extraPending = []) {
+  const pending = [...extraPending, ...run.unresolved, ...run.pending]
+  const values = (rows, last) => rows.map(row => ` ${shellQuote(`${row.id}:${row.sha || ''}:${row[last] || ''}`)}`).join('')
+  const headSha = run.headSha ? ` --head-sha ${shellQuote(run.headSha)}` : ''
+  const lastPhase = run.lastCommittedPhase ? ` --last ${shellQuote(run.lastCommittedPhase)}` : ''
+  const saved = await factsCommand('save-phases', `python3 ~/.claude/skills/forge/scripts/run_context.py phases-save --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)} --branch ${shellQuote(run.branch)}${headSha}${lastPhase} --phase${values(run.rows, 'gate')}${pending.length ? ` --pending${values(pending, 'label')}` : ''}`,
+    PHASES_SAVE_SCHEMA, 'Implement')
+  if (saved && saved.written) return true
+  await decide(`${PARAMS.runDir}/phases.json could not be written (${(saved && saved.error) || 'no checked result'}); the phase loop stopped.`)
+  return false
 }
 
 function planPrTitle() {
@@ -2276,7 +2216,7 @@ async function collectPhaseGate(run, entry, allowFix) {
         sha = commit.sha
         run.headSha = commit.sha
         await decide(`Fix Phase ${entry.id} gate committed as ${sha.slice(0, 12)}.`)
-        await writePhases(run, [{ id: entry.id, sha, label: entry.label }])
+        if (!await writePhases(run, [{ id: entry.id, sha, label: entry.label }])) return false
       }
       return true
     },
@@ -2360,7 +2300,10 @@ async function phasedImplement(state) {
     await decide(`Phase commits go on branch ${run.branch}.`)
   }
   // Written before Phase 1 so an interrupted first phase resumes with this run's baseline.
-  if (!PHASES_RECORDED) await writePhases(run)
+  if (!PHASES_RECORDED && !await writePhases(run)) {
+    state.status = 'BLOCKED'
+    return state
+  }
   for (let index = startIndex; index < PHASES.length && !run.blocked; index++) {
     const phase = PHASES[index]
     const row = run.rows[index]
@@ -2389,7 +2332,7 @@ async function phasedImplement(state) {
       if (run.blocked) break
       if (commit.sha && phase !== lastPhase) queuePhaseGate(run, { id: phase.id, sha: commit.sha, label: `gate-phase-${phase.id}`, files: phaseFiles })
     }
-    await writePhases(run)
+    if (!await writePhases(run)) run.blocked = true
   }
   while (run.pending.length) await collectPhaseGate(run, run.pending[0], !run.blocked)
   if (gated && !run.blocked && !capBlocked && run.headSha && run.files.length) {
@@ -2397,7 +2340,7 @@ async function phasedImplement(state) {
     queuePhaseGate(run, { id: lastPhase.id, sha: run.headSha, label: finalLabel, files: run.files })
     await collectPhaseGate(run, run.pending[0], true)
   }
-  await writePhases(run)
+  if (!await writePhases(run)) run.blocked = true
   state.branch = run.branch
   state.phases = run.rows
   state.gate = run.lastGate
@@ -2430,14 +2373,15 @@ async function fullLane() {
     const problem = savedCheckpointProblem(saved)
     if (problem) throw new Error(`checkpointDecision requires a valid ${PARAMS.runDir}/checkpoint.json: ${problem}`)
     initial.implement = { filesChanged: saved.implementFilesChanged }
-    initial.context = saved.context
+    if (saved.planChanged) await decide(`plan.md changed since the checkpoint (${PLAN}); the run continues on the saved checkpoint.`)
+    // A checkpoint an older forge saved has a context without a brief file; later stages take a fresh one.
+    initial.context = saved.context.briefPath ? saved.context : null
     if (saved.phases) {
       initial.branch = saved.branch || ''
       initial.phases = saved.phases
     }
-    initial.checkpoint = { ...saved, script: '', decidedBy: 'user' }
+    initial.checkpoint = saved
     await decide(`Pre-ship checkpoint decision: ${PARAMS.checkpointDecision} (user)`)
-    if (!await writeCheckpoint(initial.checkpoint)) throw new Error(`could not update ${PARAMS.runDir}/checkpoint.json for the user decision`)
   }
   const rows = await pipeline(
     [initial],

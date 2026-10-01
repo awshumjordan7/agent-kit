@@ -26,6 +26,6 @@ Forge resolves `gate.mode` per repository, defaulting to `full`. Personal reposi
 
 Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer summarizes the change and recommends shipping, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without an enabled sandbox stops before shipping. Mode `none` skips its gate and still reaches the checkpoint.
 
-Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. A resumed build restores `checkpoint.json`, skips Implement and Gate, and continues from that decision.
+Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. A resumed build reads `checkpoint.json` through `run_context.py checkpoint-facts`, skips Implement and Gate, and continues from that decision. The file holds no summary, reason or script; a file written by an older forge still reads, and its context is collected again.
 
 Fix rounds run in a capped loop of at most two rounds. A Codex fix round receives the decider's verified fix spec, the plan excerpt, and the diff stat, and applies the spec without re-triage. After each applied round, one fresh Claude reviewer checks only the review items fixed that round against the per-item explanations and the fix diff. It returns `RESOLVED` or `UNRESOLVED` for each item and may add no findings.

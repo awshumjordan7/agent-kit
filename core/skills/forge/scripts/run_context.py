@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -494,6 +495,203 @@ def context(
     return _checked(facts)
 
 
+_CONTEXT_DEFAULTS: dict = {
+    "files": [],
+    "preexisting": [],
+    "droppedPaths": [],
+    "commandSucceeded": False,
+    "diffPath": "",
+    "diffBytes": 0,
+    "diffLines": 0,
+    "diffValid": False,
+    "testPaths": [],
+    "error": "",
+    "briefPath": "",
+    "hasContract": False,
+}
+_CHECKPOINT_DEFAULTS: dict = {
+    "recommendation": "",
+    "command": "",
+    "decidedBy": "",
+    "implementFilesChanged": [],
+    "planSha256": "",
+}
+
+
+def _known(source: object, defaults: dict) -> dict:
+    # Keeps only the keys of defaults; a missing or wrongly typed value becomes the empty default.
+    # type() and not isinstance(): a bool is an int in Python and must not pass for one.
+    values = source if isinstance(source, dict) else {}
+    kept: dict = {}
+    for key, default in defaults.items():
+        value = values.get(key)
+        if type(value) is not type(default):
+            value = default
+        kept[key] = [str(item) for item in value] if isinstance(value, list) else value
+    return kept
+
+
+def _shell_quote(value: str) -> str:
+    # Always quotes, as shellQuote in forge-core.js does; shlex.quote leaves safe strings bare.
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _read_json(path: Path) -> tuple[dict, str]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return {}, f"could not read {path}: {exc.strerror or exc}"
+    except ValueError as exc:
+        return {}, f"could not parse {path}: {exc}"
+    if not isinstance(document, dict):
+        return {}, f"{path} does not hold a JSON object"
+    return document, ""
+
+
+def _smoke_script_problem(script_path: Path, context_path: Path) -> str:
+    try:
+        source = script_path.read_text(encoding="utf-8")
+        stale = script_path.stat().st_mtime_ns < context_path.stat().st_mtime_ns
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"could not read {script_path}: {getattr(exc, 'strerror', None) or exc}"
+    if stale:
+        return f"{script_path} is older than {context_path}; this run's reviewer did not write it"
+    try:
+        ast.parse(source)
+    except (SyntaxError, ValueError) as exc:
+        return f"{script_path} is not valid Python: {exc}"
+    return ""
+
+
+def checkpoint_save(
+    run_dir: Path,
+    recommendation: str,
+    decided_by: str,
+    files: list[str],
+    script: bool = False,
+    command: str = "",
+    branch: str | None = None,
+    plan_sha256: str = "",
+) -> dict:
+    path = run_dir / "checkpoint.json"
+    context_path = run_dir / "context-gate.json"
+    context_document, error = _read_json(context_path)
+    phases: list = []
+    # phases.json is read only on request, so a file left by an earlier run cannot turn a
+    # single-pass run into a phased one.
+    if not error and branch is not None:
+        phases_document, error = _read_json(run_dir / "phases.json")
+        phases = phases_document.get("phases") or []
+    if not error and script:
+        script_path = run_dir / "smoke.py"
+        error = _smoke_script_problem(script_path, context_path)
+        command = f"python3 {_shell_quote(str(script_path))}"
+    facts = {
+        "written": False,
+        "path": str(path),
+        "sha256": "",
+        "hasScript": script,
+        "command": command,
+        "files": len(files),
+        "error": error,
+    }
+    if error:
+        return _checked(facts)
+    document = {
+        "recommendation": recommendation,
+        "command": command,
+        "decidedBy": decided_by,
+        "implementFilesChanged": files,
+        "branch": branch or "",
+        "phases": phases,
+        "planSha256": plan_sha256,
+        "context": _known(context_document, _CONTEXT_DEFAULTS),
+    }
+    try:
+        _write_atomic(path, json.dumps(document, indent=2) + "\n")
+    except OSError as exc:
+        return _checked({**facts, "error": f"could not write {path}: {exc.strerror or exc}"})
+    return _checked({**facts, "written": True, "sha256": _sha256(path) or ""})
+
+
+def checkpoint_facts(run_dir: Path, plan_file: Path) -> dict:
+    document, error = _read_json(run_dir / "checkpoint.json")
+    facts = _known(document, _CHECKPOINT_DEFAULTS)
+    facts["context"] = _known(document.get("context"), _CONTEXT_DEFAULTS)
+    saved_plan = facts["planSha256"]
+    facts["planChanged"] = bool(saved_plan) and saved_plan != (_sha256(plan_file) or "")
+    facts["error"] = error
+    # Empty branch and phases are left out: forge-core.js drops them before it recomputes the
+    # digest, because an echoing agent drops or invents empty optional fields.
+    branch = document.get("branch")
+    if isinstance(branch, str) and branch:
+        facts["branch"] = branch
+    rows = document.get("phases")
+    if isinstance(rows, list) and rows:
+        # Facts hold no null, so a phase without a sha or a gate carries an empty string.
+        facts["phases"] = [
+            {key: str(values.get(key) or "") for key in ("id", "title", "sha", "gate")}
+            for values in rows
+            if isinstance(values, dict)
+        ]
+    return _checked(facts)
+
+
+def _colon_fields(value: str, count: int) -> list[str | None]:
+    fields = value.split(":")
+    if len(fields) != count:
+        raise ValueError(f"expected {count} fields separated by colons: {value}")
+    return [field or None for field in fields]
+
+
+def phases_save(
+    run_dir: Path,
+    plan_file: Path,
+    branch: str,
+    phases: list[str],
+    pending: list[str],
+    head_sha: str | None = None,
+    last: str | None = None,
+) -> dict:
+    path = run_dir / "phases.json"
+    _raw, plan, error = _read_plan(plan_file)
+    planned: list[dict] = []
+    if not error:
+        planned, error = _plan_phases(plan)
+    titles = {item["id"]: item["title"] for item in planned}
+    rows: list[dict] = []
+    pending_gates: list[dict] = []
+    try:
+        for value in phases:
+            phase_id, sha, gate = _colon_fields(value, 3)
+            if not error and phase_id not in titles:
+                error = f"phase {phase_id} is not under ## Phases in {plan_file}"
+            title = titles.get(phase_id, "")
+            rows.append({"id": phase_id, "title": title, "sha": sha, "gate": gate})
+        for value in pending:
+            phase_id, sha, label = _colon_fields(value, 3)
+            pending_gates.append({"id": phase_id, "sha": sha, "label": label})
+    except ValueError as exc:
+        error = error or str(exc)
+    if error:
+        return _checked({"written": False, "phases": 0, "error": error})
+    document = {
+        "branch": branch,
+        "phases": rows,
+        "lastCommittedPhase": last or None,
+        "headSha": head_sha or None,
+        "pendingGates": pending_gates,
+    }
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _write_atomic(path, json.dumps(document, indent=2) + "\n")
+    except OSError as exc:
+        return _checked(
+            {"written": False, "phases": 0, "error": f"could not write {path}: {exc.strerror or exc}"}
+        )
+    return _checked({"written": True, "phases": len(rows), "error": ""})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -525,6 +723,28 @@ def main() -> None:
     plan_facts_parser = subparsers.add_parser("plan-facts")
     plan_facts_parser.add_argument("--plan-file", type=Path, required=True)
     plan_facts_parser.add_argument("--criteria-only", action="store_true")
+    checkpoint_save_parser = subparsers.add_parser("checkpoint-save")
+    checkpoint_save_parser.add_argument("--run-dir", type=Path, required=True)
+    checkpoint_save_parser.add_argument(
+        "--recommendation", choices=["ship", "smoke", "qa"], required=True
+    )
+    checkpoint_save_parser.add_argument("--decided-by", choices=["auto", "pending"], required=True)
+    checkpoint_save_parser.add_argument("--script", action="store_true")
+    checkpoint_save_parser.add_argument("--command", dest="save_command", default="")
+    checkpoint_save_parser.add_argument("--branch")
+    checkpoint_save_parser.add_argument("--plan-sha256", default="")
+    checkpoint_save_parser.add_argument("--files", nargs="*", default=[])
+    checkpoint_facts_parser = subparsers.add_parser("checkpoint-facts")
+    checkpoint_facts_parser.add_argument("--run-dir", type=Path, required=True)
+    checkpoint_facts_parser.add_argument("--plan-file", type=Path, required=True)
+    phases_save_parser = subparsers.add_parser("phases-save")
+    phases_save_parser.add_argument("--run-dir", type=Path, required=True)
+    phases_save_parser.add_argument("--plan-file", type=Path, required=True)
+    phases_save_parser.add_argument("--branch", required=True)
+    phases_save_parser.add_argument("--head-sha")
+    phases_save_parser.add_argument("--last")
+    phases_save_parser.add_argument("--phase", nargs="*", default=[])
+    phases_save_parser.add_argument("--pending", nargs="*", default=[])
     args = parser.parse_args()
     if args.command == "baseline":
         result = baseline(args.run_dir, args.repo, args.reuse)
@@ -549,6 +769,29 @@ def main() -> None:
         result = smoke_run(args.run_dir, args.repo, args.smoke_command, args.log_name)
     elif args.command == "plan-facts":
         result = plan_facts(args.plan_file, args.criteria_only)
+    elif args.command == "checkpoint-save":
+        result = checkpoint_save(
+            args.run_dir,
+            args.recommendation,
+            args.decided_by,
+            args.files,
+            args.script,
+            args.save_command,
+            args.branch,
+            args.plan_sha256,
+        )
+    elif args.command == "checkpoint-facts":
+        result = checkpoint_facts(args.run_dir, args.plan_file)
+    elif args.command == "phases-save":
+        result = phases_save(
+            args.run_dir,
+            args.plan_file,
+            args.branch,
+            args.phase,
+            args.pending,
+            args.head_sha,
+            args.last,
+        )
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
 
 
