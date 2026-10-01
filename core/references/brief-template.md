@@ -12,6 +12,8 @@ CAP: <max lines in the final message>. A brief cannot raise the agent file's max
 ```
 
 Size SCOPE so the work fits about 40 tool calls; a larger question is two briefs.
+A Workflow script enforces CAP: give each `agent()` call a schema whose `lines` array has `maxItems` equal to the CAP, and the runtime rejects a longer reply so the agent resubmits. An Agent-tool spawn has no schema, so its CAP stays advisory.
+
 A sub-agent's Write tool refuses `.md` names that start with `report`, `summary`, `findings` or `analysis`, so OUTPUT files use the `recon-`, `result-`, `capture-` or `locate-` prefixes.
 Every Agent prompt the main session writes follows this template.
 Forge-internal agents (reviewer, triage, judge) get their prompts from forge and return their schema in the final message instead of writing an OUTPUT file.
