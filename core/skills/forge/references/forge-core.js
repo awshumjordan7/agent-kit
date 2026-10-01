@@ -1337,18 +1337,29 @@ function restorePhaseRow(row) {
   return { ...row, sha: row.sha || null, gate: row.gate || null }
 }
 
+// Echoing agents drop or invent empty optional fields, so both sides of the digest leave them out;
+// a kept empty phases array would also make a single-pass run look phased.
+function dropEmptyOptionalKeys(checkpoint) {
+  const kept = { ...checkpoint }
+  for (const key of ['script', 'branch', 'phases']) {
+    if (kept[key] === '' || (Array.isArray(kept[key]) && !kept[key].length)) delete kept[key]
+  }
+  return kept
+}
+
 // The command prints a digest of the canonical JSON so an echo that adds, drops or edits a field is caught.
 async function readCheckpoint() {
-  const script = `import functools, json, pathlib, sys; ${PY_NO_NULLS}; data = clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))); canon = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True); print(json.dumps({"checkpoint": data, "canonLength": len(canon), "fnv1a": functools.reduce(lambda h, c: ((h ^ ord(c)) * 16777619) & 0xFFFFFFFF, canon, 2166136261)}))`
+  const script = `import functools, json, pathlib, sys; ${PY_NO_NULLS}; data = clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))); data = {k: v for k, v in data.items() if not (k in ("script", "branch", "phases") and v in ("", []))}; canon = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True); print(json.dumps({"checkpoint": data, "canonLength": len(canon), "fnv1a": functools.reduce(lambda h, c: ((h ^ ord(c)) * 16777619) & 0xFFFFFFFF, canon, 2166136261)}))`
   const path = `${PARAMS.runDir}/checkpoint.json`
   PARAMS.spawnCap += 1
   for (let attempt = 1; attempt <= 2; attempt++) {
     const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
       { label: attempt === 1 ? 'read-checkpoint' : 'read-checkpoint-retry', phase: 'Checkpoint', schema: CHECKPOINT_READ_SCHEMA })
     if (!read) return null
-    const canon = canonicalJson(read.checkpoint)
+    const echoed = dropEmptyOptionalKeys(read.checkpoint)
+    const canon = canonicalJson(echoed)
     if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) {
-      const saved = read.checkpoint
+      const saved = echoed
       if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
       return saved
     }

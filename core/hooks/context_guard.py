@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit/PostToolUse/Stop hook: nag by context-size band, block once at 340k.
+"""UserPromptSubmit/PostToolUse/Stop hook: warn at 250k, stop new work at 300k, block once at 325k.
 
 As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
-block at 160k, then at 300k every tool call except progress-file edits and
+block at 250k, then at 300k every tool call except progress-file edits and
 StructuredOutput is blocked. Other sub-agents and the main session pass through.
 
 Fail-open by design: exit 0 silently on any missing/unreadable transcript,
@@ -16,12 +16,13 @@ import re
 import sys
 import time
 
-BAND_160K = 160_000
-BAND_200K = 200_000
+BAND_250K = 250_000
 BAND_300K = 300_000
-BAND_340K = 340_000
-BANDS = (BAND_160K, BAND_200K, BAND_300K, BAND_340K)
+BAND_325K = 325_000
+BANDS = (BAND_250K, BAND_300K, BAND_325K)
 RESET_BELOW = 120_000
+IMPL_SOFT_AT = 250_000
+IMPL_HARD_AT = 300_000
 
 STATE_DIR = os.environ.get("CONTEXT_GUARD_STATE_DIR") or os.path.expanduser(
     "~/.claude/hooks/state/context-guard"
@@ -33,13 +34,9 @@ REPORT_ISSUE_LINE = (
 )
 
 MESSAGES = {
-    BAND_160K: (
-        "Context guard: ~{n}k tokens. Plan the handoff now: take on no new large scope, "
-        "keep STATE.md current."
-    ),
-    BAND_200K: (
-        "Context guard: ~{n}k tokens. Finish the current step, then rewrite STATE.md from "
-        "the template so the handoff is one command away."
+    BAND_250K: (
+        "Context guard: ~{n}k tokens. Plan the handoff: take on no new large scope and keep "
+        "STATE.md current, so the handoff is one command away at 300k."
     ),
     BAND_300K: (
         "Context guard: ~{n}k tokens. Start no new work. Let running agents and Codex "
@@ -50,7 +47,7 @@ MESSAGES = {
         "rerun, or give the user the command it printed. Exception: if this run is in its final "
         "stage (final review, QA, ship), finish it first, then hand off. " + REPORT_ISSUE_LINE
     ),
-    BAND_340K: (
+    BAND_325K: (
         "Context guard: ~{n}k tokens. Before ending this turn: wait for running agents, "
         "rewrite STATE.md, run handoff.py, message the successor, then end. Exception: a "
         "run in its final stage finishes first. " + REPORT_ISSUE_LINE
@@ -143,7 +140,7 @@ def _tool_result_text(block):
 
 def pending_background_tasks(path):
     """Count background Agent/Workflow launches in the transcript that have no
-    task-notification yet. Reads the whole file, so call it only past 340k."""
+    task-notification yet. Reads the whole file, so call it only past 325k."""
     launched = set()
     notified = set()
     try:
@@ -306,15 +303,15 @@ def implementer_pretool(payload):
     if not agent_transcript or not os.path.isfile(agent_transcript):
         return 0
     measure = measure_from_transcript(agent_transcript)
-    if measure is None or measure < BAND_160K:
+    if measure is None or measure < IMPL_SOFT_AT:
         return 0
-    if measure >= BAND_300K:
+    if measure >= IMPL_HARD_AT:
         return 0 if progress_file_call(payload) else deny_tool_call(IMPL_HARD_MESSAGE)
     state_path = os.path.join(STATE_DIR, f"impl-{agent_id}.json")
     if load_state(state_path)["blocked"]:
         return 0
     # An unsaved warning would block every call, so a failed save allows this one.
-    save_state(state_path, BAND_160K, True)
+    save_state(state_path, IMPL_SOFT_AT, True)
     return deny_tool_call(IMPL_SOFT_MESSAGE.format(n=measure // 1000))
 
 
@@ -371,7 +368,7 @@ def main() -> int:
     if event_name == "Stop":
         if handoff_successor_running(session_id):
             return 0
-        if measure >= BAND_340K and not payload.get("stop_hook_active") and not state["blocked"]:
+        if measure >= BAND_325K and not payload.get("stop_hook_active") and not state["blocked"]:
             # Leave blocked unset so a later Stop can still block once the tasks finish.
             if pending_background_tasks(transcript_path) > 0:
                 return 0
@@ -379,12 +376,12 @@ def main() -> int:
                 save_state(state_path, state["band"], True)
             except OSError:
                 return 0
-            emit_block(MESSAGES[BAND_340K].format(n=measure // 1000))
+            emit_block(MESSAGES[BAND_325K].format(n=measure // 1000))
         return 0
 
     crossed = highest_crossed_band(measure)
     if crossed > BAND_300K:
-        crossed = BAND_300K  # 340k is announced only via the Stop block
+        crossed = BAND_300K  # 325k is announced only via the Stop block
     if crossed > state["band"]:
         if not os.path.exists(state_path):
             prune_stale_state()
