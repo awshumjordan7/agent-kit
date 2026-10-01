@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit/PostToolUse/Stop hook: warn at 250k, stop new work at 300k, block once at 325k.
+"""UserPromptSubmit/PostToolUse/Stop hook: warn at 225k, stop new work at 250k, block once at 275k.
 
 As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
 block at 250k, then at 300k every tool call except progress-file edits and
@@ -16,10 +16,10 @@ import re
 import sys
 import time
 
+BAND_225K = 225_000
 BAND_250K = 250_000
-BAND_300K = 300_000
-BAND_325K = 325_000
-BANDS = (BAND_250K, BAND_300K, BAND_325K)
+BAND_275K = 275_000
+BANDS = (BAND_225K, BAND_250K, BAND_275K)
 RESET_BELOW = 120_000
 IMPL_SOFT_AT = 250_000
 IMPL_HARD_AT = 300_000
@@ -34,11 +34,11 @@ REPORT_ISSUE_LINE = (
 )
 
 MESSAGES = {
-    BAND_250K: (
+    BAND_225K: (
         "Context guard: ~{n}k tokens. Plan the handoff: take on no new large scope and keep "
-        "STATE.md current, so the handoff is one command away at 300k."
+        "STATE.md current, so the handoff is one command away at 250k."
     ),
-    BAND_300K: (
+    BAND_250K: (
         "Context guard: ~{n}k tokens. Start no new work. Let running agents and Codex "
         "sessions finish, rewrite STATE.md (list every live sandbox or fork the run owns), then "
         "in a later tool call run "
@@ -47,7 +47,7 @@ MESSAGES = {
         "rerun, or give the user the command it printed. Exception: if this run is in its final "
         "stage (final review, QA, ship), finish it first, then hand off. " + REPORT_ISSUE_LINE
     ),
-    BAND_325K: (
+    BAND_275K: (
         "Context guard: ~{n}k tokens. Before ending this turn: wait for running agents, "
         "rewrite STATE.md, run handoff.py, message the successor, then end. Exception: a "
         "run in its final stage finishes first. " + REPORT_ISSUE_LINE
@@ -140,7 +140,7 @@ def _tool_result_text(block):
 
 def pending_background_tasks(path):
     """Count background Agent/Workflow launches in the transcript that have no
-    task-notification yet. Reads the whole file, so call it only past 325k."""
+    task-notification yet. Reads the whole file, so call it only past 275k."""
     launched = set()
     notified = set()
     try:
@@ -368,7 +368,7 @@ def main() -> int:
     if event_name == "Stop":
         if handoff_successor_running(session_id):
             return 0
-        if measure >= BAND_325K and not payload.get("stop_hook_active") and not state["blocked"]:
+        if measure >= BAND_275K and not payload.get("stop_hook_active") and not state["blocked"]:
             # Leave blocked unset so a later Stop can still block once the tasks finish.
             if pending_background_tasks(transcript_path) > 0:
                 return 0
@@ -376,12 +376,12 @@ def main() -> int:
                 save_state(state_path, state["band"], True)
             except OSError:
                 return 0
-            emit_block(MESSAGES[BAND_325K].format(n=measure // 1000))
+            emit_block(MESSAGES[BAND_275K].format(n=measure // 1000))
         return 0
 
     crossed = highest_crossed_band(measure)
-    if crossed > BAND_300K:
-        crossed = BAND_300K  # 325k is announced only via the Stop block
+    if crossed > BAND_250K:
+        crossed = BAND_250K  # 275k is announced only via the Stop block
     if crossed > state["band"]:
         if not os.path.exists(state_path):
             prune_stale_state()

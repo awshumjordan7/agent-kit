@@ -85,7 +85,6 @@ const PARAMS = {
   noShip: args.noShip === true,
   spawnCap: Number.isInteger(args.spawnCap) && args.spawnCap >= 1 ? args.spawnCap : 32,
   rulings: Array.isArray(args.rulings) ? args.rulings : null,
-  planText: typeof args.planText === 'string' ? args.planText : null,
   planPath: typeof args.planPath === 'string' && args.planPath ? args.planPath : `${args.runDir}/plan.md`,
   dryRun: args.dryRun === true,
   dryRunFailGate: typeof args.dryRunFailGate === 'string' ? args.dryRunFailGate : null,
@@ -117,7 +116,7 @@ function codexFlags(role, model, effort) {
   return `--role ${role}` + (model ? ` --model ${model}` : '') + (effort ? ` --effort ${effort}` : '')
 }
 function codexImplFlags() {
-  return codexFlags(pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold()), args.codexModelImpl || args.codexModel, args.codexEffortImpl)
+  return codexFlags(pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold()), args.codexModelImpl || args.codexModel, args.codexEffortImpl)
 }
 const CODEX_REVIEW_FLAGS = codexFlags('review', args.codexModelReview || args.codexModel, args.codexEffortReview)
 const CODEX_SH = '~/.claude/skills/forge/scripts/codex-exec.sh'
@@ -315,14 +314,13 @@ const CONTEXT_SCHEMA = {
     droppedPaths: { type: 'array', items: { type: 'string' } },
     preexisting: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' }, diffLines: { type: 'integer' },
-    diffValid: { type: 'boolean' }, planSummary: { type: 'string' },
-    criteria: { type: 'array', items: { type: 'string' } },
-    checklist: { type: 'string' }, standards: { type: 'string' },
+    diffValid: { type: 'boolean' },
     testPaths: { type: 'array', items: { type: 'string' } }, error: { type: 'string' },
-    contract: { type: 'string' }, reviewerContract: { type: 'string' },
+    briefPath: { type: 'string' }, hasContract: { type: 'boolean' },
   },
-  required: ['files', 'preexisting', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'planSummary', 'criteria', 'checklist', 'standards', 'testPaths', 'error', 'contract', 'reviewerContract'],
+  required: ['files', 'droppedPaths', 'preexisting', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'testPaths', 'error', 'briefPath', 'hasContract'],
 }
+const CONTEXT_FACTS_SCHEMA = factsSchema(CONTEXT_SCHEMA)
 const GATE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
@@ -362,9 +360,9 @@ const CHECKPOINT_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, script: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
+    command: { type: 'string' }, scriptWritten: { type: 'boolean' }, reason: { type: 'string' }, summary: { type: 'string' },
   },
-  required: ['recommendation', 'command', 'script', 'reason', 'summary'],
+  required: ['recommendation', 'command', 'scriptWritten', 'reason', 'summary'],
 }
 const PHASE_ROW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -395,23 +393,21 @@ const BRANCH_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { branch: { type: 'string' } }, required: ['branch'],
 }
+// The facts checkpoint-facts prints. An unreadable file gives empty values and an error, so the two
+// enums allow an empty string; decidedBy keeps user for a file an older forge wrote.
 const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, script: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' },
-    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user'] },
+    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa', ''] },
+    command: { type: 'string' },
+    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user', ''] },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
+    planSha256: { type: 'string' }, planChanged: { type: 'boolean' }, error: { type: 'string' },
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
-  required: ['recommendation', 'command', 'reason', 'summary', 'decidedBy', 'implementFilesChanged', 'context'],
-}
-const CHECKPOINT_READ_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: { checkpoint: CHECKPOINT_FILE_SCHEMA, canonLength: { type: 'integer' }, fnv1a: { type: 'integer' } },
-  required: ['checkpoint', 'canonLength', 'fnv1a'],
+  required: ['recommendation', 'command', 'decidedBy', 'implementFilesChanged', 'context', 'planSha256', 'planChanged', 'error'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -483,31 +479,53 @@ const ACK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { written: { type: 'boolean' } }, required: ['written'],
 }
-const WRITE_ACK_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    files: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        properties: { path: { type: 'string' }, bytes: { type: 'integer' }, crc32: { type: 'integer' }, moved: { type: 'boolean' } },
-        required: ['path', 'bytes', 'crc32', 'moved'],
-      },
-    },
-  },
-  required: ['files'],
-}
 const THREAD_CHECK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
 }
-const PLAN_CHUNK_SCHEMA = {
+// A facts read: the command prints the facts with the length and FNV-1a of their canonical JSON.
+function factsSchema(facts) {
+  return {
+    type: 'object', additionalProperties: false,
+    properties: { facts, canonLength: { type: 'integer' }, fnv1a: { type: 'integer' } },
+    required: ['facts', 'canonLength', 'fnv1a'],
+  }
+}
+const PLAN_FACTS_SCHEMA = factsSchema({
   type: 'object', additionalProperties: false,
   properties: {
-    chunk: { type: 'string' }, index: { type: 'integer' }, count: { type: 'integer' }, utf16Length: { type: 'integer' }, fnv1a: { type: 'integer' },
-    totalLength: { type: 'integer' }, totalFnv1a: { type: 'integer' }, error: { type: 'string' },
+    h1: { type: 'string' },
+    phases: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { id: { type: 'string' }, title: { type: 'string' } },
+        required: ['id', 'title'],
+      },
+    },
+    plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
+    bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
   },
-  required: ['chunk', 'index', 'count', 'utf16Length', 'fnv1a', 'totalLength', 'totalFnv1a', 'error'],
-}
+  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error'],
+})
+const PLAN_CRITERIA_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: { criteria: { type: 'array', items: { type: 'string' } } },
+  required: ['criteria'],
+})
+const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
+const CHECKPOINT_SAVE_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: {
+    written: { type: 'boolean' }, path: { type: 'string' }, sha256: { type: 'string' },
+    hasScript: { type: 'boolean' }, command: { type: 'string' }, files: { type: 'integer' }, error: { type: 'string' },
+  },
+  required: ['written', 'path', 'sha256', 'hasScript', 'command', 'files', 'error'],
+})
+const PHASES_SAVE_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: { written: { type: 'boolean' }, phases: { type: 'integer' }, error: { type: 'string' } },
+  required: ['written', 'phases', 'error'],
+})
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { handoffPath: { type: 'string' } }, required: ['handoffPath'],
@@ -528,62 +546,8 @@ function quickReviewThreshold() {
   return Number.isInteger(value) && value >= 1 ? value : 8
 }
 
-function plannedSourceFiles(planText) {
-  const phases = /^(#{2,})\s*Phases\s*$/im.exec(String(planText || ''))
-  if (!phases) return 0
-  const after = String(planText).slice(phases.index + phases[0].length)
-  const next = after.search(new RegExp(`^#{2,${phases[1].length}}\\s+(?!Phase\\b)`, 'mi'))
-  const body = next >= 0 ? after.slice(0, next) : after
-  const knownSourceExtension = /\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)$/i
-  const paths = [...body.matchAll(/`([^`\n]+\.[A-Za-z0-9]+)`/g)]
-    .map(match => match[1])
-    .filter(path => /[\\/]/.test(path) || knownSourceExtension.test(path))
-  return new Set(paths.filter(isSourcePath)).size
-}
-
-// Body of a plan's `## <heading>` section, matching run_context.py's _section.
-function planSection(planText, heading) {
-  const lines = String(planText || '').split(/\r?\n/)
-  const start = lines.findIndex(line => line.trim().toLowerCase() === `## ${heading}`.toLowerCase())
-  if (start < 0) return ''
-  const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
-  return lines.slice(start + 1, end < 0 ? lines.length : end).join('\n').trim()
-}
-
-function planPhases(planText) {
-  const heading = /^###\s+Phase\s+([A-Za-z]*[0-9]+):\s*(\S.*?)\s*$/
-  const lines = String(planText || '').split(/\r?\n/)
-  const start = lines.findIndex(line => /^##\s+Phases\s*$/i.test(line))
-  if (start < 0) return []
-  const phases = []
-  let fenced = false
-  for (const line of lines.slice(start + 1)) {
-    if (/^\s*(?:```|~~~)/.test(line)) {
-      fenced = !fenced
-    } else if (!fenced && /^#{1,2}\s/.test(line)) {
-      break
-    } else if (!fenced && /^###\s/.test(line)) {
-      const match = heading.exec(line)
-      if (!match) throw new Error(`Plan heading under ## Phases must read "### Phase <id>: <title>" with an id such as 1 or A1: ${line.trim()}`)
-      if (phases.some(item => item.id === match[1])) throw new Error(`Plan phase id ${match[1]} appears twice under ## Phases`)
-      phases.push({ id: match[1], title: match[2], lines: [] })
-      continue
-    }
-    if (phases.length) phases[phases.length - 1].lines.push(line)
-  }
-  return phases.map(({ id, title, lines: body }) => ({ id, title, text: body.join('\n').trim() }))
-}
-
-function isSourcePath(path) {
-  const normalized = String(path).replace(/\\/g, '/').toLowerCase()
-  const name = normalized.split('/').pop() || ''
-  return !normalized.startsWith('tests/') && !normalized.includes('/tests/') &&
-    !name.startsWith('test_') && !name.endsWith('_test.py') &&
-    !name.endsWith('.md') && !name.endsWith('.json') && /\.[a-z0-9]+$/.test(name)
-}
-
-function pickImplRole(lane, fullySpecified, planText, threshold = 8) {
-  return fullySpecified && plannedSourceFiles(planText) <= threshold
+function pickImplRole(lane, fullySpecified, plannedSourceFileCount, threshold = 8) {
+  return fullySpecified && plannedSourceFileCount <= threshold
     ? 'quick-impl'
     : 'impl'
 }
@@ -644,6 +608,10 @@ function dryFindings() {
   }))
 }
 
+function dryRunFacts(facts) {
+  return { facts, canonLength: canonicalJson(facts).length, fnv1a: fnv1a(canonicalJson(facts)) }
+}
+
 const STUBS = {
   implementer: opts => opts.schema === FIX_SCHEMA
     ? { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: 'dry-run fix diff', notes: 'dry-run fix', results: dryFindings().map(finding => ({ id: findingKey(finding), reason: 'dry-run fix explanation' })) }
@@ -652,8 +620,8 @@ const STUBS = {
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
     : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
   checkpoint: () => PARAMS.dryRunFindings
-    ? { recommendation: 'smoke', command: 'true', script: '', reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
-    : { recommendation: 'ship', command: '', script: '', reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
+    ? { recommendation: 'smoke', command: 'true', scriptWritten: false, reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
+    : { recommendation: 'ship', command: '', scriptWritten: false, reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
   triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
@@ -681,17 +649,23 @@ const STUBS = {
   ffReview: () => ({ skipped: false, reason: '', prNumber: 1, repo: PARAMS.repo || 'owner/repo', headSha: dryRunSha('bot-review'), exitCode: 0, commentCount: 1, commentsPath: `${PARAMS.runDir}/bot-review.json`, summary: 'dry-run bot review' }),
   smoke: opts => {
     const number = opts.label === 'smoke' ? 1 : Number(String(opts.label).split('-')[1] || 1)
-    const criteria = smokeCriteria({ criteria: PARAMS.criteria }).slice((number - 1) * 6, number * 6)
+    const criteria = smokeCriteria().slice((number - 1) * 6, number * 6)
     return { results: criteria.map(criterion => ({ criterion, passed: true, note: 'dry run', screenshot: `${PARAMS.runDir}/smoke/dry-run.png` })) }
   },
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
-    : opts.schema === WRITE_ACK_SCHEMA
-    ? { files: (opts.expect || []).map(item => ({ ...item, moved: true })) }
+    : opts.schema === CHECKPOINT_SAVE_SCHEMA
+    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: PARAMS.dryRunFindings ? 'true' : '', files: 1, error: '' })
+    : opts.schema === PHASES_SAVE_SCHEMA
+    ? dryRunFacts({ written: true, phases: 0, error: '' })
+    : opts.schema === PLAN_FACTS_SCHEMA
+    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '' })
+    : opts.schema === PLAN_CRITERIA_SCHEMA
+    ? dryRunFacts({ criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
-    : opts.schema === CHECKPOINT_READ_SCHEMA
-    ? (checkpoint => ({ checkpoint, canonLength: canonicalJson(checkpoint).length, fnv1a: fnv1a(canonicalJson(checkpoint)) }))({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } })
+    : opts.schema === CHECKPOINT_FACTS_SCHEMA
+    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '' })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -700,14 +674,8 @@ const STUBS = {
     ? { branch: `${PARAMS.ticket}-dry-run` }
     : opts.schema === THREAD_CHECK_SCHEMA
     ? { threadExists: true }
-    : {
-      files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary',
-      criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
-      contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
-    },
-  readConfig: opts => opts.schema === PLAN_CHUNK_SCHEMA
-    ? (plan => ({ chunk: plan, index: 0, count: 1, utf16Length: plan.length, fnv1a: fnv1a(plan), totalLength: plan.length, totalFnv1a: fnv1a(plan), error: '' }))(DRY_RUN_PLAN.replace(/\n+$/, ''))
-    : ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
+    : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }),
+  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
@@ -720,14 +688,11 @@ const STUBS = {
 
 const decisions = []
 if (canonicalLane !== requestedLane) decisions.push(`Lane alias ${requestedLane} canonicalized to build`)
+if (typeof args.planText === 'string') decisions.push(`args.planText is ignored; the plan is read from planPath (${PARAMS.planPath}).`)
 const dryRunJournal = []
 const __test = {
-  plannedSourceFiles,
-  planPhases,
   partitionTriage,
   pickImplRole,
-  utf8Bytes,
-  crc32,
   savedCheckpointProblem,
   sandboxAllowed,
   sandboxCheck,
@@ -748,7 +713,7 @@ function journal(label) {
 
 function configRoleForTier(tierRole) {
   const mapped = ROLE_MAP[tierRole] || []
-  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   return mapped[0] || null
 }
 
@@ -783,7 +748,7 @@ async function agentT(role, prompt, opts = {}) {
   const profile = forceTier ? TIERS[PARAMS.tier][role] : tierProfile(role)
   if (!profile) throw new Error(`unknown tier role: ${role}`)
   spawnCount++
-  const { forceTier: _forceTier, expect: _expect, ...agentOpts } = opts
+  const { forceTier: _forceTier, ...agentOpts } = opts
   const callOpts = { ...agentOpts, model: profile.model, effort: profile.effort }
   if (PARAMS.dryRun) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
@@ -903,7 +868,7 @@ function assertCodex(result, where) {
 }
 
 function assertImplementation(result, where) {
-  const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   if ((configuredRole(role) || {}).provider !== 'claude') return assertCodex(result, where)
   if (capBlocked && !result) return false
   if (result && result.limitReached) return false
@@ -917,93 +882,34 @@ function assertImplementation(result, where) {
   return true
 }
 
-const DRY_RUN_PLAN = '# Plan: dry-run plan\n\n## Summary\nDry-run plan text read from planPath.\n'
-
-// 32-bit FNV-1a over UTF-16 code units; the plan reader computes the same value in Python.
+// 32-bit FNV-1a over UTF-16 code units; run_context.py computes the same value in Python.
 function fnv1a(text) {
   let hash = 2166136261
   for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619) >>> 0
   return hash
 }
 
-// An agent copying a whole plan back drifts (reworded or dropped phrases), so the plan is read in chunks
-// that each carry their own length and hash; chunk cuts avoid whitespace, which an echoing agent may trim.
-const PLAN_CHUNK_UNITS = 6000
-const PLAN_CHUNK_BATCH = 4
-const PLAN_CHUNK_ATTEMPTS = 3
-const PLAN_CHUNK_SCRIPT = [
-  'import functools, json, pathlib, sys',
-  'path, index, size = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])',
-  'def units(s):',
-  '    d = s.encode("utf-16-le")',
-  '    return [d[k] | (d[k + 1] << 8) for k in range(0, len(d), 2)]',
-  'def fnv(s):',
-  '    return functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units(s), 2166136261)',
-  'if not path.is_file():',
-  '    print(json.dumps({"chunk": "", "index": index, "count": 0, "utf16Length": 0, "fnv1a": 0, "totalLength": 0, "totalFnv1a": 0, "error": f"{path} is missing or not a file"}))',
-  '    sys.exit()',
-  'text = path.read_text(encoding="utf-8").rstrip("\\n")',
-  'cuts = [0]',
-  'while len(text) - cuts[-1] > size:',
-  '    b = cuts[-1] + size',
-  '    while b > cuts[-1] + 1 and (text[b - 1].isspace() or text[b].isspace()):',
-  '        b -= 1',
-  '    cuts.append(b)',
-  'cuts.append(len(text))',
-  'count = len(cuts) - 1',
-  'chunk = text[cuts[index]:cuts[index + 1]] if index < count else ""',
-  'error = "" if index < count else f"chunk {index} is out of range ({count} chunks)"',
-  'print(json.dumps({"chunk": chunk, "index": index, "count": count, "utf16Length": len(units(chunk)), "fnv1a": fnv(chunk), "totalLength": len(units(text)), "totalFnv1a": fnv(text), "error": error}))',
-].join('\n')
+const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [] }
+let PLAN_FACTS = EMPTY_PLAN_FACTS
 
-function planChunkProblem(read, index) {
-  if (!read) return 'the reader agent returned null'
-  if (read.error) return read.error
-  if (read.index !== index) return `chunk ${index}: the reader returned chunk ${read.index}`
-  const text = String(read.chunk || '')
-  if (!text) return read.totalLength === 0 ? 'the plan file is empty' : `chunk ${index} is empty`
-  if (text.length !== read.utf16Length) return `chunk ${index} length check failed: received ${text.length} UTF-16 code units, the chunk has ${read.utf16Length}`
-  if (fnv1a(text) !== read.fnv1a) return `chunk ${index} FNV-1a check failed: the received text differs from the file at the same length`
-  return ''
-}
-
-async function readPlanChunk(index) {
-  let read = null
-  let problem = ''
-  for (let attempt = 1; attempt <= PLAN_CHUNK_ATTEMPTS; attempt++) {
-    PARAMS.spawnCap += 1
-    read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying chunk character for character: python3 -c ${shellQuote(PLAN_CHUNK_SCRIPT)} ${shellQuote(PARAMS.planPath)} ${index} ${PLAN_CHUNK_UNITS}`,
-      { label: `read-plan-${index + 1}${attempt > 1 ? `-retry-${attempt - 1}` : ''}`, phase: 'Implement', schema: PLAN_CHUNK_SCHEMA })
-    problem = planChunkProblem(read, index)
-    if (!problem || (read && read.error)) break
-  }
-  return { read, problem }
-}
-
-// Reading the plan through agents keeps the plan text out of Workflow args, notices, and relaunches.
-async function loadPlanText() {
-  if (PARAMS.planText) return
-  const first = await readPlanChunk(0)
-  let problem = first.problem
-  const chunks = [first.read ? first.read.chunk : '']
-  const count = first.read ? first.read.count : 0
-  for (let start = 1; !problem && start < count; start += PLAN_CHUNK_BATCH) {
-    const indexes = Array.from({ length: Math.min(PLAN_CHUNK_BATCH, count - start) }, (_, offset) => start + offset)
-    const reads = await Promise.all(indexes.map(index => readPlanChunk(index)))
-    reads.forEach((result, offset) => { chunks[indexes[offset]] = result.read ? result.read.chunk : '' })
-    problem = (reads.find(result => result.problem) || {}).problem || ''
-  }
-  const text = chunks.join('')
-  if (!problem && (text.length !== first.read.totalLength || fnv1a(text) !== first.read.totalFnv1a)) {
-    problem = `the joined chunks (${text.length} UTF-16 code units) differ from the file (${first.read.totalLength}); the file may have changed while it was read`
-  }
-  if (!problem) {
-    PARAMS.planText = text
+// The plan stays on disk: the script takes only these facts, and every agent that needs the plan reads it by path.
+async function loadPlanFacts() {
+  const planFile = shellQuote(PARAMS.planPath)
+  PARAMS.spawnCap += 1
+  const facts = await factsCommand('read-plan', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile}`, PLAN_FACTS_SCHEMA, 'Implement')
+  if (PARAMS.lane === 'build') {
+    if (!facts) throw new Error(`could not read the plan at ${PARAMS.planPath}: the plan-facts command returned no checked result`)
+    if (facts.error) throw new Error(facts.error)
+  } else if (!facts || !facts.sha256) {
+    await decide(`Plan facts could not be read from ${PARAMS.planPath} (${(facts && facts.error) || 'no checked result'}); the review lane continues without them.`)
     return
   }
-  if (PARAMS.lane === 'build') throw new Error(`could not read the plan at ${PARAMS.planPath} (${problem}); pass planText inline`)
-  PARAMS.planText = ''
-  await decide(`Plan text could not be read from ${PARAMS.planPath} (${problem}); the review lane continues without it.`)
+  PLAN_FACTS = { ...facts, criteria: [] }
+  if (PARAMS.criteria.length) return
+  PARAMS.spawnCap += 1
+  const read = await factsCommand('read-plan-criteria', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile} --criteria-only`, PLAN_CRITERIA_SCHEMA, 'Implement')
+  if (read) PLAN_FACTS.criteria = read.criteria
+  else await decide(`Acceptance criteria could not be read from ${PARAMS.planPath}; the run continues without them.`)
 }
 
 async function loadForgeConfig() {
@@ -1046,6 +952,34 @@ function configuredGateMode() {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+// One agent runs one command that prints { facts, canonLength, fnv1a }. The digest is recomputed over
+// the returned facts, so an echo that adds, drops or edits a field is a miss. The caller's spawn
+// budget covers the first attempt; only the retry raises the cap here. normalize, when given, is
+// applied to the returned facts before the digest is recomputed.
+async function factsCommand(label, command, schema, phaseLabel, normalize = null) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt === 2) PARAMS.spawnCap += 1
+    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: ${command}`,
+      { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
+    if (read && read.facts && typeof read.facts === 'object') {
+      const facts = normalize ? normalize(read.facts) : read.facts
+      const canon = canonicalJson(facts)
+      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return facts
+    }
+    if (!read && capBlocked) return null
+    await decide(`${label} attempt ${attempt} ${read ? 'did not match the facts digest' : 'returned no result'}.`)
+  }
+  return null
+}
+
+// Prompts name the plan file instead of carrying its text; phase is a { id, title } row of PHASES.
+function planRef(phase = null) {
+  const whole = `PLAN FILE: ${PLAN}. Read it in full with the Read tool before anything else.`
+  return phase
+    ? `${whole} Your phase is the section headed ### Phase ${phase.id}: ${phase.title}; the section ## Public API contract, when the plan has one, also binds you.`
+    : whole
 }
 
 function baselineContext(reuse = false) {
@@ -1114,14 +1048,14 @@ Continue from the progress file; do not redo work it marks done; do not re-read 
 }
 
 function implement(phase = null) {
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   const suffix = phase ? `-phase-${phase.id}` : ''
   const label = `implement${suffix}`
   const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
   const scope = phaseScope(phase)
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
     const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-    return claudeImplement(`Implement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.\n\nPLAN\n${PARAMS.planText}`,
+    return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
       { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
   }
   const promptPath = `${PARAMS.runDir}/implement${suffix}-prompt.md`
@@ -1146,7 +1080,7 @@ function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sh
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
   const shaArg = sha ? ` --sha ${quote(sha)}` : ''
-  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -1169,14 +1103,14 @@ function gateFindings(gate) {
 
 // hooks.first is a gate result already collected; hooks.run gates a label and file list;
 // hooks.afterFix(touched, files) runs after each applied fix and returns false to stop the loop;
-// hooks.planExcerpt narrows the plan text the decider and applier see.
+// hooks.planPhase is the plan phase row the decider and applier are pointed at.
 async function gateWithFixes(label, files, threadFile, context, phaseLabel, hooks = {}) {
   const runGate = hooks.run || ((gateLabel, gateFiles) => localGate(gateLabel, phaseLabel, gateFiles))
   const gate = 'first' in hooks ? hooks.first : await runGate(label, files)
   if (gate && gate.passed) return { gate, touchedFiles: [], blocked: false, needsJudge: false }
   return fixLoop({
     kind: 'gate', label: `fix-${label}`, gateLabel: label, gate, reviewItems: [], files, threadFile, context, phaseLabel,
-    runGate, afterFix: hooks.afterFix, planExcerpt: hooks.planExcerpt, commitsPerRound: Boolean(hooks.afterFix),
+    runGate, afterFix: hooks.afterFix, planPhase: hooks.planPhase, commitsPerRound: Boolean(hooks.afterFix),
   })
 }
 
@@ -1189,31 +1123,37 @@ function changedFiles(allDirty = false) {
   const repo = shellQuote(PARAMS.projectDir)
   const baseRef = args.base ? shellQuote(args.base) : `"$(cd ${repo} && bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || echo main)"`
   const base = ` --base ${baseRef}${PARAMS.lane === 'build' ? ' --advance-only' : ''}`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
-  { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
+  return factsCommand('changed-files', `python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
+    CONTEXT_FACTS_SCHEMA, 'Review')
 }
 
+// Runs as the default agent type, not reviewer, because it writes smoke.py itself and the reviewer
+// type has no Write tool. The prompt restates the reviewer rules that the agent type would carry.
 function checkpointReview(context, gate, implement, phases = null) {
-  return agentT('checkpoint', `You are the fresh pre-ship checkpoint reviewer. Read the plan text below and the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, put a complete Python 3 program in script (real newlines, single backslashes, no heredoc) and leave command empty; forge saves it to ${PARAMS.runDir}/smoke.py and runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. Otherwise set script to an empty string and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Set command and script to empty strings unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+  return agentT('checkpoint', `${planRef()}
 
-PLAN
-${PARAMS.planText}
+You are the fresh pre-ship checkpoint reviewer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present.
+
+RULES. You have a budget of 30 tool calls. Read a repository file only to confirm a file:line the diff touches, at most 120 lines per read, and do not explore adjacent code. Do not run git and do not search the web. Do not use the Agent, Edit or NotebookEdit tools. You may write exactly one file, ${PARAMS.runDir}/smoke.py, and only as described below; write nothing else.
+
+Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Otherwise set scriptWritten to false and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Unless recommendation is smoke, set command to an empty string, set scriptWritten to false and write no file. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
 ${phases ? `\nPHASE COMMITS AND GATES\n${JSON.stringify(phases)}\n` : ''}
 IMPLEMENTER RESULT
 ${JSON.stringify(implement || {})}`,
-  { label: 'checkpoint', phase: 'Checkpoint', agentType: 'reviewer', schema: CHECKPOINT_SCHEMA })
+  { label: 'checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_SCHEMA })
 }
 
 function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
   const smoke = checkpoint.recommendation === 'smoke'
-  const script = smoke && String(checkpoint.script || '').trim() ? String(checkpoint.script) : ''
+  const scriptWritten = smoke && checkpoint.scriptWritten === true
   return {
     recommendation: checkpoint.recommendation,
-    command: !smoke ? '' : script ? `python3 ${shellQuote(`${PARAMS.runDir}/smoke.py`)}` : checkpoint.command,
-    script,
+    // checkpoint-save fills the command in when the reviewer wrote smoke.py.
+    command: smoke && !scriptWritten ? checkpoint.command : '',
+    scriptWritten,
     reason: checkpoint.reason,
     summary: checkpoint.summary,
     decidedBy,
@@ -1223,99 +1163,36 @@ function checkpointDocument(checkpoint, implement, context, decidedBy, state = {
   }
 }
 
-// The Workflow runtime has no verified TextEncoder or Buffer, so UTF-8 and CRC32 are computed here.
-function utf8Bytes(text) {
-  const value = String(text)
-  const bytes = []
-  for (let index = 0; index < value.length; index++) {
-    let code = value.codePointAt(index)
-    if (code > 0xffff) index++
-    else if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd
-    if (code < 0x80) bytes.push(code)
-    else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f))
-    else if (code < 0x10000) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
-    else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
-  }
-  return bytes
-}
-
-const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
-  let value = index
-  for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
-  return value >>> 0
-})
-
-// Matches Python's zlib.crc32.
-function crc32(bytes) {
-  let value = 0xffffffff
-  for (const byte of bytes) value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8)
-  return (value ^ 0xffffffff) >>> 0
-}
-
-// Arguments are groups of <temp> <final> <bytes> <crc32>. Trailing newlines are ignored because the
-// Write tool may add or drop one. Files are moved into place only when every group matches.
-const VERIFY_WRITE_SCRIPT = [
-  'import json, os, sys, zlib',
-  'args = sys.argv[1:]',
-  'groups = [args[index:index + 4] for index in range(0, len(args), 4)]',
-  'observe = lambda path: (lambda data: (len(data), zlib.crc32(data)))(open(path, "rb").read().rstrip(b"\\n")) if os.path.isfile(path) else (-1, -1)',
-  'seen = [(temp, final, int(size), int(crc)) + observe(temp) for temp, final, size, crc in groups]',
-  'ok = bool(seen) and all(row[2] == row[4] and row[3] == row[5] for row in seen)',
-  'moved = [os.replace(row[0], row[1]) is None for row in seen] if ok else [False for row in seen]',
-  'print(json.dumps({"files": [{"path": row[1], "bytes": row[4], "crc32": row[5], "moved": flag} for row, flag in zip(seen, moved)]}))',
-].join('; ')
-
-let writeAttempts = 0
-
-// Writes run-dir files with the Write tool instead of passing content as a shell argument. Every
-// writer is a fresh agent and the Write tool refuses to overwrite a file the agent has not read, so
-// the agent writes new temp paths and the verify script moves them onto the final paths.
-// The runtime forbids Math.random, so a temp name is unique through the attempt counter and a
-// checksum of the label and content.
-async function writeFiles(label, phaseLabel, files) {
-  const expect = files.map(file => {
-    const bytes = utf8Bytes(String(file.content).replace(/\n+$/, ''))
-    return { path: file.path, bytes: bytes.length, crc32: crc32(bytes) }
-  })
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    writeAttempts++
-    const nonce = `${writeAttempts}-${crc32(utf8Bytes(`${label}\n${attempt}\n${files.map(file => file.content).join('\n')}`)).toString(16)}`
-    const temps = files.map(file => `${file.path}.${nonce}.tmp`)
-    const blocks = files.map((file, index) => {
-      const content = String(file.content)
-      return `<<<FORGE-FILE ${temps[index]}>>>\n${content}${content.endsWith('\n') ? '' : '\n'}<<<FORGE-END>>>`
-    }).join('\n')
-    const verifyArgs = expect.map((item, index) => [temps[index], item.path, item.bytes, item.crc32].map(shellQuote).join(' ')).join(' ')
-    const ack = await agentT('changedFiles', `You write ${files.length} file(s) for Forge. For each block below, use the Write tool to write exactly the text between its \`<<<FORGE-FILE <path>>>\` line and the next \`<<<FORGE-END>>>\` line, excluding those two marker lines, to the path named in the FORGE-FILE line. Copy the text character for character. If the Write tool refuses because the path exists and has not been read, Read it once, then Write it again. After every Write succeeds, run exactly one command with the Bash tool and return its stdout JSON unchanged: python3 -c ${shellQuote(VERIFY_WRITE_SCRIPT)} ${verifyArgs}
-If any Write or the command is refused, blocked by a hook, or fails, return {"files": []}. Never write a file another way: no Bash heredoc, echo, printf, or python write.
-
-${blocks}`,
-    { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema: WRITE_ACK_SCHEMA, expect })
-    const observed = (ack && Array.isArray(ack.files)) ? ack.files : []
-    const matched = observed.length === expect.length && expect.every((item, index) =>
-      observed[index].path === item.path && observed[index].moved === true &&
-      observed[index].bytes === item.bytes && observed[index].crc32 === item.crc32)
-    if (matched) return true
-    if (capBlocked) return false
-    await decide(`${label} attempt ${attempt} did not verify (${observed.length ? 'size or checksum mismatch' : 'no write acknowledgement'}).`)
-  }
-  return false
-}
-
-// Saved context drops the long prompt fields; a relaunch recomputes the context before review.
-// smoke.py is written on its own, as raw text, and checkpoint.json keeps only its command, so a
-// relaunch never copies the script again.
+// checkpoint.json is written by a command from small arguments and the context file the context
+// command saved. summary and reason stay out of it: they reach the user through the return value
+// and handoff.md.
 async function writeCheckpoint(checkpoint) {
-  const context = checkpoint.context && { ...checkpoint.context, standards: '', contract: '', reviewerContract: '', checklist: '' }
-  if (checkpoint.script) {
-    PARAMS.spawnCap += 1
-    if (!await writeFiles('write-smoke', 'Checkpoint', [{ path: `${PARAMS.runDir}/smoke.py`, content: checkpoint.script }])) return false
+  const smoke = checkpoint.recommendation === 'smoke'
+  const proof = !smoke ? '' : checkpoint.scriptWritten ? ' --script' : ` --command=${shellQuote(checkpoint.command)}`
+  const files = checkpoint.implementFilesChanged
+  // --branch makes the command read phases.json, so it is passed only for a phased run.
+  const branch = checkpoint.phases ? ` --branch ${shellQuote(checkpoint.branch || '')}` : ''
+  const planSha = PLAN_FACTS.sha256 ? ` --plan-sha256 ${shellQuote(PLAN_FACTS.sha256)}` : ''
+  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)} --recommendation ${checkpoint.recommendation} --decided-by ${checkpoint.decidedBy}${proof}${branch}${planSha} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
+    CHECKPOINT_SAVE_SCHEMA, 'Checkpoint')
+  if (!saved) return false
+  if (!saved.written) {
+    await decide(`save-checkpoint did not write ${PARAMS.runDir}/checkpoint.json: ${saved.error || 'no error text'}`)
+    return false
   }
-  return writeFiles('write-checkpoint', 'Checkpoint', [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, script: '', context }, null, 2)}\n` }])
+  const commandMatches = checkpoint.scriptWritten ? saved.hasScript === true && Boolean(saved.command) : saved.command === checkpoint.command
+  if (!commandMatches || saved.files !== files.length) {
+    await decide(`save-checkpoint saved a different command or file count than forge passed (command ${JSON.stringify(saved.command)}, ${saved.files} files).`)
+    return false
+  }
+  checkpoint.command = saved.command
+  return true
 }
 
 function savedCheckpointProblem(saved) {
   if (!saved) return 'the file could not be read'
+  if (saved.error) return saved.error
+  if (!saved.recommendation) return 'recommendation is empty'
   if (contextFailed(saved.context)) return 'context.commandSucceeded is not true'
   if (!String(saved.context.diffPath || '').endsWith('.diff')) return `context.diffPath does not end in .diff (${saved.context.diffPath || 'empty'})`
   if (!Array.isArray(saved.implementFilesChanged)) return 'implementFilesChanged is not an array'
@@ -1323,12 +1200,12 @@ function savedCheckpointProblem(saved) {
   return ''
 }
 
-// Agents echo JSON nulls unreliably, so the read commands print "" for every null and the
+// Agents echo JSON nulls unreliably, so the phases.json read prints "" for every null and the
 // fields that carry meaning as null are restored after the read.
 const PY_NO_NULLS = 'clean = lambda v: "" if v is None else ({k: clean(x) for k, x in v.items()} if isinstance(v, dict) else ([clean(x) for x in v] if isinstance(v, list) else v))'
 
 // Matches Python json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True) for
-// strings, integers, booleans, arrays and objects; checkpoint.json holds no floats or nulls.
+// strings, integers, booleans, arrays and objects; facts hold no floats or nulls.
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${canonicalJson(key)}:${canonicalJson(value[key])}`).join(',')}}`
@@ -1344,31 +1221,21 @@ function restorePhaseRow(row) {
 // a kept empty phases array would also make a single-pass run look phased.
 function dropEmptyOptionalKeys(checkpoint) {
   const kept = { ...checkpoint }
-  for (const key of ['script', 'branch', 'phases']) {
+  for (const key of ['branch', 'phases']) {
     if (kept[key] === '' || (Array.isArray(kept[key]) && !kept[key].length)) delete kept[key]
   }
   return kept
 }
 
-// The command prints a digest of the canonical JSON so an echo that adds, drops or edits a field is caught.
+// checkpoint-facts fills a key the file lacks with an empty value, so a file an older forge wrote
+// still reads, and it hashes the plan file itself to report a plan edited since the checkpoint.
 async function readCheckpoint() {
-  const script = `import functools, json, pathlib, sys; ${PY_NO_NULLS}; data = clean(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))); data = {k: v for k, v in data.items() if not (k in ("script", "branch", "phases") and v in ("", []))}; canon = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True); print(json.dumps({"checkpoint": data, "canonLength": len(canon), "fnv1a": functools.reduce(lambda h, c: ((h ^ ord(c)) * 16777619) & 0xFFFFFFFF, canon, 2166136261)}))`
-  const path = `${PARAMS.runDir}/checkpoint.json`
   PARAMS.spawnCap += 1
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(path)}`,
-      { label: attempt === 1 ? 'read-checkpoint' : 'read-checkpoint-retry', phase: 'Checkpoint', schema: CHECKPOINT_READ_SCHEMA })
-    if (!read) return null
-    const echoed = dropEmptyOptionalKeys(read.checkpoint)
-    const canon = canonicalJson(echoed)
-    if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) {
-      const saved = echoed
-      if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
-      return saved
-    }
-    await decide(`read-checkpoint attempt ${attempt} did not match the file digest.`)
-  }
-  return null
+  const saved = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)}`,
+    CHECKPOINT_FACTS_SCHEMA, 'Checkpoint', dropEmptyOptionalKeys)
+  if (!saved) return null
+  if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
+  return saved
 }
 
 async function followCheckpoint(state, decision, command) {
@@ -1393,17 +1260,13 @@ async function followCheckpoint(state, decision, command) {
   return state
 }
 
-function planSummary(context) {
-  return (context.planSummary || '').slice(0, 4000)
+function acceptanceCriteria() {
+  return PARAMS.criteria.length ? PARAMS.criteria : PLAN_FACTS.criteria
 }
-
-function acceptanceCriteria(context) {
-  return PARAMS.criteria.length ? PARAMS.criteria : (context.criteria || [])
-}
-function smokeCriteria(context) {
+function smokeCriteria() {
   return configuredStage('qa_login')
-    ? [SIGN_IN_CRITERION, ...acceptanceCriteria(context)]
-    : acceptanceCriteria(context)
+    ? [SIGN_IN_CRITERION, ...acceptanceCriteria()]
+    : acceptanceCriteria()
 }
 
 function contextFailed(context) {
@@ -1416,8 +1279,27 @@ function diffSection(context, codex = false) {
     : `Diff file: ${context.diffPath} (${context.diffLines} lines). Read it with the Read tool in ranges of at most 2000 lines; never paste it.`
 }
 
+const REVIEWER_CONTRACT = '~/.claude/skills/forge/references/claude-reviewer-contract.md'
+
+const BRIEF_PARTS = 'the plan summary, the public API contract, the acceptance criteria, the review checklist and the code standards'
+
+// The brief stays on disk. A Claude reviewer reads it by path; the Codex wrapper adds it below the
+// prompt with a shell command, because Codex must have everything in its prompt.
+function briefSection(context, codex) {
+  const brief = codex
+    ? `BRIEF: added at the end of this prompt, below the line BRIEF. It holds ${BRIEF_PARTS}.`
+    : `BRIEF: ${context.briefPath}, the file you read first.`
+  const criteria = PARAMS.criteria.length
+    ? `\n\nACCEPTANCE CRITERIA\n${JSON.stringify(PARAMS.criteria)}\nThese criteria replace the Acceptance criteria part of the brief.`
+    : ''
+  return `${brief} Score the implementation against the public API contract (deviations are findings), assess the acceptance criteria and the review checklist, and flag violations of the code standards.${criteria}`
+}
+
 function reviewerPrompt(identity, focus, context, codex = false) {
-  return `${identity === 'Codex general' ? '' : `${context.reviewerContract}\n\n`}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
+  const readFirst = codex
+    ? ''
+    : `Read ${REVIEWER_CONTRACT} in full first; it binds you. Read ${context.briefPath} in full with the Read tool first: it holds ${BRIEF_PARTS}.\n\n`
+  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
 Use disputes only for a concrete concern at a file:line that you examined and explicitly reject, with the evidence in reason. Return exactly the review schema.
 
 PROJECT DIR
@@ -1426,26 +1308,15 @@ Every path in the diff and in your findings is relative to this directory. Confi
 
 ${diffSection(context, codex)}
 
-PLAN SUMMARY
-${planSummary(context)}
-
-PUBLIC API CONTRACT (score the implementation against this; deviations are findings):
-${context.contract || '(none declared)'}
-
-ACCEPTANCE CRITERIA
-${JSON.stringify(acceptanceCriteria(context))}
-
-REVIEW CHECKLIST
-${context.checklist}
-
-FLAG VIOLATIONS OF THESE CODE STANDARDS
-${context.standards}`
+${briefSection(context, codex)}`
 }
 
 async function codexReview(context) {
   const review = reviewerPrompt('Codex general', 'Assess every checklist item and acceptance criterion.', context, true)
+  const promptPath = `${PARAMS.runDir}/codex-review-prompt.md`
+  const partPath = `${PARAMS.runDir}/codex-review-prompt.part.md`
   const result = await codexAgent(`You orchestrate the CODEX general review. ${codexWrapper}
-Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
+Write ${partPath} with the exact reviewer prompt below, followed by a last line that reads exactly BRIEF; add nothing else (the helper prepends the prompt contract). Then build the prompt file with exactly this one shell command, which adds the review brief below that line: \`{ cat ${shellQuote(partPath)}; echo; cat ${shellQuote(context.briefPath)}; } > ${shellQuote(promptPath)}\`. Never copy the brief text yourself; before any retry run the same command again, which rebuilds the file. Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${promptPath} --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
   { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA }, { threadFile: CODEX_REVIEW_THREAD, log: `${PARAMS.runDir}/codex-review.jsonl` })
@@ -1648,19 +1519,24 @@ async function reviewPanel(context) {
 // The applier gets only the decider's fix items, already verified, so it applies them without
 // re-triage. The quick-impl role's provider picks the Claude or Codex branch.
 async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
-  const { round, planExcerpt, diffStat } = extra
+  const { round, planPhase, diffStat } = extra
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
   const implementationRole = configRoleForTier('applier')
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
-  const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nPLAN EXCERPT\n${planExcerpt}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
+  const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('applier', `Apply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
+    const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
       { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
     return result || null
   }
+  const promptPath = `${PARAMS.runDir}/${label}-prompt.md`
+  const partPath = `${PARAMS.runDir}/${label}-prompt.part.md`
+  const planNote = planPhase
+    ? `State in it that the full plan follows under PLAN, and that the section headed ### Phase ${planPhase.id}: ${planPhase.title}, with the section ## Public API contract when the plan has one, is the part that applies.`
+    : 'State in it that the full plan follows under PLAN.'
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, the fix spec, plan excerpt, and diff stat below verbatim, and the instruction that the fix decider already verified every item against current code, so Codex applies each change as written and does not re-triage or widen scope. With ranged reads, include the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason explaining what changed or why it could not be applied. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.
+Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${partPath} as the first part of a self-contained Codex prompt containing those standards verbatim, the fix spec and diff stat below verbatim, and the instruction that the fix decider already verified every item against current code, so Codex applies each change as written and does not re-triage or widen scope. ${planNote} With ranged reads, include the review diff at ${reviewDiffPath} when present. End ${partPath} with a line that reads exactly PLAN. Then build the prompt file with exactly this one shell command, which adds the plan file below that line: \`{ cat ${shellQuote(partPath)}; echo; cat ${shellQuote(PLAN)}; } > ${shellQuote(promptPath)}\`. Never copy plan text yourself. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason explaining what changed or why it could not be applied. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.
 
 ${inputs}`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA }, { threadFile, log: `${PARAMS.runDir}/codex-${label}.jsonl` })
@@ -1720,7 +1596,7 @@ async function converge(panel, context) {
     files: context.files || [], threadFile: `${PARAMS.runDir}/codex-fix.thread`, context, phaseLabel: 'Fix',
     // Review-fix rounds run fast checks only: the full suite runs once on the final state below, and a full gate per round costs one suite run per round.
     runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles, ['lint', 'typecheck', 'semgrep']) : null,
-    planExcerpt: PARAMS.planText, commitsPerRound: false,
+    commitsPerRound: false,
   })
   // The final gate runs even when the review loop ended blocked or needing a ruling: the tree holds
   // fixes that only had fast checks, and a later resume may apply nothing more.
@@ -1755,13 +1631,17 @@ function fixDiffStatCommand() {
 }
 
 function deciderPrompt(round, open, gate, opts, history) {
-  const contract = opts.context && opts.context.contract && opts.context.contract !== PARAMS.planText ? opts.context.contract : '(see the plan excerpt)'
+  const contract = (opts.context && opts.context.hasContract) || PLAN_FACTS.hasContract
+    ? `the section ## Public API contract of ${PLAN}`
+    : '(none declared)'
   const diffPath = (opts.context && opts.context.diffPath) || (gate && gate.diffPath) || ''
   const gateExcerpt = gate && !gate.passed
     ? JSON.stringify({ failures: gate.failures || [], commands: gate.commands || [] }).slice(0, 6000)
     : '(no failing gate this round)'
   const rulings = (PARAMS.rulings || []).filter(ruling => ruling && open.some(item => rulingFor(item) === ruling))
-  return `You are the Forge fix DECIDER for round ${round} of ${MAX_FIX_ROUNDS} (${opts.label}) in ${PARAMS.projectDir}. Gate items come from a failing gate; review items were confirmed by triage. Turn the open items into an exact fix spec.
+  return `${planRef(opts.planPhase)}
+
+You are the Forge fix DECIDER for round ${round} of ${MAX_FIX_ROUNDS} (${opts.label}) in ${PARAMS.projectDir}. Gate items come from a failing gate; review items were confirmed by triage. Turn the open items into an exact fix spec.
 First run \`${fixDiffStatCommand()}\` and return its stdout as diffStat. Read the run's change set only for the files the open items touch: ${diffPath ? `ranged reads (at most 2,000 lines) of ${diffPath}, or ` : ''}\`git -C ${shellQuote(PARAMS.projectDir)} diff -- <file>\` for uncommitted edits, and ranged reads of current code.
 Return one items[] entry per open item, with the same id and source:
 - fix: files lists the files to edit, change states the exact edit (file, location, and what to write), and check states how the result will be confirmed.
@@ -1783,11 +1663,7 @@ ${history.length ? JSON.stringify(history) : '(none)'}
 RULINGS
 ${rulings.length ? JSON.stringify(rulings) : '(none)'}
 
-PUBLIC API CONTRACT
-${contract}
-
-PLAN EXCERPT
-${opts.planExcerpt}`
+API CONTRACT: ${contract}`
 }
 
 // One capped loop for gate failures and review findings. Each round a decider writes the fix
@@ -1801,7 +1677,6 @@ ${opts.planExcerpt}`
 async function fixLoop(opts) {
   const { kind, label, runGate } = opts
   const afterFix = opts.afterFix || (async () => true)
-  opts.planExcerpt = opts.planExcerpt || PARAMS.planText
   let gate = opts.gate
   let gateOpen = kind === 'gate' ? gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] }) : []
   const reviewOpen = new Map(opts.reviewItems.map(item => [findingKey(item), item]))
@@ -1884,7 +1759,7 @@ async function fixLoop(opts) {
     } else if (fixItems.length) {
       appliedBy = 'applier'
       const threadFile = round === 1 ? opts.threadFile : `${opts.threadFile}-${round}`
-      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planExcerpt: opts.planExcerpt, diffStat: spec.diffStat })
+      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planPhase: opts.planPhase, diffStat: spec.diffStat })
       if (!fix) {
         reason = capBlocked ? 'spawn-cap' : 'agent-null'
         await decide(`${label} round ${round}: the fix applier returned null; the loop stopped.`)
@@ -2040,10 +1915,10 @@ async function recordUnstaged(state, result, label) {
 }
 
 function qaArtifactDraft(shipResult, context) {
-  const criteria = acceptanceCriteria(context)
+  const criteria = acceptanceCriteria()
   return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
 1. Read the full header comment of ~/.claude/skills/forge/references/qa-artifact.html, from its first line up to its closing -->, for its complete data and placeholder contract. Read ${sandboxFile()} with ranged reads if it exists.
-2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from ${sandboxFile()} when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary, plus the Backend-verified lines described below. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
+2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from the section headed ## Summary of the plan file ${PLAN}, which you read with the Read tool; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from ${sandboxFile()} when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from that Summary section, plus the Backend-verified lines described below. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
 Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered that a person can check through the product UI: ${JSON.stringify(criteria)}. A criterion with no click path through the product UI is not a qaItem: add it to contextItems as "Backend-verified: <criterion>" with its evidence. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence=[], pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is a string with one action a person takes in the UI, location first (for example "On the Customers page, click Add"), ending on the screen that shows the expected result; cite a click-path reference entry by id when the overlay provides one. Never put shell, test or container commands in steps: put them in evidence as a list of strings or command blocks {command, cwd, note?}. Each command block is self-contained and copy-pasteable in zsh: write the full command every time and never use shell variables, export, or aliases defined in another step. Items that test how a verdict or note is saved take their test input from a separate item or from the note field, never from that item's own Pass/Fail/Blocked buttons, because the saved verdict must record whether the check passed. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from ${sandboxFile()} testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
 3. Run python3 ~/.claude/skills/forge/scripts/render_artifact.py qa --data ${PARAMS.runDir}/qa-data.json --out ${PARAMS.runDir}/qa-artifact.html; never write your own renderer. A nonzero exit is an error: return its stderr as the error text. Then run open ${PARAMS.runDir}/qa-artifact.html on macOS. If the Artifact tool is available, load the artifact-capabilities skill, then publish the rendered file titled "${PARAMS.ticket} <shortTitle> QA" with capabilities {"db": {}} on the first publish, and run one ArtifactData list on collection qa-results with that artifact's url to confirm the capability. Omit capabilities on every later republish of the same page.
 4. Return path=${PARAMS.runDir}/qa-artifact.html, the qaItems count as items, whether open succeeded as opened, and error="". On any error return that path, items=0, opened=false, and the error text.`,
@@ -2143,7 +2018,7 @@ ${JSON.stringify(patch, null, 2)}
 }
 
 async function smoke(sandbox, context) {
-  const criteria = smokeCriteria(context)
+  const criteria = smokeCriteria()
   const results = []
   for (let offset = 0; offset < criteria.length; offset += 6) {
     const chunk = criteria.slice(offset, offset + 6)
@@ -2172,7 +2047,7 @@ function sandboxRefresh(sandbox, shipResult, context) {
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
   const gateNotice = noGates
-    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint result at ${PARAMS.runDir}/checkpoint.json.`
+    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint recommendation and command from ${PARAMS.runDir}/checkpoint.json.`
     : ''
   const cleanup = usesGateCheckout()
     ? `Before anything else, run exactly this command once and continue regardless of its output: \`${gateCheckoutCleanupCommand()}\`. `
@@ -2181,8 +2056,7 @@ async function handoff(state, context) {
     ...state,
     qaDraft: qaDraftSummary(state.qaDraft),
     context: context && {
-      files: context.files || [], planSummary: planSummary(context),
-      criteria: acceptanceCriteria(context), testPaths: context.testPaths || [],
+      files: context.files || [], criteria: acceptanceCriteria(), testPaths: context.testPaths || [],
     },
   }
   await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
@@ -2192,11 +2066,12 @@ APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
+When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and neither the run data nor checkpoint.json holds the checkpoint summary and reason after a relaunch. Carry its checkpoint summary and reason into What changed and why.
 ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
-Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
+Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
 End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, the branch, and the sandbox id when there is one (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
 Return the handoff path.`,
@@ -2227,25 +2102,28 @@ async function readPhases() {
   return { ...saved, phases: (saved.phases || []).map(restorePhaseRow), lastCommittedPhase: saved.lastCommittedPhase || null, headSha: saved.headSha || null }
 }
 
-function writePhases(run, extraPending = []) {
-  const document = {
-    branch: run.branch,
-    phases: run.rows,
-    lastCommittedPhase: run.lastCommittedPhase,
-    headSha: run.headSha,
-    pendingGates: [...extraPending, ...run.unresolved, ...run.pending.map(entry => ({ id: entry.id, sha: entry.sha, label: entry.label }))],
-  }
-  return writeFiles('write-phases', 'Implement', [{ path: `${PARAMS.runDir}/phases.json`, content: `${JSON.stringify(document, null, 2)}\n` }])
+// phases.json is written by a command from these small arguments; it takes the titles from the plan
+// file. An empty field in an <id>:<sha>:<gate> or <id>:<sha>:<label> value is saved as null.
+async function writePhases(run, extraPending = []) {
+  const pending = [...extraPending, ...run.unresolved, ...run.pending]
+  const values = (rows, last) => rows.map(row => ` ${shellQuote(`${row.id}:${row.sha || ''}:${row[last] || ''}`)}`).join('')
+  const headSha = run.headSha ? ` --head-sha ${shellQuote(run.headSha)}` : ''
+  const lastPhase = run.lastCommittedPhase ? ` --last ${shellQuote(run.lastCommittedPhase)}` : ''
+  const saved = await factsCommand('save-phases', `python3 ~/.claude/skills/forge/scripts/run_context.py phases-save --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)} --branch ${shellQuote(run.branch)}${headSha}${lastPhase} --phase${values(run.rows, 'gate')}${pending.length ? ` --pending${values(pending, 'label')}` : ''}`,
+    PHASES_SAVE_SCHEMA, 'Implement')
+  if (saved && saved.written) return true
+  await decide(`${PARAMS.runDir}/phases.json could not be written (${(saved && saved.error) || 'no checked result'}); the phase loop stopped.`)
+  return false
 }
 
 function planPrTitle() {
-  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || ''
+  const heading = PLAN_FACTS.h1
   const title = heading.replace(/^plan:\s*/i, '').trim() || (PHASES.length ? PHASES[0].title : '') || 'Forge change'
   return [args.ticket, title].filter(Boolean).join(': ')
 }
 
 function planBranchName() {
-  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || (PHASES[0] && PHASES[0].title) || ''
+  const heading = PLAN_FACTS.h1 || (PHASES[0] && PHASES[0].title) || ''
   const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   const words = slug(heading.replace(/^plan:\s*/i, '')).split('-').filter(Boolean).slice(0, 6).join('-')
   return [slug(PARAMS.ticket), words].filter(Boolean).join('-').slice(0, 60).replace(/-+$/, '') || 'forge-phases'
@@ -2270,7 +2148,7 @@ async function commitFiles(label, message, files) {
   if (!files.length) return { sha: null, empty: true, error: '' }
   const quote = shellQuote
   const subject = String(message).replace(/`/g, '')
-  const result = await agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
+  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
     { label, phase: 'Implement', schema: GATE_SCHEMA })
   const commit = result && result.commit
   if (commit && Array.isArray(commit.dropped) && commit.dropped.length) {
@@ -2322,11 +2200,9 @@ async function collectPhaseGate(run, entry, allowFix) {
   let sha = entry.sha
   let fixes = 0
   const planned = PHASES.find(item => item.id === entry.id)
-  const contract = planSection(PARAMS.planText, 'Public API contract')
-  const phaseExcerpt = planned && `### Phase ${planned.id}: ${planned.title}\n${planned.text}${contract ? `\n\n## Public API contract\n${contract}` : ''}`
-  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contract: PARAMS.planText }, 'Gate', {
+  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, {}, 'Gate', {
     first: gate,
-    planExcerpt: phaseExcerpt || PARAMS.planText,
+    planPhase: planned || null,
     run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
     afterFix: async (touched, files) => {
       fixes++
@@ -2340,7 +2216,7 @@ async function collectPhaseGate(run, entry, allowFix) {
         sha = commit.sha
         run.headSha = commit.sha
         await decide(`Fix Phase ${entry.id} gate committed as ${sha.slice(0, 12)}.`)
-        await writePhases(run, [{ id: entry.id, sha, label: entry.label }])
+        if (!await writePhases(run, [{ id: entry.id, sha, label: entry.label }])) return false
       }
       return true
     },
@@ -2424,7 +2300,10 @@ async function phasedImplement(state) {
     await decide(`Phase commits go on branch ${run.branch}.`)
   }
   // Written before Phase 1 so an interrupted first phase resumes with this run's baseline.
-  if (!PHASES_RECORDED) await writePhases(run)
+  if (!PHASES_RECORDED && !await writePhases(run)) {
+    state.status = 'BLOCKED'
+    return state
+  }
   for (let index = startIndex; index < PHASES.length && !run.blocked; index++) {
     const phase = PHASES[index]
     const row = run.rows[index]
@@ -2453,7 +2332,7 @@ async function phasedImplement(state) {
       if (run.blocked) break
       if (commit.sha && phase !== lastPhase) queuePhaseGate(run, { id: phase.id, sha: commit.sha, label: `gate-phase-${phase.id}`, files: phaseFiles })
     }
-    await writePhases(run)
+    if (!await writePhases(run)) run.blocked = true
   }
   while (run.pending.length) await collectPhaseGate(run, run.pending[0], !run.blocked)
   if (gated && !run.blocked && !capBlocked && run.headSha && run.files.length) {
@@ -2461,7 +2340,7 @@ async function phasedImplement(state) {
     queuePhaseGate(run, { id: lastPhase.id, sha: run.headSha, label: finalLabel, files: run.files })
     await collectPhaseGate(run, run.pending[0], true)
   }
-  await writePhases(run)
+  if (!await writePhases(run)) run.blocked = true
   state.branch = run.branch
   state.phases = run.rows
   state.gate = run.lastGate
@@ -2481,8 +2360,8 @@ async function phasedImplement(state) {
 
 async function fullLane() {
   phase('Implement')
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
-  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
+  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${PLAN_FACTS.plannedSourceFiles} planned source files; threshold ${quickReviewThreshold()}).`)
   if (PHASED && !PARAMS.checkpointDecision) {
     await decide(configuredGateMode() === 'none'
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
@@ -2494,14 +2373,15 @@ async function fullLane() {
     const problem = savedCheckpointProblem(saved)
     if (problem) throw new Error(`checkpointDecision requires a valid ${PARAMS.runDir}/checkpoint.json: ${problem}`)
     initial.implement = { filesChanged: saved.implementFilesChanged }
-    initial.context = saved.context
+    if (saved.planChanged) await decide(`plan.md changed since the checkpoint (${PLAN}); the run continues on the saved checkpoint.`)
+    // A checkpoint an older forge saved has a context without a brief file; later stages take a fresh one.
+    initial.context = saved.context.briefPath ? saved.context : null
     if (saved.phases) {
       initial.branch = saved.branch || ''
       initial.phases = saved.phases
     }
-    initial.checkpoint = { ...saved, script: '', decidedBy: 'user' }
+    initial.checkpoint = saved
     await decide(`Pre-ship checkpoint decision: ${PARAMS.checkpointDecision} (user)`)
-    if (!await writeCheckpoint(initial.checkpoint)) throw new Error(`could not update ${PARAMS.runDir}/checkpoint.json for the user decision`)
   }
   const rows = await pipeline(
     [initial],
@@ -2518,7 +2398,7 @@ async function fullLane() {
       phase('Gate')
       if (stopped(state)) return state
       if (PARAMS.checkpointDecision || PHASED || configuredGateMode() === 'none') return state
-      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
+      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, {}, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set(repoRelative([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])]))]
       if (gateRun.needsJudge) state.needsJudge = true
@@ -2595,7 +2475,7 @@ async function fullLane() {
       const draftSkipped = draftQa ? '' : ' QA draft skipped: no QA stage is on.'
       if (contextFailed(state.context)) {
         if (draftQa) {
-          state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [], criteria: PARAMS.criteria })
+          state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [] })
           if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
         }
         state.status = 'BLOCKED'
@@ -2764,7 +2644,7 @@ async function reviewLane() {
   const context = await changedFiles(true)
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
-    return { status: 'BLOCKED', context: context || { criteria: PARAMS.criteria }, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+    return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
   }
   const review = await reviewPanel(context)
   if (review.status === 'BLOCKED') return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
@@ -2781,8 +2661,8 @@ async function reviewLane() {
 }
 
 await loadForgeConfig()
-await loadPlanText()
-const PHASES = PARAMS.lane === 'build' ? planPhases(PARAMS.planText) : []
+await loadPlanFacts()
+const PHASES = PARAMS.lane === 'build' ? PLAN_FACTS.phases : []
 const PHASED = PHASES.length >= 2
 if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
 const PHASES_SAVED = (PHASED && !PARAMS.checkpointDecision && await readPhases()) || EMPTY_PHASES_FILE
@@ -2809,7 +2689,7 @@ if (state.needsJudge) {
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 phase('Handoff')
-const ho = await handoff(state, state.context || { criteria: PARAMS.criteria })
+const ho = await handoff(state, state.context || {})
 if (!ho) {
   if (!['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
   await decide('Handoff agent returned null; no handoff path was produced.')
@@ -2828,6 +2708,7 @@ return {
   reason: (state.checkpoint && state.checkpoint.reason) || '',
   summary: (state.checkpoint && state.checkpoint.summary) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
+  planSha256: PLAN_FACTS.sha256,
   ffReview: state.ffReview || null,
   phases: PHASED ? (state.phases || []) : undefined,
   decisions,

@@ -36,6 +36,7 @@
       "Read(**/*credential*)",
       "Read(**/.pg_service.conf)",
       "Read(**/.netrc)",
+      "Read(**/.config/gh/hosts.yml)",
       "Read(**/.my.cnf)",
       "Read(**/.pgpass)"
     ],
