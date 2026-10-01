@@ -10,7 +10,7 @@ export const meta = {
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
     { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
-    { title: 'Fix', detail: 'Capped decide-then-apply fix loop with re-gate and scoped verification' },
+    { title: 'Fix', detail: 'Capped decide-then-apply fix loop: fast checks (lint, typecheck, Semgrep) and scoped verification per review-fix round, then one full gate on the final state' },
     { title: 'Bot Review', detail: 'Optional review-bot pass on the final PR head, triaged for the handoff only' },
     { title: 'Handoff', detail: 'Run status, evidence, decisions, and manual QA' },
   ],
@@ -346,6 +346,9 @@ const GATE_SCHEMA = {
     files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
     diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' },
+    head: { type: 'string' }, baselineSha256: { type: 'string' }, diffSha256: { type: 'string' },
+    configSha256: { type: 'string' }, filesSha256: { type: 'string' }, stageSelection: { type: 'string' },
+    reusedFrom: { type: 'string' },
     commit: {
       anyOf: [
         { type: 'null' },
@@ -1711,13 +1714,39 @@ async function converge(panel, context) {
     return { unresolved: [], unresolvedDisputes: [], fixesApplied: false, rounds: [], touchedFiles: [], blocked: false, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
   }
   const gated = configuredGateMode() === 'full'
-  return fixLoop({
+  const review = await fixLoop({
     kind: 'review', label: 'fix', gateLabel: 'gate-fix', gate: null,
     reviewItems: originalFindings.map(finding => ({ ...finding, source: 'review' })),
     files: context.files || [], threadFile: `${PARAMS.runDir}/codex-fix.thread`, context, phaseLabel: 'Fix',
-    runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles) : null,
+    // Review-fix rounds run fast checks only: the full suite runs once on the final state below, and a full gate per round costs one suite run per round.
+    runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles, ['lint', 'typecheck', 'semgrep']) : null,
     planExcerpt: PARAMS.planText, commitsPerRound: false,
   })
+  // The final gate runs even when the review loop ended blocked or needing a ruling: the tree holds
+  // fixes that only had fast checks, and a later resume may apply nothing more.
+  if (!gated || !review.fixesApplied) return review
+  PARAMS.spawnCap += 1
+  const files = [...new Set([...(context.files || []), ...review.touchedFiles])]
+  const first = await localGate('gate-fix-final', 'Fix', files)
+  const final = await gateWithFixes('gate-fix-final', files, `${PARAMS.runDir}/codex-fix-gate-fix-final.thread`, context, 'Fix', { first })
+  const finalTouched = final.touchedFiles || []
+  if (finalTouched.length) await decide(`The final gate fix loop changed ${finalTouched.join(', ').slice(0, 500)} after the review fixes; no review verifier re-checked these edits.`)
+  const finalOpen = final.open || []
+  const blocked = review.blocked || Boolean(final.blocked)
+  const reason = review.reason || final.reason
+  return {
+    ...review,
+    blocked,
+    needsJudge: review.needsJudge || Boolean(final.needsJudge),
+    unresolved: [...review.unresolved, ...finalOpen],
+    unresolvedDisputes: [...review.unresolvedDisputes, ...(final.disputes || [])],
+    touchedFiles: [...new Set([...review.touchedFiles, ...finalTouched])],
+    rounds: [...review.rounds, ...(final.rounds || [])],
+    gate: final.gate, gatePassed: Boolean(final.gate && final.gate.passed), gateRan: true,
+    deciderNotes: [...(review.deciderNotes || []), ...(final.deciderNotes || [])],
+    ...(reason ? { reason } : {}),
+    ...(blocked ? { open: [...(review.open || []), ...finalOpen] } : {}),
+  }
 }
 
 function fixDiffStatCommand() {
@@ -1765,7 +1794,10 @@ ${opts.planExcerpt}`
 // spec (applying a small fix set itself), an applier applies the rest, then the re-gate checks
 // gate items and a separate verifier re-checks this round's fixed review items, plus items closed
 // earlier whose files this round touched. Gate item ids come from failure text and change across
-// edits, so gate progress is a failure count.
+// edits, so gate progress is a failure count. Gate-failure rounds re-run the full gate. Review-fix
+// rounds run lint, typecheck and Semgrep only; converge then runs one full gate on the final state
+// when fixes were applied, and a failing final gate gets up to MAX_FIX_ROUNDS more rounds with a
+// full gate each.
 async function fixLoop(opts) {
   const { kind, label, runGate } = opts
   const afterFix = opts.afterFix || (async () => true)
@@ -1936,7 +1968,9 @@ async function fixLoop(opts) {
   const blockedFields = blocked ? { reason, open: open.map(item => ({ id: findingKey(item), ...item })), deciderNotes } : { deciderNotes }
   if (kind === 'gate') return { gate, touchedFiles: touched, blocked, needsJudge, disputes: openDisputes, rounds, ...blockedFields }
   return {
-    unresolved: open, unresolvedDisputes: openDisputes, fixesApplied: touched.length > 0, rounds,
+    // A fix result can list no touched files (a decider that applied without an apply result), so the file list alone cannot say whether the tree changed.
+    unresolved: open, unresolvedDisputes: openDisputes, rounds,
+    fixesApplied: touched.length > 0 || rounds.some(record => record.appliedBy === 'decider' || Boolean(record.fix && (record.fix.fixed || []).length)),
     touchedFiles: touched, blocked, needsJudge,
     gatePassed: gateRan ? Boolean(gate && gate.passed) : true, gate, gateRan, ...blockedFields,
   }
