@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -295,6 +296,30 @@ def plan_facts(plan_file: Path, criteria_only: bool = False) -> dict:
     )
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _review_brief(plan: str, references: Path) -> str:
+    # The reviewer contract stays out: this file is added whole to the Codex prompt, and that
+    # contract tells its reader to read the diff from disk, which a Codex prompt must not do.
+    criteria = _criteria(_section(plan, "Acceptance Criteria"))
+    parts = [
+        ("Plan summary", _section(plan, "Summary") or plan[:4000]),
+        ("Public API contract", _section(plan, "Public API contract") or "(none declared)"),
+        (
+            "Acceptance criteria",
+            "\n".join(f"{number}. {item}" for number, item in enumerate(criteria, 1))
+            or "(none listed)",
+        ),
+        ("Review checklist", (references / "review-checklist.md").read_text(encoding="utf-8")),
+        ("Code standards", (references / "code-standards.md").read_text(encoding="utf-8")),
+    ]
+    return "".join(f"## {heading}\n\n{body.strip()}\n\n" for heading, body in parts)
+
+
 def _ref_exists(repo: Path, ref: str) -> bool:
     return (
         subprocess.run(
@@ -449,7 +474,9 @@ def context(
         for token in plan.split()
         if "test" in token.lower() and token.strip("`.,:;()").endswith((".py", "/tests", "/unit"))
     ]
-    return {
+    brief_path = run_dir / f"review-brief-{label}.md"
+    _write_atomic(brief_path, _review_brief(plan, references))
+    facts = {
         "files": files,
         "preexisting": preexisting,
         "droppedPaths": dropped,
@@ -458,17 +485,13 @@ def context(
         "diffBytes": len(diff.encode("utf-8")),
         "diffLines": len(diff.splitlines()),
         "diffValid": diff_valid,
-        "planSummary": _section(plan, "Summary") or plan[:4000],
-        "criteria": _criteria(_section(plan, "Acceptance Criteria")),
-        "checklist": (references / "review-checklist.md").read_text(encoding="utf-8"),
-        "standards": (references / "code-standards.md").read_text(encoding="utf-8"),
         "testPaths": list(dict.fromkeys(tests)) or ["tests/unit"],
         "error": "",
-        "contract": _section(plan, "Public API contract"),
-        "reviewerContract": (references / "claude-reviewer-contract.md").read_text(
-            encoding="utf-8"
-        ),
+        "briefPath": str(brief_path),
+        "hasContract": bool(_section(plan, "Public API contract")),
     }
+    _write_atomic(run_dir / f"context-{label}.json", json.dumps(facts, indent=2) + "\n")
+    return _checked(facts)
 
 
 def main() -> None:

@@ -314,14 +314,13 @@ const CONTEXT_SCHEMA = {
     droppedPaths: { type: 'array', items: { type: 'string' } },
     preexisting: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' }, diffLines: { type: 'integer' },
-    diffValid: { type: 'boolean' }, planSummary: { type: 'string' },
-    criteria: { type: 'array', items: { type: 'string' } },
-    checklist: { type: 'string' }, standards: { type: 'string' },
+    diffValid: { type: 'boolean' },
     testPaths: { type: 'array', items: { type: 'string' } }, error: { type: 'string' },
-    contract: { type: 'string' }, reviewerContract: { type: 'string' },
+    briefPath: { type: 'string' }, hasContract: { type: 'boolean' },
   },
-  required: ['files', 'preexisting', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'planSummary', 'criteria', 'checklist', 'standards', 'testPaths', 'error', 'contract', 'reviewerContract'],
+  required: ['files', 'droppedPaths', 'preexisting', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'testPaths', 'error', 'briefPath', 'hasContract'],
 }
+const CONTEXT_FACTS_SCHEMA = factsSchema(CONTEXT_SCHEMA)
 const GATE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
@@ -651,7 +650,7 @@ const STUBS = {
   ffReview: () => ({ skipped: false, reason: '', prNumber: 1, repo: PARAMS.repo || 'owner/repo', headSha: dryRunSha('bot-review'), exitCode: 0, commentCount: 1, commentsPath: `${PARAMS.runDir}/bot-review.json`, summary: 'dry-run bot review' }),
   smoke: opts => {
     const number = opts.label === 'smoke' ? 1 : Number(String(opts.label).split('-')[1] || 1)
-    const criteria = smokeCriteria({ criteria: PARAMS.criteria }).slice((number - 1) * 6, number * 6)
+    const criteria = smokeCriteria().slice((number - 1) * 6, number * 6)
     return { results: criteria.map(criterion => ({ criterion, passed: true, note: 'dry run', screenshot: `${PARAMS.runDir}/smoke/dry-run.png` })) }
   },
   changedFiles: opts => opts.schema === ACK_SCHEMA
@@ -665,7 +664,7 @@ const STUBS = {
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_READ_SCHEMA
-    ? (checkpoint => ({ checkpoint, canonLength: canonicalJson(checkpoint).length, fnv1a: fnv1a(canonicalJson(checkpoint)) }))({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary', criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '', contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract' } })
+    ? (checkpoint => ({ checkpoint, canonLength: canonicalJson(checkpoint).length, fnv1a: fnv1a(canonicalJson(checkpoint)) }))({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', script: '', reason: PARAMS.dryRunFindings ? 'One command proves the change.' : 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true } })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -674,11 +673,7 @@ const STUBS = {
     ? { branch: `${PARAMS.ticket}-dry-run` }
     : opts.schema === THREAD_CHECK_SCHEMA
     ? { threadExists: true }
-    : {
-      files: ['auth/api/client.py'], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, planSummary: 'dry-run plan summary',
-      criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
-      contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
-    },
+    : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }),
   readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
@@ -1127,8 +1122,8 @@ function changedFiles(allDirty = false) {
   const repo = shellQuote(PARAMS.projectDir)
   const baseRef = args.base ? shellQuote(args.base) : `"$(cd ${repo} && bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || echo main)"`
   const base = ` --base ${baseRef}${PARAMS.lane === 'build' ? ' --advance-only' : ''}`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
-  { label: 'changed-files', phase: 'Review', schema: CONTEXT_SCHEMA })
+  return factsCommand('changed-files', `python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
+    CONTEXT_FACTS_SCHEMA, 'Review')
 }
 
 function checkpointReview(context, gate, implement, phases = null) {
@@ -1243,12 +1238,11 @@ ${blocks}`,
 // smoke.py is written on its own, as raw text, and checkpoint.json keeps only its command, so a
 // relaunch never copies the script again.
 async function writeCheckpoint(checkpoint) {
-  const context = checkpoint.context && { ...checkpoint.context, standards: '', contract: '', reviewerContract: '', checklist: '' }
   if (checkpoint.script) {
     PARAMS.spawnCap += 1
     if (!await writeFiles('write-smoke', 'Checkpoint', [{ path: `${PARAMS.runDir}/smoke.py`, content: checkpoint.script }])) return false
   }
-  return writeFiles('write-checkpoint', 'Checkpoint', [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, script: '', context }, null, 2)}\n` }])
+  return writeFiles('write-checkpoint', 'Checkpoint', [{ path: `${PARAMS.runDir}/checkpoint.json`, content: `${JSON.stringify({ ...checkpoint, script: '' }, null, 2)}\n` }])
 }
 
 function savedCheckpointProblem(saved) {
@@ -1330,17 +1324,13 @@ async function followCheckpoint(state, decision, command) {
   return state
 }
 
-function planSummary(context) {
-  return (context.planSummary || '').slice(0, 4000)
+function acceptanceCriteria() {
+  return PARAMS.criteria.length ? PARAMS.criteria : PLAN_FACTS.criteria
 }
-
-function acceptanceCriteria(context) {
-  return PARAMS.criteria.length ? PARAMS.criteria : (context.criteria || [])
-}
-function smokeCriteria(context) {
+function smokeCriteria() {
   return configuredStage('qa_login')
-    ? [SIGN_IN_CRITERION, ...acceptanceCriteria(context)]
-    : acceptanceCriteria(context)
+    ? [SIGN_IN_CRITERION, ...acceptanceCriteria()]
+    : acceptanceCriteria()
 }
 
 function contextFailed(context) {
@@ -1353,8 +1343,27 @@ function diffSection(context, codex = false) {
     : `Diff file: ${context.diffPath} (${context.diffLines} lines). Read it with the Read tool in ranges of at most 2000 lines; never paste it.`
 }
 
+const REVIEWER_CONTRACT = '~/.claude/skills/forge/references/claude-reviewer-contract.md'
+
+const BRIEF_PARTS = 'the plan summary, the public API contract, the acceptance criteria, the review checklist and the code standards'
+
+// The brief stays on disk. A Claude reviewer reads it by path; the Codex wrapper adds it below the
+// prompt with a shell command, because Codex must have everything in its prompt.
+function briefSection(context, codex) {
+  const brief = codex
+    ? `BRIEF: added at the end of this prompt, below the line BRIEF. It holds ${BRIEF_PARTS}.`
+    : `BRIEF: ${context.briefPath}, the file you read first.`
+  const criteria = PARAMS.criteria.length
+    ? `\n\nACCEPTANCE CRITERIA\n${JSON.stringify(PARAMS.criteria)}\nThese criteria replace the Acceptance criteria part of the brief.`
+    : ''
+  return `${brief} Score the implementation against the public API contract (deviations are findings), assess the acceptance criteria and the review checklist, and flag violations of the code standards.${criteria}`
+}
+
 function reviewerPrompt(identity, focus, context, codex = false) {
-  return `${identity === 'Codex general' ? '' : `${context.reviewerContract}\n\n`}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
+  const readFirst = codex
+    ? ''
+    : `Read ${REVIEWER_CONTRACT} in full first; it binds you. Read ${context.briefPath} in full with the Read tool first: it holds ${BRIEF_PARTS}.\n\n`
+  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
 Use disputes only for a concrete concern at a file:line that you examined and explicitly reject, with the evidence in reason. Return exactly the review schema.
 
 PROJECT DIR
@@ -1363,26 +1372,15 @@ Every path in the diff and in your findings is relative to this directory. Confi
 
 ${diffSection(context, codex)}
 
-PLAN SUMMARY
-${planSummary(context)}
-
-PUBLIC API CONTRACT (score the implementation against this; deviations are findings):
-${context.contract || '(none declared)'}
-
-ACCEPTANCE CRITERIA
-${JSON.stringify(acceptanceCriteria(context))}
-
-REVIEW CHECKLIST
-${context.checklist}
-
-FLAG VIOLATIONS OF THESE CODE STANDARDS
-${context.standards}`
+${briefSection(context, codex)}`
 }
 
 async function codexReview(context) {
   const review = reviewerPrompt('Codex general', 'Assess every checklist item and acceptance criterion.', context, true)
+  const promptPath = `${PARAMS.runDir}/codex-review-prompt.md`
+  const partPath = `${PARAMS.runDir}/codex-review-prompt.part.md`
   const result = await codexAgent(`You orchestrate the CODEX general review. ${codexWrapper}
-Write ${PARAMS.runDir}/codex-review-prompt.md with the exact reviewer prompt below; add nothing (the helper prepends the prompt contract). Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${PARAMS.runDir}/codex-review-prompt.md --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
+Write ${partPath} with the exact reviewer prompt below, followed by a last line that reads exactly BRIEF; add nothing else (the helper prepends the prompt contract). Then build the prompt file with exactly this one shell command, which adds the review brief below that line: \`cat ${shellQuote(partPath)} ${shellQuote(context.briefPath)} > ${shellQuote(promptPath)}\`. Never copy the brief text yourself; before any retry run the same command again, which rebuilds the file. Run test -f ${CODEX_REVIEW_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${promptPath} --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md. Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
   { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA }, { threadFile: CODEX_REVIEW_THREAD, log: `${PARAMS.runDir}/codex-review.jsonl` })
@@ -1697,7 +1695,9 @@ function fixDiffStatCommand() {
 }
 
 function deciderPrompt(round, open, gate, opts, history) {
-  const contract = opts.context && opts.context.contract && !opts.context.contractInPlan ? opts.context.contract : '(see the plan file)'
+  const contract = (opts.context && opts.context.hasContract) || PLAN_FACTS.hasContract
+    ? `the section ## Public API contract of ${PLAN}`
+    : '(none declared)'
   const diffPath = (opts.context && opts.context.diffPath) || (gate && gate.diffPath) || ''
   const gateExcerpt = gate && !gate.passed
     ? JSON.stringify({ failures: gate.failures || [], commands: gate.commands || [] }).slice(0, 6000)
@@ -1727,8 +1727,7 @@ ${history.length ? JSON.stringify(history) : '(none)'}
 RULINGS
 ${rulings.length ? JSON.stringify(rulings) : '(none)'}
 
-PUBLIC API CONTRACT
-${contract}`
+API CONTRACT: ${contract}`
 }
 
 // One capped loop for gate failures and review findings. Each round a decider writes the fix
@@ -1980,10 +1979,10 @@ async function recordUnstaged(state, result, label) {
 }
 
 function qaArtifactDraft(shipResult, context) {
-  const criteria = acceptanceCriteria(context)
+  const criteria = acceptanceCriteria()
   return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
 1. Read the full header comment of ~/.claude/skills/forge/references/qa-artifact.html, from its first line up to its closing -->, for its complete data and placeholder contract. Read ${sandboxFile()} with ranged reads if it exists.
-2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from this plan summary: ${JSON.stringify(planSummary(context))}; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from ${sandboxFile()} when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from the plan summary, plus the Backend-verified lines described below. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
+2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from the section headed ## Summary of the plan file ${PLAN}, which you read with the Read tool; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from ${sandboxFile()} when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from that Summary section, plus the Backend-verified lines described below. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
 Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered that a person can check through the product UI: ${JSON.stringify(criteria)}. A criterion with no click path through the product UI is not a qaItem: add it to contextItems as "Backend-verified: <criterion>" with its evidence. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence=[], pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is a string with one action a person takes in the UI, location first (for example "On the Customers page, click Add"), ending on the screen that shows the expected result; cite a click-path reference entry by id when the overlay provides one. Never put shell, test or container commands in steps: put them in evidence as a list of strings or command blocks {command, cwd, note?}. Each command block is self-contained and copy-pasteable in zsh: write the full command every time and never use shell variables, export, or aliases defined in another step. Items that test how a verdict or note is saved take their test input from a separate item or from the note field, never from that item's own Pass/Fail/Blocked buttons, because the saved verdict must record whether the check passed. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from ${sandboxFile()} testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
 3. Run python3 ~/.claude/skills/forge/scripts/render_artifact.py qa --data ${PARAMS.runDir}/qa-data.json --out ${PARAMS.runDir}/qa-artifact.html; never write your own renderer. A nonzero exit is an error: return its stderr as the error text. Then run open ${PARAMS.runDir}/qa-artifact.html on macOS. If the Artifact tool is available, load the artifact-capabilities skill, then publish the rendered file titled "${PARAMS.ticket} <shortTitle> QA" with capabilities {"db": {}} on the first publish, and run one ArtifactData list on collection qa-results with that artifact's url to confirm the capability. Omit capabilities on every later republish of the same page.
 4. Return path=${PARAMS.runDir}/qa-artifact.html, the qaItems count as items, whether open succeeded as opened, and error="". On any error return that path, items=0, opened=false, and the error text.`,
@@ -2083,7 +2082,7 @@ ${JSON.stringify(patch, null, 2)}
 }
 
 async function smoke(sandbox, context) {
-  const criteria = smokeCriteria(context)
+  const criteria = smokeCriteria()
   const results = []
   for (let offset = 0; offset < criteria.length; offset += 6) {
     const chunk = criteria.slice(offset, offset + 6)
@@ -2121,8 +2120,7 @@ async function handoff(state, context) {
     ...state,
     qaDraft: qaDraftSummary(state.qaDraft),
     context: context && {
-      files: context.files || [], planSummary: planSummary(context),
-      criteria: acceptanceCriteria(context), testPaths: context.testPaths || [],
+      files: context.files || [], criteria: acceptanceCriteria(), testPaths: context.testPaths || [],
     },
   }
   await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
@@ -2132,11 +2130,11 @@ APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, and ${PARAMS.runDir}/decisions.md. Do not read the diff or repository files; file names come from the run data.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/decisions.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
 ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
-Acceptance criteria: ${JSON.stringify(acceptanceCriteria(context))}
+Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
 End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, the branch, and the sandbox id when there is one (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
 Return the handoff path.`,
@@ -2262,7 +2260,7 @@ async function collectPhaseGate(run, entry, allowFix) {
   let sha = entry.sha
   let fixes = 0
   const planned = PHASES.find(item => item.id === entry.id)
-  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contractInPlan: true }, 'Gate', {
+  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, {}, 'Gate', {
     first: gate,
     planPhase: planned || null,
     run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
@@ -2456,7 +2454,7 @@ async function fullLane() {
       phase('Gate')
       if (stopped(state)) return state
       if (PARAMS.checkpointDecision || PHASED || configuredGateMode() === 'none') return state
-      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contractInPlan: true }, 'Gate')
+      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, {}, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set(repoRelative([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])]))]
       if (gateRun.needsJudge) state.needsJudge = true
@@ -2533,7 +2531,7 @@ async function fullLane() {
       const draftSkipped = draftQa ? '' : ' QA draft skipped: no QA stage is on.'
       if (contextFailed(state.context)) {
         if (draftQa) {
-          state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [], criteria: PARAMS.criteria })
+          state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [] })
           if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
         }
         state.status = 'BLOCKED'
@@ -2702,7 +2700,7 @@ async function reviewLane() {
   const context = await changedFiles(true)
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
-    return { status: 'BLOCKED', context: context || { criteria: PARAMS.criteria }, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+    return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
   }
   const review = await reviewPanel(context)
   if (review.status === 'BLOCKED') return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
@@ -2747,7 +2745,7 @@ if (state.needsJudge) {
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
 phase('Handoff')
-const ho = await handoff(state, state.context || { criteria: PARAMS.criteria })
+const ho = await handoff(state, state.context || {})
 if (!ho) {
   if (!['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
   await decide('Handoff agent returned null; no handoff path was produced.')
