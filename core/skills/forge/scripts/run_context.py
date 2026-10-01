@@ -170,17 +170,17 @@ def _checked(facts: dict) -> dict:
     return {"facts": facts, "canonLength": len(canon), "fnv1a": _fnv1a(canon)}
 
 
-# The plan patterns below must match the JavaScript regular expressions forge used before, so
-# they spell out JavaScript's whitespace set, line terminators and ASCII-only case folding
-# instead of using Python's \s, ".", "$", \b and re.IGNORECASE, which all differ.
-_JS_WS = " \t\n\x0b\x0c\r   -     　﻿"
+# The plan patterns below follow JavaScript regex rules for whitespace, line ends and ASCII-only
+# case folding, so a plan parses the same as in earlier forge versions. Python's \s, ".", "$",
+# \b and re.IGNORECASE all differ from those rules, so the sets are spelled out.
+_JS_WS = " \t\n\x0b\x0c\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 _JS_STRIP = (
-    " \t\n\x0b\x0c\r            "
-    "     　﻿"
+    " \t\n\x0b\x0c\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009"
+    "\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 )
 _S = f"[{_JS_WS}]"
 _NOT_S = f"[^{_JS_WS}]"
-_LINE_END = "\n\r  "
+_LINE_END = "\n\r\u2028\u2029"
 _DOT = f"[^{_LINE_END}]"
 _LINE_START = f"(?:\\A|(?<=[{_LINE_END}]))"
 _LINE_STOP = f"(?=[{_LINE_END}]|\\Z)"
