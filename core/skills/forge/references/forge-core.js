@@ -1146,7 +1146,7 @@ function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sh
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
   const shaArg = sha ? ` --sha ${quote(sha)}` : ''
-  return agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -2270,7 +2270,7 @@ async function commitFiles(label, message, files) {
   if (!files.length) return { sha: null, empty: true, error: '' }
   const quote = shellQuote
   const subject = String(message).replace(/`/g, '')
-  const result = await agentT('gate', `Run exactly: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
+  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
     { label, phase: 'Implement', schema: GATE_SCHEMA })
   const commit = result && result.commit
   if (commit && Array.isArray(commit.dropped) && commit.dropped.length) {

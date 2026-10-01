@@ -68,6 +68,7 @@ READERS = (
 SECRET_COMMANDS = re.compile(
     r"\bsecurity\s+find-(generic|internet)-password|"
     r"\bgh\s+auth\s+token\b|"
+    r"\bgh\s+auth\s+status\b.*\s(?:--show-token\b|-\w*t)|"
     r"\baws\s+configure\s+get\b|"
     r"\bop\s+(item\s+get|read)\b|"
     r"\bvault\s+(read|kv\s+get)\b|"
@@ -88,6 +89,8 @@ SECRET_PATH_SHAPES = (
     r"\.envs?\b|\.env\.|/\.envs?\b|"
     r"\.ssh/|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|authorized_keys|known_hosts|"
     r"\.aws/|\.gnupg/|\.kube/config|"
+    # gh writes its token to hosts.yml in plain text when no credential store works.
+    r"\.config/gh(?![\w-])|\bgh/hosts\.yml\b|"
     # \bpasswd\b does not catch .pgpass -- these DB client stores need naming.
     r"\.pgpass\b|\.my\.cnf\b|\.mylogin\.cnf\b|\.netrc\b|\.pg_service\.conf\b|"
     # Package/registry auth: the token lives inside, but the path never says so.
@@ -1223,11 +1226,11 @@ def verdict(command: str) -> Hit | None:
                 reader_text = EXCLUDE_OPTION.sub(" ", strip_redirections(segment, output_only=True))
                 if m := READER_NEAR_SECRET_WORD.search(word_scan(reader_text)):
                     return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
-            # A dot-directory (~/.config/gh/hosts.yml) or a variable operand
+            # A dot-directory (~/.config/rclone/rclone.conf) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
             # A variable operand with a literal source extension ($R/app.py) is
             # a source file. Names-only output (-l, -c) prints no line unless a
-            # pipe hands the names on: `grep -l token ~/.config/gh/* | xargs cat`.
+            # pipe hands the names on: `grep -l token ~/.config/rclone/* | xargs cat`.
             dotted = dot_cd or any(
                 has_dot_part(f) or ("$" in f and not _code_file(f)) for f in reader.files
             )
