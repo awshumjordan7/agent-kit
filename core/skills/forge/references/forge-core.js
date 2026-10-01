@@ -346,6 +346,9 @@ const GATE_SCHEMA = {
     files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
     diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' },
+    head: { type: 'string' }, baselineSha256: { type: 'string' }, diffSha256: { type: 'string' },
+    configSha256: { type: 'string' }, filesSha256: { type: 'string' }, stageSelection: { type: 'string' },
+    reusedFrom: { type: 'string' },
     commit: {
       anyOf: [
         { type: 'null' },

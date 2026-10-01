@@ -23,6 +23,7 @@ push=false
 sha=''
 no_stages=false
 print_mode=false
+reused=false
 files=()
 
 while (($#)); do
@@ -90,6 +91,7 @@ if $no_stages; then
 fi
 
 stage_enabled() {
+  [[ $reused != true ]] || return 1
   [[ -z $only_stages || ,$only_stages, == *",$1,"* ]]
 }
 
@@ -824,6 +826,81 @@ if [[ $worktree_mode == true && $no_stages != true ]]; then
   fi
 fi
 
+# A passing result is reused only when HEAD, the baseline, the saved diff, the resolved config, the
+# file list and the stage selection all match; anything missing or unequal runs the stages. --sha
+# runs are left out because their saved diff is not the diff of the gated commit.
+reuse_file=''
+if [[ $no_stages != true && -z $sha ]]; then
+  reuse_file="$state_prefix-reuse.json"
+  reused_from=$(python3 - "$repo" "$run_dir" "$label" "$entry_file" "$files_file" "$only_stages" "$skip_tests" "$reuse_file" <<'PY'
+import glob
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+repo, run_dir, label, entry_path, files_path, only_raw, skip_tests, output_path = sys.argv[1:]
+
+
+def file_sha256(path):
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+head = subprocess.run(
+    ["git", "-C", repo, "rev-parse", "--verify", "HEAD"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+    check=False,
+)
+with open(files_path, "rb") as handle:
+    files = sorted(item for item in handle.read().split(b"\0") if item)
+selection = ",".join(sorted(set(filter(None, only_raw.split(","))))) or "all"
+if skip_tests == "true":
+    selection += ",skip-tests"
+key = {
+    "head": head.stdout.strip() if head.returncode == 0 else "",
+    "baselineSha256": file_sha256(os.path.join(run_dir, "baseline.json")),
+    "diffSha256": file_sha256(os.path.join(run_dir, f"gate-{label}.diff")),
+    "configSha256": file_sha256(entry_path),
+    "filesSha256": hashlib.sha256(b"\0".join(files)).hexdigest(),
+    "stageSelection": selection,
+}
+stored = {name: value for name, value in key.items() if value}
+source = ""
+if len(stored) == len(key):
+    for path in sorted(glob.glob(os.path.join(glob.escape(run_dir), "gate-*.json"))):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                candidate = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("passed") is True
+            and all(candidate.get(name) == value for name, value in key.items())
+        ):
+            source = os.path.basename(path)[len("gate-"):-len(".json")]
+            break
+if source:
+    stored["reusedFrom"] = source
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(stored, handle)
+print(source)
+PY
+  ) || die 'gate.sh: cannot compute the gate reuse key'
+  if [[ -n $reused_from ]]; then
+    reused=true
+    : >"$commands_file"
+    record_command "stages not run: reused the passing result of gate-$reused_from.json (same HEAD, baseline, diff, config, files and stage selection)"
+  fi
+fi
+
 targets_file=$files_file
 if stage_enabled lint || stage_enabled tests; then
   targets_file="$state_prefix-targets.nul"
@@ -1196,7 +1273,7 @@ fi
 
 result_path="$run_dir/gate-$label.json"
 diff_path="$run_dir/gate-$label.diff"
-python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" "$gate_checkout" <<'PY'
+python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" "$gate_checkout" "$reuse_file" <<'PY'
 import fnmatch
 import json
 import os
@@ -1217,6 +1294,7 @@ import sys
     push_raw,
     only_stages_raw,
     gate_checkout,
+    reuse_path,
 ) = sys.argv[1:]
 files_given = files_given_raw == "true"
 push = push_raw == "true"
@@ -1315,6 +1393,9 @@ result["diffBytes"] = len(diff)
 diff_text = diff.decode("utf-8", errors="replace")
 result["diff"] = diff_text[:DIFF_INLINE_CAP]
 result["diffTruncated"] = len(diff_text) > DIFF_INLINE_CAP
+if reuse_path:
+    with open(reuse_path, encoding="utf-8") as handle:
+        result.update(json.load(handle))
 
 commit_error = ""
 if not failures and commit_message:

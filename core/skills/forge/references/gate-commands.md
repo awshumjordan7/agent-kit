@@ -20,7 +20,9 @@ instead of `--repo` in place. The checkout is created once per run and moved bet
 persist; the repository's `worktree` overrides apply there, Semgrep compares against the run's starting commit, and
 failure paths are reported relative to the repository. Without `--sha`, the gate runs in place. `--no-stages` runs
 no stage and is used with `--commit` for phase commits; `--commit` restages and retries once when a pre-commit hook
-rewrites files.
+rewrites files. A run without `--sha` or `--no-stages` runs no stage when a `gate-*.json` in the same run dir passed
+with the same `head`, `baselineSha256`, `diffSha256`, `configSha256`, `filesSha256` and `stageSelection`; its JSON
+names that result's label in `reusedFrom`. A missing `baseline.json` or any unequal value runs the stages.
 
 Use `gate.sh --only lint,typecheck,migrations,tests,semgrep,parity` to run selected stages. The JSON result lists
 unselected stages in `skipped`. New Semgrep ERROR findings block only for security rules outside test paths; other
