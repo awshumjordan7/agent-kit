@@ -150,6 +150,151 @@ def _criteria(section: str) -> list[str]:
     return items
 
 
+def _canonical(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _fnv1a(text: str) -> int:
+    value = 2166136261
+    for char in text:
+        value = ((value ^ ord(char)) * 16777619) & 0xFFFFFFFF
+    return value
+
+
+def _checked(facts: dict) -> dict:
+    # forge-core.js recomputes both numbers over the facts it receives, so an agent that adds,
+    # drops or edits a field while echoing this line is caught. Facts must hold no null or float.
+    canon = _canonical(facts)
+    return {"facts": facts, "canonLength": len(canon), "fnv1a": _fnv1a(canon)}
+
+
+# The plan patterns below must match the JavaScript regular expressions forge used before, so
+# they spell out JavaScript's whitespace set, line terminators and ASCII-only case folding
+# instead of using Python's \s, ".", "$", \b and re.IGNORECASE, which all differ.
+_JS_WS = " \t\n\x0b\x0c\r   -     　﻿"
+_JS_STRIP = (
+    " \t\n\x0b\x0c\r            "
+    "     　﻿"
+)
+_S = f"[{_JS_WS}]"
+_NOT_S = f"[^{_JS_WS}]"
+_LINE_END = "\n\r  "
+_DOT = f"[^{_LINE_END}]"
+_LINE_START = f"(?:\\A|(?<=[{_LINE_END}]))"
+_LINE_STOP = f"(?=[{_LINE_END}]|\\Z)"
+_PHASE_WORD = "[Pp][Hh][Aa][Ss][Ee]"
+_PHASES_WORD = _PHASE_WORD + "[Ss]"
+_ASCII_LOWER = {code: code + 32 for code in range(ord("A"), ord("Z") + 1)}
+
+_H1 = re.compile(f"{_LINE_START}#{_S}+({_DOT}+){_LINE_STOP}")
+_PHASES_LINE = re.compile(f"##{_S}+{_PHASES_WORD}{_S}*\\Z")
+_FENCE_LINE = re.compile(f"{_S}*(?:```|~~~)")
+_TOP_HEADING_LINE = re.compile(f"#{{1,2}}{_S}")
+_SUB_HEADING_LINE = re.compile(f"###{_S}")
+_PHASE_HEADING = re.compile(
+    f"###{_S}+Phase{_S}+([A-Za-z]*[0-9]+):{_S}*({_NOT_S}{_DOT}*?){_S}*\\Z"
+)
+_PHASES_SECTION = re.compile(f"{_LINE_START}(#{{2,}}){_S}*{_PHASES_WORD}{_S}*{_LINE_STOP}")
+_PLAN_PATH = re.compile(r"`([^`\n]+\.[A-Za-z0-9]+)`")
+_SOURCE_EXTENSION = re.compile(
+    r"\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs"
+    r"|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)\Z"
+)
+_NAME_EXTENSION = re.compile(r"\.[a-z0-9]+\Z")
+
+
+def _plan_phases(plan: str) -> tuple[list[dict], str]:
+    # str.splitlines() also splits on form feed and U+2028, which would move the phase headings.
+    lines = re.split(r"\r?\n", plan)
+    start = next((index for index, line in enumerate(lines) if _PHASES_LINE.match(line)), None)
+    if start is None:
+        return [], ""
+    phases: list[dict] = []
+    fenced = False
+    for line in lines[start + 1 :]:
+        if _FENCE_LINE.match(line):
+            fenced = not fenced
+        elif not fenced and _TOP_HEADING_LINE.match(line):
+            break
+        elif not fenced and _SUB_HEADING_LINE.match(line):
+            match = _PHASE_HEADING.match(line)
+            if not match:
+                return [], (
+                    'Plan heading under ## Phases must read "### Phase <id>: <title>" '
+                    f"with an id such as 1 or A1: {line.strip(_JS_STRIP)}"
+                )
+            if any(item["id"] == match.group(1) for item in phases):
+                return [], f"Plan phase id {match.group(1)} appears twice under ## Phases"
+            phases.append({"id": match.group(1), "title": match.group(2)})
+    return phases, ""
+
+
+def _is_source_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    name = normalized.split("/")[-1]
+    return (
+        not normalized.startswith("tests/")
+        and "/tests/" not in normalized
+        and not name.startswith("test_")
+        and not name.endswith(("_test.py", ".md", ".json"))
+        and bool(_NAME_EXTENSION.search(name))
+    )
+
+
+def _planned_source_files(plan: str) -> int:
+    section = _PHASES_SECTION.search(plan)
+    if not section:
+        return 0
+    after = plan[section.end() :]
+    # The section ends at the next heading of its own level or higher, except a "Phase" heading.
+    next_heading = re.search(
+        f"{_LINE_START}#{{2,{len(section.group(1))}}}{_S}+(?!{_PHASE_WORD}(?![A-Za-z0-9_]))",
+        after,
+    )
+    body = after[: next_heading.start()] if next_heading else after
+    paths = [
+        path
+        for path in _PLAN_PATH.findall(body)
+        if "/" in path or "\\" in path or _SOURCE_EXTENSION.search(path.translate(_ASCII_LOWER))
+    ]
+    return len({path for path in paths if _is_source_path(path)})
+
+
+def _read_plan(plan_file: Path) -> tuple[bytes, str, str]:
+    # Bytes, not read_text: universal newlines would turn CRLF and a lone CR into LF.
+    try:
+        raw = plan_file.read_bytes()
+    except OSError as exc:
+        return b"", "", f"could not read the plan at {plan_file}: {exc.strerror or exc}"
+    if not raw:
+        return raw, "", f"could not read the plan at {plan_file}: the file is empty"
+    try:
+        return raw, raw.decode("utf-8"), ""
+    except UnicodeDecodeError as exc:
+        return raw, "", f"could not read the plan at {plan_file}: {exc}"
+
+
+def plan_facts(plan_file: Path, criteria_only: bool = False) -> dict:
+    raw, plan, error = _read_plan(plan_file)
+    if criteria_only:
+        return _checked({"criteria": _criteria(_section(plan, "Acceptance Criteria"))})
+    phases: list[dict] = []
+    if not error:
+        phases, error = _plan_phases(plan)
+    heading = _H1.search(plan)
+    return _checked(
+        {
+            "h1": heading.group(1) if heading else "",
+            "phases": phases,
+            "plannedSourceFiles": _planned_source_files(plan),
+            "hasContract": bool(_section(plan, "Public API contract")),
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest() if raw else "",
+            "error": error,
+        }
+    )
+
+
 def _ref_exists(repo: Path, ref: str) -> bool:
     return (
         subprocess.run(
@@ -354,6 +499,9 @@ def main() -> None:
     smoke_run_parser.add_argument("--repo", type=Path, required=True)
     smoke_run_parser.add_argument("--command", dest="smoke_command", required=True)
     smoke_run_parser.add_argument("--log-name", default="smoke.log")
+    plan_facts_parser = subparsers.add_parser("plan-facts")
+    plan_facts_parser.add_argument("--plan-file", type=Path, required=True)
+    plan_facts_parser.add_argument("--criteria-only", action="store_true")
     args = parser.parse_args()
     if args.command == "baseline":
         result = baseline(args.run_dir, args.repo, args.reuse)
@@ -376,6 +524,8 @@ def main() -> None:
         return
     elif args.command == "smoke-run":
         result = smoke_run(args.run_dir, args.repo, args.smoke_command, args.log_name)
+    elif args.command == "plan-facts":
+        result = plan_facts(args.plan_file, args.criteria_only)
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
 
 

@@ -85,7 +85,6 @@ const PARAMS = {
   noShip: args.noShip === true,
   spawnCap: Number.isInteger(args.spawnCap) && args.spawnCap >= 1 ? args.spawnCap : 32,
   rulings: Array.isArray(args.rulings) ? args.rulings : null,
-  planText: typeof args.planText === 'string' ? args.planText : null,
   planPath: typeof args.planPath === 'string' && args.planPath ? args.planPath : `${args.runDir}/plan.md`,
   dryRun: args.dryRun === true,
   dryRunFailGate: typeof args.dryRunFailGate === 'string' ? args.dryRunFailGate : null,
@@ -117,7 +116,7 @@ function codexFlags(role, model, effort) {
   return `--role ${role}` + (model ? ` --model ${model}` : '') + (effort ? ` --effort ${effort}` : '')
 }
 function codexImplFlags() {
-  return codexFlags(pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold()), args.codexModelImpl || args.codexModel, args.codexEffortImpl)
+  return codexFlags(pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold()), args.codexModelImpl || args.codexModel, args.codexEffortImpl)
 }
 const CODEX_REVIEW_FLAGS = codexFlags('review', args.codexModelReview || args.codexModel, args.codexEffortReview)
 const CODEX_SH = '~/.claude/skills/forge/scripts/codex-exec.sh'
@@ -500,14 +499,35 @@ const THREAD_CHECK_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { threadExists: { type: 'boolean' } }, required: ['threadExists'],
 }
-const PLAN_CHUNK_SCHEMA = {
+// A facts read: the command prints the facts with the length and FNV-1a of their canonical JSON.
+function factsSchema(facts) {
+  return {
+    type: 'object', additionalProperties: false,
+    properties: { facts, canonLength: { type: 'integer' }, fnv1a: { type: 'integer' } },
+    required: ['facts', 'canonLength', 'fnv1a'],
+  }
+}
+const PLAN_FACTS_SCHEMA = factsSchema({
   type: 'object', additionalProperties: false,
   properties: {
-    chunk: { type: 'string' }, index: { type: 'integer' }, count: { type: 'integer' }, utf16Length: { type: 'integer' }, fnv1a: { type: 'integer' },
-    totalLength: { type: 'integer' }, totalFnv1a: { type: 'integer' }, error: { type: 'string' },
+    h1: { type: 'string' },
+    phases: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        properties: { id: { type: 'string' }, title: { type: 'string' } },
+        required: ['id', 'title'],
+      },
+    },
+    plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
+    bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
   },
-  required: ['chunk', 'index', 'count', 'utf16Length', 'fnv1a', 'totalLength', 'totalFnv1a', 'error'],
-}
+  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error'],
+})
+const PLAN_CRITERIA_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: { criteria: { type: 'array', items: { type: 'string' } } },
+  required: ['criteria'],
+})
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { handoffPath: { type: 'string' } }, required: ['handoffPath'],
@@ -528,62 +548,8 @@ function quickReviewThreshold() {
   return Number.isInteger(value) && value >= 1 ? value : 8
 }
 
-function plannedSourceFiles(planText) {
-  const phases = /^(#{2,})\s*Phases\s*$/im.exec(String(planText || ''))
-  if (!phases) return 0
-  const after = String(planText).slice(phases.index + phases[0].length)
-  const next = after.search(new RegExp(`^#{2,${phases[1].length}}\\s+(?!Phase\\b)`, 'mi'))
-  const body = next >= 0 ? after.slice(0, next) : after
-  const knownSourceExtension = /\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)$/i
-  const paths = [...body.matchAll(/`([^`\n]+\.[A-Za-z0-9]+)`/g)]
-    .map(match => match[1])
-    .filter(path => /[\\/]/.test(path) || knownSourceExtension.test(path))
-  return new Set(paths.filter(isSourcePath)).size
-}
-
-// Body of a plan's `## <heading>` section, matching run_context.py's _section.
-function planSection(planText, heading) {
-  const lines = String(planText || '').split(/\r?\n/)
-  const start = lines.findIndex(line => line.trim().toLowerCase() === `## ${heading}`.toLowerCase())
-  if (start < 0) return ''
-  const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
-  return lines.slice(start + 1, end < 0 ? lines.length : end).join('\n').trim()
-}
-
-function planPhases(planText) {
-  const heading = /^###\s+Phase\s+([A-Za-z]*[0-9]+):\s*(\S.*?)\s*$/
-  const lines = String(planText || '').split(/\r?\n/)
-  const start = lines.findIndex(line => /^##\s+Phases\s*$/i.test(line))
-  if (start < 0) return []
-  const phases = []
-  let fenced = false
-  for (const line of lines.slice(start + 1)) {
-    if (/^\s*(?:```|~~~)/.test(line)) {
-      fenced = !fenced
-    } else if (!fenced && /^#{1,2}\s/.test(line)) {
-      break
-    } else if (!fenced && /^###\s/.test(line)) {
-      const match = heading.exec(line)
-      if (!match) throw new Error(`Plan heading under ## Phases must read "### Phase <id>: <title>" with an id such as 1 or A1: ${line.trim()}`)
-      if (phases.some(item => item.id === match[1])) throw new Error(`Plan phase id ${match[1]} appears twice under ## Phases`)
-      phases.push({ id: match[1], title: match[2], lines: [] })
-      continue
-    }
-    if (phases.length) phases[phases.length - 1].lines.push(line)
-  }
-  return phases.map(({ id, title, lines: body }) => ({ id, title, text: body.join('\n').trim() }))
-}
-
-function isSourcePath(path) {
-  const normalized = String(path).replace(/\\/g, '/').toLowerCase()
-  const name = normalized.split('/').pop() || ''
-  return !normalized.startsWith('tests/') && !normalized.includes('/tests/') &&
-    !name.startsWith('test_') && !name.endsWith('_test.py') &&
-    !name.endsWith('.md') && !name.endsWith('.json') && /\.[a-z0-9]+$/.test(name)
-}
-
-function pickImplRole(lane, fullySpecified, planText, threshold = 8) {
-  return fullySpecified && plannedSourceFiles(planText) <= threshold
+function pickImplRole(lane, fullySpecified, plannedSourceFileCount, threshold = 8) {
+  return fullySpecified && plannedSourceFileCount <= threshold
     ? 'quick-impl'
     : 'impl'
 }
@@ -644,6 +610,10 @@ function dryFindings() {
   }))
 }
 
+function dryRunFacts(facts) {
+  return { facts, canonLength: canonicalJson(facts).length, fnv1a: fnv1a(canonicalJson(facts)) }
+}
+
 const STUBS = {
   implementer: opts => opts.schema === FIX_SCHEMA
     ? { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: 'dry-run fix diff', notes: 'dry-run fix', results: dryFindings().map(finding => ({ id: findingKey(finding), reason: 'dry-run fix explanation' })) }
@@ -688,6 +658,10 @@ const STUBS = {
     ? { written: true }
     : opts.schema === WRITE_ACK_SCHEMA
     ? { files: (opts.expect || []).map(item => ({ ...item, moved: true })) }
+    : opts.schema === PLAN_FACTS_SCHEMA
+    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '' })
+    : opts.schema === PLAN_CRITERIA_SCHEMA
+    ? dryRunFacts({ criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_READ_SCHEMA
@@ -705,9 +679,7 @@ const STUBS = {
       criteria: PARAMS.criteria, checklist: 'dry-run checklist', standards: 'dry-run code standards', testPaths: ['tests/unit'], error: '',
       contract: 'dry-run public contract', reviewerContract: 'dry-run reviewer contract',
     },
-  readConfig: opts => opts.schema === PLAN_CHUNK_SCHEMA
-    ? (plan => ({ chunk: plan, index: 0, count: 1, utf16Length: plan.length, fnv1a: fnv1a(plan), totalLength: plan.length, totalFnv1a: fnv1a(plan), error: '' }))(DRY_RUN_PLAN.replace(/\n+$/, ''))
-    : ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
+  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
@@ -720,10 +692,9 @@ const STUBS = {
 
 const decisions = []
 if (canonicalLane !== requestedLane) decisions.push(`Lane alias ${requestedLane} canonicalized to build`)
+if (typeof args.planText === 'string') decisions.push(`args.planText is ignored; the plan is read from planPath (${PARAMS.planPath}).`)
 const dryRunJournal = []
 const __test = {
-  plannedSourceFiles,
-  planPhases,
   partitionTriage,
   pickImplRole,
   utf8Bytes,
@@ -748,7 +719,7 @@ function journal(label) {
 
 function configRoleForTier(tierRole) {
   const mapped = ROLE_MAP[tierRole] || []
-  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   return mapped[0] || null
 }
 
@@ -903,7 +874,7 @@ function assertCodex(result, where) {
 }
 
 function assertImplementation(result, where) {
-  const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   if ((configuredRole(role) || {}).provider !== 'claude') return assertCodex(result, where)
   if (capBlocked && !result) return false
   if (result && result.limitReached) return false
@@ -917,93 +888,34 @@ function assertImplementation(result, where) {
   return true
 }
 
-const DRY_RUN_PLAN = '# Plan: dry-run plan\n\n## Summary\nDry-run plan text read from planPath.\n'
-
-// 32-bit FNV-1a over UTF-16 code units; the plan reader computes the same value in Python.
+// 32-bit FNV-1a over UTF-16 code units; run_context.py computes the same value in Python.
 function fnv1a(text) {
   let hash = 2166136261
   for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619) >>> 0
   return hash
 }
 
-// An agent copying a whole plan back drifts (reworded or dropped phrases), so the plan is read in chunks
-// that each carry their own length and hash; chunk cuts avoid whitespace, which an echoing agent may trim.
-const PLAN_CHUNK_UNITS = 6000
-const PLAN_CHUNK_BATCH = 4
-const PLAN_CHUNK_ATTEMPTS = 3
-const PLAN_CHUNK_SCRIPT = [
-  'import functools, json, pathlib, sys',
-  'path, index, size = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])',
-  'def units(s):',
-  '    d = s.encode("utf-16-le")',
-  '    return [d[k] | (d[k + 1] << 8) for k in range(0, len(d), 2)]',
-  'def fnv(s):',
-  '    return functools.reduce(lambda h, c: ((h ^ c) * 16777619) & 0xFFFFFFFF, units(s), 2166136261)',
-  'if not path.is_file():',
-  '    print(json.dumps({"chunk": "", "index": index, "count": 0, "utf16Length": 0, "fnv1a": 0, "totalLength": 0, "totalFnv1a": 0, "error": f"{path} is missing or not a file"}))',
-  '    sys.exit()',
-  'text = path.read_text(encoding="utf-8").rstrip("\\n")',
-  'cuts = [0]',
-  'while len(text) - cuts[-1] > size:',
-  '    b = cuts[-1] + size',
-  '    while b > cuts[-1] + 1 and (text[b - 1].isspace() or text[b].isspace()):',
-  '        b -= 1',
-  '    cuts.append(b)',
-  'cuts.append(len(text))',
-  'count = len(cuts) - 1',
-  'chunk = text[cuts[index]:cuts[index + 1]] if index < count else ""',
-  'error = "" if index < count else f"chunk {index} is out of range ({count} chunks)"',
-  'print(json.dumps({"chunk": chunk, "index": index, "count": count, "utf16Length": len(units(chunk)), "fnv1a": fnv(chunk), "totalLength": len(units(text)), "totalFnv1a": fnv(text), "error": error}))',
-].join('\n')
+const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [] }
+let PLAN_FACTS = EMPTY_PLAN_FACTS
 
-function planChunkProblem(read, index) {
-  if (!read) return 'the reader agent returned null'
-  if (read.error) return read.error
-  if (read.index !== index) return `chunk ${index}: the reader returned chunk ${read.index}`
-  const text = String(read.chunk || '')
-  if (!text) return read.totalLength === 0 ? 'the plan file is empty' : `chunk ${index} is empty`
-  if (text.length !== read.utf16Length) return `chunk ${index} length check failed: received ${text.length} UTF-16 code units, the chunk has ${read.utf16Length}`
-  if (fnv1a(text) !== read.fnv1a) return `chunk ${index} FNV-1a check failed: the received text differs from the file at the same length`
-  return ''
-}
-
-async function readPlanChunk(index) {
-  let read = null
-  let problem = ''
-  for (let attempt = 1; attempt <= PLAN_CHUNK_ATTEMPTS; attempt++) {
-    PARAMS.spawnCap += 1
-    read = await agentT('readConfig', `Execute exactly one command and return its stdout JSON unchanged, copying chunk character for character: python3 -c ${shellQuote(PLAN_CHUNK_SCRIPT)} ${shellQuote(PARAMS.planPath)} ${index} ${PLAN_CHUNK_UNITS}`,
-      { label: `read-plan-${index + 1}${attempt > 1 ? `-retry-${attempt - 1}` : ''}`, phase: 'Implement', schema: PLAN_CHUNK_SCHEMA })
-    problem = planChunkProblem(read, index)
-    if (!problem || (read && read.error)) break
-  }
-  return { read, problem }
-}
-
-// Reading the plan through agents keeps the plan text out of Workflow args, notices, and relaunches.
-async function loadPlanText() {
-  if (PARAMS.planText) return
-  const first = await readPlanChunk(0)
-  let problem = first.problem
-  const chunks = [first.read ? first.read.chunk : '']
-  const count = first.read ? first.read.count : 0
-  for (let start = 1; !problem && start < count; start += PLAN_CHUNK_BATCH) {
-    const indexes = Array.from({ length: Math.min(PLAN_CHUNK_BATCH, count - start) }, (_, offset) => start + offset)
-    const reads = await Promise.all(indexes.map(index => readPlanChunk(index)))
-    reads.forEach((result, offset) => { chunks[indexes[offset]] = result.read ? result.read.chunk : '' })
-    problem = (reads.find(result => result.problem) || {}).problem || ''
-  }
-  const text = chunks.join('')
-  if (!problem && (text.length !== first.read.totalLength || fnv1a(text) !== first.read.totalFnv1a)) {
-    problem = `the joined chunks (${text.length} UTF-16 code units) differ from the file (${first.read.totalLength}); the file may have changed while it was read`
-  }
-  if (!problem) {
-    PARAMS.planText = text
+// The plan stays on disk: the script takes only these facts, and every agent that needs the plan reads it by path.
+async function loadPlanFacts() {
+  const planFile = shellQuote(PARAMS.planPath)
+  PARAMS.spawnCap += 1
+  const facts = await factsCommand('read-plan', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile}`, PLAN_FACTS_SCHEMA, 'Implement')
+  if (PARAMS.lane === 'build') {
+    if (!facts) throw new Error(`could not read the plan at ${PARAMS.planPath}: the plan-facts command returned no checked result`)
+    if (facts.error) throw new Error(facts.error)
+  } else if (!facts || !facts.sha256) {
+    await decide(`Plan facts could not be read from ${PARAMS.planPath} (${(facts && facts.error) || 'no checked result'}); the review lane continues without them.`)
     return
   }
-  if (PARAMS.lane === 'build') throw new Error(`could not read the plan at ${PARAMS.planPath} (${problem}); pass planText inline`)
-  PARAMS.planText = ''
-  await decide(`Plan text could not be read from ${PARAMS.planPath} (${problem}); the review lane continues without it.`)
+  PLAN_FACTS = { ...facts, criteria: [] }
+  if (PARAMS.criteria.length) return
+  PARAMS.spawnCap += 1
+  const read = await factsCommand('read-plan-criteria', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile} --criteria-only`, PLAN_CRITERIA_SCHEMA, 'Implement')
+  if (read) PLAN_FACTS.criteria = read.criteria
+  else await decide(`Acceptance criteria could not be read from ${PARAMS.planPath}; the run continues without them.`)
 }
 
 async function loadForgeConfig() {
@@ -1046,6 +958,32 @@ function configuredGateMode() {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+// One agent runs one command that prints { facts, canonLength, fnv1a }. The digest is recomputed over
+// the returned facts, so an echo that adds, drops or edits a field is a miss. The caller's spawn
+// budget covers the first attempt; only the retry raises the cap here.
+async function factsCommand(label, command, schema, phaseLabel) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt === 2) PARAMS.spawnCap += 1
+    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: ${command}`,
+      { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
+    if (read && read.facts && typeof read.facts === 'object') {
+      const canon = canonicalJson(read.facts)
+      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return read.facts
+    }
+    if (!read && capBlocked) return null
+    await decide(`${label} attempt ${attempt} ${read ? 'did not match the facts digest' : 'returned no result'}.`)
+  }
+  return null
+}
+
+// Prompts name the plan file instead of carrying its text; phase is a { id, title } row of PHASES.
+function planRef(phase = null) {
+  const whole = `PLAN FILE: ${PLAN}. Read it in full with the Read tool before anything else.`
+  return phase
+    ? `${whole} Your phase is the section headed ### Phase ${phase.id}: ${phase.title}; the section ## Public API contract, when the plan has one, also binds you.`
+    : whole
 }
 
 function baselineContext(reuse = false) {
@@ -1114,14 +1052,14 @@ Continue from the progress file; do not redo work it marks done; do not re-read 
 }
 
 function implement(phase = null) {
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   const suffix = phase ? `-phase-${phase.id}` : ''
   const label = `implement${suffix}`
   const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
   const scope = phaseScope(phase)
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
     const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-    return claudeImplement(`Implement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.\n\nPLAN\n${PARAMS.planText}`,
+    return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
       { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
   }
   const promptPath = `${PARAMS.runDir}/implement${suffix}-prompt.md`
@@ -1169,14 +1107,14 @@ function gateFindings(gate) {
 
 // hooks.first is a gate result already collected; hooks.run gates a label and file list;
 // hooks.afterFix(touched, files) runs after each applied fix and returns false to stop the loop;
-// hooks.planExcerpt narrows the plan text the decider and applier see.
+// hooks.planPhase is the plan phase row the decider and applier are pointed at.
 async function gateWithFixes(label, files, threadFile, context, phaseLabel, hooks = {}) {
   const runGate = hooks.run || ((gateLabel, gateFiles) => localGate(gateLabel, phaseLabel, gateFiles))
   const gate = 'first' in hooks ? hooks.first : await runGate(label, files)
   if (gate && gate.passed) return { gate, touchedFiles: [], blocked: false, needsJudge: false }
   return fixLoop({
     kind: 'gate', label: `fix-${label}`, gateLabel: label, gate, reviewItems: [], files, threadFile, context, phaseLabel,
-    runGate, afterFix: hooks.afterFix, planExcerpt: hooks.planExcerpt, commitsPerRound: Boolean(hooks.afterFix),
+    runGate, afterFix: hooks.afterFix, planPhase: hooks.planPhase, commitsPerRound: Boolean(hooks.afterFix),
   })
 }
 
@@ -1194,10 +1132,9 @@ function changedFiles(allDirty = false) {
 }
 
 function checkpointReview(context, gate, implement, phases = null) {
-  return agentT('checkpoint', `You are the fresh pre-ship checkpoint reviewer. Read the plan text below and the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, put a complete Python 3 program in script (real newlines, single backslashes, no heredoc) and leave command empty; forge saves it to ${PARAMS.runDir}/smoke.py and runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. Otherwise set script to an empty string and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Set command and script to empty strings unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+  return agentT('checkpoint', `${planRef()}
 
-PLAN
-${PARAMS.planText}
+You are the fresh pre-ship checkpoint reviewer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present. Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, put a complete Python 3 program in script (real newlines, single backslashes, no heredoc) and leave command empty; forge saves it to ${PARAMS.runDir}/smoke.py and runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. Otherwise set script to an empty string and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Set command and script to empty strings unless recommendation is smoke. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
@@ -1648,19 +1585,24 @@ async function reviewPanel(context) {
 // The applier gets only the decider's fix items, already verified, so it applies them without
 // re-triage. The quick-impl role's provider picks the Claude or Codex branch.
 async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
-  const { round, planExcerpt, diffStat } = extra
+  const { round, planPhase, diffStat } = extra
   const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
   const implementationRole = configRoleForTier('applier')
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
-  const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nPLAN EXCERPT\n${planExcerpt}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
+  const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('applier', `Apply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
+    const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
       { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
     return result || null
   }
+  const promptPath = `${PARAMS.runDir}/${label}-prompt.md`
+  const partPath = `${PARAMS.runDir}/${label}-prompt.part.md`
+  const planNote = planPhase
+    ? `State in it that the full plan follows under PLAN, and that the section headed ### Phase ${planPhase.id}: ${planPhase.title}, with the section ## Public API contract when the plan has one, is the part that applies.`
+    : 'State in it that the full plan follows under PLAN.'
   const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${PARAMS.runDir}/${label}-prompt.md as a self-contained Codex prompt containing those standards verbatim, the fix spec, plan excerpt, and diff stat below verbatim, and the instruction that the fix decider already verified every item against current code, so Codex applies each change as written and does not re-triage or widen scope. With ranged reads, include the review diff at ${reviewDiffPath} when present. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason explaining what changed or why it could not be applied. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${PARAMS.runDir}/${label}-prompt.md --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.
+Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${partPath} as the first part of a self-contained Codex prompt containing those standards verbatim, the fix spec and diff stat below verbatim, and the instruction that the fix decider already verified every item against current code, so Codex applies each change as written and does not re-triage or widen scope. ${planNote} With ranged reads, include the review diff at ${reviewDiffPath} when present. End ${partPath} with a line that reads exactly PLAN. Then build the prompt file with exactly this one shell command, which adds the plan file below that line: \`cat ${shellQuote(partPath)} ${shellQuote(PLAN)} > ${shellQuote(promptPath)}\`. Never copy plan text yourself. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason explaining what changed or why it could not be applied. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
+Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.
 
 ${inputs}`,
   { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA }, { threadFile, log: `${PARAMS.runDir}/codex-${label}.jsonl` })
@@ -1720,7 +1662,7 @@ async function converge(panel, context) {
     files: context.files || [], threadFile: `${PARAMS.runDir}/codex-fix.thread`, context, phaseLabel: 'Fix',
     // Review-fix rounds run fast checks only: the full suite runs once on the final state below, and a full gate per round costs one suite run per round.
     runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles, ['lint', 'typecheck', 'semgrep']) : null,
-    planExcerpt: PARAMS.planText, commitsPerRound: false,
+    commitsPerRound: false,
   })
   // The final gate runs even when the review loop ended blocked or needing a ruling: the tree holds
   // fixes that only had fast checks, and a later resume may apply nothing more.
@@ -1755,13 +1697,15 @@ function fixDiffStatCommand() {
 }
 
 function deciderPrompt(round, open, gate, opts, history) {
-  const contract = opts.context && opts.context.contract && opts.context.contract !== PARAMS.planText ? opts.context.contract : '(see the plan excerpt)'
+  const contract = opts.context && opts.context.contract && !opts.context.contractInPlan ? opts.context.contract : '(see the plan file)'
   const diffPath = (opts.context && opts.context.diffPath) || (gate && gate.diffPath) || ''
   const gateExcerpt = gate && !gate.passed
     ? JSON.stringify({ failures: gate.failures || [], commands: gate.commands || [] }).slice(0, 6000)
     : '(no failing gate this round)'
   const rulings = (PARAMS.rulings || []).filter(ruling => ruling && open.some(item => rulingFor(item) === ruling))
-  return `You are the Forge fix DECIDER for round ${round} of ${MAX_FIX_ROUNDS} (${opts.label}) in ${PARAMS.projectDir}. Gate items come from a failing gate; review items were confirmed by triage. Turn the open items into an exact fix spec.
+  return `${planRef(opts.planPhase)}
+
+You are the Forge fix DECIDER for round ${round} of ${MAX_FIX_ROUNDS} (${opts.label}) in ${PARAMS.projectDir}. Gate items come from a failing gate; review items were confirmed by triage. Turn the open items into an exact fix spec.
 First run \`${fixDiffStatCommand()}\` and return its stdout as diffStat. Read the run's change set only for the files the open items touch: ${diffPath ? `ranged reads (at most 2,000 lines) of ${diffPath}, or ` : ''}\`git -C ${shellQuote(PARAMS.projectDir)} diff -- <file>\` for uncommitted edits, and ranged reads of current code.
 Return one items[] entry per open item, with the same id and source:
 - fix: files lists the files to edit, change states the exact edit (file, location, and what to write), and check states how the result will be confirmed.
@@ -1784,10 +1728,7 @@ RULINGS
 ${rulings.length ? JSON.stringify(rulings) : '(none)'}
 
 PUBLIC API CONTRACT
-${contract}
-
-PLAN EXCERPT
-${opts.planExcerpt}`
+${contract}`
 }
 
 // One capped loop for gate failures and review findings. Each round a decider writes the fix
@@ -1801,7 +1742,6 @@ ${opts.planExcerpt}`
 async function fixLoop(opts) {
   const { kind, label, runGate } = opts
   const afterFix = opts.afterFix || (async () => true)
-  opts.planExcerpt = opts.planExcerpt || PARAMS.planText
   let gate = opts.gate
   let gateOpen = kind === 'gate' ? gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] }) : []
   const reviewOpen = new Map(opts.reviewItems.map(item => [findingKey(item), item]))
@@ -1884,7 +1824,7 @@ async function fixLoop(opts) {
     } else if (fixItems.length) {
       appliedBy = 'applier'
       const threadFile = round === 1 ? opts.threadFile : `${opts.threadFile}-${round}`
-      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planExcerpt: opts.planExcerpt, diffStat: spec.diffStat })
+      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planPhase: opts.planPhase, diffStat: spec.diffStat })
       if (!fix) {
         reason = capBlocked ? 'spawn-cap' : 'agent-null'
         await decide(`${label} round ${round}: the fix applier returned null; the loop stopped.`)
@@ -2239,13 +2179,13 @@ function writePhases(run, extraPending = []) {
 }
 
 function planPrTitle() {
-  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || ''
+  const heading = PLAN_FACTS.h1
   const title = heading.replace(/^plan:\s*/i, '').trim() || (PHASES.length ? PHASES[0].title : '') || 'Forge change'
   return [args.ticket, title].filter(Boolean).join(': ')
 }
 
 function planBranchName() {
-  const heading = (/^#\s+(.+)$/m.exec(PARAMS.planText || '') || [])[1] || (PHASES[0] && PHASES[0].title) || ''
+  const heading = PLAN_FACTS.h1 || (PHASES[0] && PHASES[0].title) || ''
   const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   const words = slug(heading.replace(/^plan:\s*/i, '')).split('-').filter(Boolean).slice(0, 6).join('-')
   return [slug(PARAMS.ticket), words].filter(Boolean).join('-').slice(0, 60).replace(/-+$/, '') || 'forge-phases'
@@ -2322,11 +2262,9 @@ async function collectPhaseGate(run, entry, allowFix) {
   let sha = entry.sha
   let fixes = 0
   const planned = PHASES.find(item => item.id === entry.id)
-  const contract = planSection(PARAMS.planText, 'Public API contract')
-  const phaseExcerpt = planned && `### Phase ${planned.id}: ${planned.title}\n${planned.text}${contract ? `\n\n## Public API contract\n${contract}` : ''}`
-  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contract: PARAMS.planText }, 'Gate', {
+  const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, { standards: '', contractInPlan: true }, 'Gate', {
     first: gate,
-    planExcerpt: phaseExcerpt || PARAMS.planText,
+    planPhase: planned || null,
     run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
     afterFix: async (touched, files) => {
       fixes++
@@ -2481,8 +2419,8 @@ async function phasedImplement(state) {
 
 async function fullLane() {
   phase('Implement')
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PARAMS.planText, quickReviewThreshold())
-  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${plannedSourceFiles(PARAMS.planText)} planned source files; threshold ${quickReviewThreshold()}).`)
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
+  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${PLAN_FACTS.plannedSourceFiles} planned source files; threshold ${quickReviewThreshold()}).`)
   if (PHASED && !PARAMS.checkpointDecision) {
     await decide(configuredGateMode() === 'none'
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
@@ -2518,7 +2456,7 @@ async function fullLane() {
       phase('Gate')
       if (stopped(state)) return state
       if (PARAMS.checkpointDecision || PHASED || configuredGateMode() === 'none') return state
-      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contract: PARAMS.planText }, 'Gate')
+      const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, { standards: '', contractInPlan: true }, 'Gate')
       state.gate = gateRun.gate
       if (state.implement) state.implement.filesChanged = [...new Set(repoRelative([...(state.implement.filesChanged || []), ...(gateRun.touchedFiles || [])]))]
       if (gateRun.needsJudge) state.needsJudge = true
@@ -2781,8 +2719,8 @@ async function reviewLane() {
 }
 
 await loadForgeConfig()
-await loadPlanText()
-const PHASES = PARAMS.lane === 'build' ? planPhases(PARAMS.planText) : []
+await loadPlanFacts()
+const PHASES = PARAMS.lane === 'build' ? PLAN_FACTS.phases : []
 const PHASED = PHASES.length >= 2
 if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
 const PHASES_SAVED = (PHASED && !PARAMS.checkpointDecision && await readPhases()) || EMPTY_PHASES_FILE
@@ -2828,6 +2766,7 @@ return {
   reason: (state.checkpoint && state.checkpoint.reason) || '',
   summary: (state.checkpoint && state.checkpoint.summary) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
+  planSha256: PLAN_FACTS.sha256,
   ffReview: state.ffReview || null,
   phases: PHASED ? (state.phases || []) : undefined,
   decisions,

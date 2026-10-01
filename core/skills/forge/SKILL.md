@@ -38,7 +38,7 @@ Workflow({
   scriptPath: "<absolute path of ~/.claude/skills/forge/references/forge-core.js>",
   args: {
     lane, auto, runDir, projectDir, repo, ticket, criteria, base,
-    planText, planPath, fullySpecified, stageAlso, ghEnvUnset,
+    planPath, fullySpecified, stageAlso, ghEnvUnset,
     checkpointDecision, smokeCommand, prBodyExtra, resumeAttempt,
     existingSandbox: { sandboxId, loginUrl, previewUrl, credentialsFile },
     forgeConfig: { roles, stages, thresholds, lenses, ticketUrl, repos, gate, ghEnvUnset }
@@ -46,7 +46,7 @@ Workflow({
 })
 ```
 
-`planText` is optional. When omitted, a reader agent loads `planPath` (default `<runDir>/plan.md`) and checks its length; omitting it keeps the plan out of Workflow notices and relaunches. Pass `planText` inline only when that read fails. The read is cached like any agent call, so after editing plan.md pass `planText` inline or start a fresh run instead of resuming. `criteria` may be a list or a newline-separated string. To retry a Codex stage whose cached result carries an error in the launching session, relaunch with `resumeFromRunId` and `resumeAttempt` raised by one; each such stage gets one fresh attempt and every call after it runs live. When `forgeConfig` is absent, a small reader agent loads it; orchestration code never reads files directly.
+The plan stays on disk at `planPath` (default `<runDir>/plan.md`). One facts command (`run_context.py plan-facts`, agent label `read-plan`) returns its title, phase list, planned source file count and hash, checked by a digest; when the launch passes no `criteria`, a second call (`read-plan-criteria`) reads the plan's acceptance criteria. Every agent that needs the plan reads it by path. `planText` is ignored: a launch that passes it runs and records one decision line. The facts read is cached like any agent call, so after editing plan.md start a fresh run instead of resuming. The return value carries the plan hash as `planSha256`. `criteria` may be a list or a newline-separated string. To retry a Codex stage whose cached result carries an error in the launching session, relaunch with `resumeFromRunId` and `resumeAttempt` raised by one; each such stage gets one fresh attempt and every call after it runs live. When `forgeConfig` is absent, a small reader agent loads it; orchestration code never reads files directly.
 `prBodyExtra`: absolute path to a Markdown file that ship and ship-sync keep verbatim in the PR body.
 `base`: optional override for the review diff's base branch in both lanes; the default is the repository's PR base from `ship-pr/scripts/resolve-base-branch.sh`.
 
