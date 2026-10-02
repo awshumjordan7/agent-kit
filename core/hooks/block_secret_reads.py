@@ -31,13 +31,21 @@ KNOWN GAPS, deliberately not covered:
     do not match.
   - Reading a secret indirectly: copy to a neutral name first, then read.
   - The env-reach rule (below) checks git work trees only. A search root
-    outside one, such as a grep across /Users/jfierro/Projects/work, a non-git
-    parent of many repositories, is not checked.
-  - The env-reach rule assumes the search honours .gitignore. `command grep`,
-    an absolute grep path, rg `--no-ignore` or a single `-u`, and
-    `git grep --no-index` do not, and may read env files git does not list.
+    outside one, such as a grep across ~/Projects, a non-git parent of many
+    repositories, is not checked.
+  - The env-reach rule assumes the search honours .gitignore. `git grep
+    --no-index` does not, and may read env files git does not list. `command
+    grep`, an absolute grep path, and a search run through a wrapper
+    (`timeout`, `nice`, `sudo`) get no env-reach check at all.
   - `xargs grep` and greps over shell globs (`git ls-files | xargs grep -n X`,
     `grep -n X **/*`) get no env-reach check.
+  - Env files inside a nested git repository or a submodule's work tree are
+    not in the reach listing (ls-files lists each as one entry), so grep -r,
+    rg and the Grep tool can reach them; `git grep --recurse-submodules` is
+    covered.
+  - A nested subshell (`(cd a && (cd b && make)); grep -rn X .`) or a `$(...)`
+    that closes inside an open subshell can restore the effective directory to
+    the wrong level.
   - Revisions passed to `git grep` are checked against the index, not their trees.
   - The reach set over-blocks tracked files that are also ignored, which ugrep
     and rg skip.
@@ -55,9 +63,12 @@ Unless it prints names or counts only, the env-reach rule asks git which
 env-shaped files it reaches (`git ls-files` from the payload cwd, after each
 `cd` and `-C`), drops the ones the search itself excludes (git `:!` pathspecs,
 grep `--exclude`/`--exclude-dir`, rg and Grep `!` globs), and blocks when any
-remain. This rule fails closed: a directory it cannot resolve (a variable, a
-command substitution, `cd -`), a git failure other than "not a git
-repository", or git running past its deadline blocks with "could not check".
+remain. A search that reads ignored files (rg `-u`, `--unrestricted` or
+`--no-ignore*`, `git grep --untracked --no-exclude-standard`) also blocks
+unless its own excludes cover every env name. This rule fails closed: a
+directory it cannot resolve (a variable, a command substitution, `cd -`), a
+git failure other than "not a git repository", or git running past its
+deadline blocks with "could not check".
 
 Raw dumps of Playwright traces, HAR files, and auth storage-state files are
 blocked separately; scripts/trace-read.py in the forge skill prints a redacted
@@ -684,7 +695,7 @@ READER_OPTS = {
         set(),
     ),
     # ripgrep. Options that run a program or change what is searched
-    # (--pre, --pre-glob, --type-add, --ignore-file, --no-ignore*, --no-config) are left out.
+    # (--pre, --pre-glob, --type-add, --ignore-file, --no-config) are left out.
     "rg": OptionTable(
         set("efgtTmABCMjdEr"),
         set("iSswxvFnNHIlcqopUaLbzu.0"),
@@ -699,7 +710,8 @@ READER_OPTS = {
             "heading", "files-with-matches", "files-without-match", "count", "count-matches", "quiet",
             "only-matching", "pretty", "multiline", "text", "follow", "byte-offset", "search-zip",
             "unrestricted", "hidden", "null", "column", "vimgrep", "json", "trim", "no-messages",
-            "crlf", "pcre2", "stats", "help", "version",
+            "crlf", "pcre2", "stats", "help", "version", "no-ignore", "no-ignore-vcs", "no-ignore-parent",
+            "no-ignore-dot", "no-ignore-exclude", "no-ignore-global", "no-ignore-files", "no-ignore-messages",
         },
         set("ABCmMjd"),
     ),
@@ -973,10 +985,18 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, her
     # rg reads dot files with --hidden, `-.`, `-uu` or --unrestricted twice; one -u only drops the ignore rules.
     hidden = (
         "." in shorts
-        or shorts.count("u") >= 2
+        or shorts.count("u") + [name for name, _ in options].count("--unrestricted") >= 2
         or "--hidden" in names
-        or [name for name, _ in options].count("--unrestricted") >= 2
     )
+    if family == "rg":
+        reads_ignored = (
+            "u" in shorts
+            or "--unrestricted" in names
+            # --no-ignore-messages only silences errors about ignore files.
+            or any(name.startswith("--no-ignore") and name != "--no-ignore-messages" for name in names)
+        )
+    else:
+        reads_ignored = family == "git grep" and {"--untracked", "--no-exclude-standard"} <= names
     if family == "rg":
         # Plain rg skips hidden and git-ignored files, where .env files live;
         # a positive -g glob overrides the ignore rules, and -L follows symlinks
@@ -986,6 +1006,7 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, her
             or bool(includes)
             or bool(set("u.L") & set(shorts))
             or bool(names & {"--hidden", "--unrestricted", "--follow"})
+            or reads_ignored
             # With no path rg searches the working directory, unless a pipe
             # feeds it; then it reads stdin.
             or (not args.files and not fed_by_pipe)
@@ -999,7 +1020,7 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, her
     narrow = bool(includes) and all(_narrow_glob(include) for include in includes)
     if broad and not all_md and not narrow and (hit := _secret_word_hit(args.patterns, raw)):
         return hit
-    search = _reader_env_search(args, includes, here, recursive, hidden, fed_by_pipe)
+    search = _reader_env_search(args, includes, here, recursive, hidden, fed_by_pipe, reads_ignored)
     return None if search is None else env_reach(search, raw)
 
 
@@ -1014,8 +1035,9 @@ REACH_SECONDS = 3.0
 # One deadline for every git call this hook run makes.
 REACH_DEADLINE = time.monotonic() + REACH_SECONDS
 # A positive rg or Grep glob overrides the ignore rules, so it is tested
-# against these names instead of a listing.
-ENV_PROBES = (".env", ".env.local", ".envs/x", "x.env", ".envrc")
+# against these names instead of a listing. A search that reads ignored files
+# is also tested against them.
+ENV_PROBES = (".env", ".env.local", ".envs/x", "x.env", ".envrc", ".env_x")
 HOME_WORD = re.compile(r"^\$(?:HOME|\{HOME\})(?=/|$)")
 GREP_IGNORE = "--exclude-per-directory=.gitignore"
 ENV_EXCLUDES = {
@@ -1024,6 +1046,8 @@ ENV_EXCLUDES = {
     "rg": "add `-g '!.env*'`",
     "Grep": 'set `glob` to `"!.env*"`',
 }
+# Excludes that cover every ENV_PROBES name, for a search that reads ignored files.
+PROBE_EXCLUDES = {"git grep": "add `-- . ':!*.env*'`", "rg": "add `-g '!.env*' -g '!*.env'`"}
 NAMES_ONLY_ROUTES = {
     "git grep": "print names only with -l (`git grep -l`)",
     "grep": "print names only with -l (`grep -rl`)",
@@ -1051,7 +1075,11 @@ class EnvSearch(NamedTuple):
     excludes: tuple[tuple[str, str], ...] = ()
     # grep --include globs: only the files they match are read.
     includes: tuple[str, ...] = ()
+    # rg or Grep globs in command order, `!` ones included, when any is positive.
     positives: tuple[str, ...] = ()
+    # The search reads files .gitignore hides.
+    reads_ignored: bool = False
+    submodules: bool = False
 
 
 def _shell_word(word: str) -> str | None:
@@ -1097,7 +1125,13 @@ def _git_pathspecs(args: ReaderArgs, root: str) -> list[str] | None:
 
 
 def _reader_env_search(
-    args: ReaderArgs, includes: list[str], here: str | None, recursive: bool, hidden: bool, fed_by_pipe: bool
+    args: ReaderArgs,
+    includes: list[str],
+    here: str | None,
+    recursive: bool,
+    hidden: bool,
+    fed_by_pipe: bool,
+    reads_ignored: bool = False,
 ) -> EnvSearch | None:
     """Return the env-reach search of a parsed git grep, recursive grep or rg call, or None for any other call."""
     options = args.options
@@ -1108,8 +1142,15 @@ def _reader_env_search(
         pathspecs = None if root is None else _git_pathspecs(args, root)
         if root is None or pathspecs is None:
             return EnvSearch("git grep", None)
-        untracked = "--untracked" in {name for name, _ in options}
-        return EnvSearch("git grep", [root], tuple(pathspecs), untracked)
+        names = {name for name, _ in options}
+        return EnvSearch(
+            "git grep",
+            [root],
+            tuple(pathspecs),
+            "--untracked" in names,
+            reads_ignored=reads_ignored,
+            submodules="--recurse-submodules" in names,
+        )
     operands = [f for f in args.files if f != "-"]
     if args.files and not operands:
         return None
@@ -1121,11 +1162,20 @@ def _reader_env_search(
         )
         return EnvSearch("grep", _search_roots(here, operands), excludes=excludes, includes=tuple(includes))
     if args.family == "rg" and (args.files or not fed_by_pipe):
-        excludes = tuple(
-            (value[1:], "any") for name, value in options if name in ("-g", "--glob", "--iglob") and value.startswith("!")
-        )
+        roots = _search_roots(here, operands)
+        off_root = roots is not None and any(root != posixpath.normpath(here or "") for root in roots)
+        globs = [value for name, value in options if name in ("-g", "--glob", "--iglob")]
+        if off_root:
+            globs = [g if g.startswith("!") else g.lstrip("/") for g in globs if not g.startswith("!/")]
+        excludes = tuple((g[1:], "any") for g in globs if g.startswith("!"))
+        positives = tuple(globs) if includes or reads_ignored else ()
         return EnvSearch(
-            "rg", _search_roots(here, operands), hidden=hidden, excludes=excludes, positives=tuple(includes)
+            "rg",
+            roots,
+            hidden=hidden,
+            excludes=excludes,
+            positives=positives,
+            reads_ignored=reads_ignored,
         )
     return None
 
@@ -1185,17 +1235,20 @@ def _glob_regex(glob: str, ignore_case: bool = False) -> re.Pattern[str] | None:
 def _glob_hit(glob: str, entry: str, parts: str, ignore_case: bool = False) -> bool | None:
     """Return whether a glob matches a listed path, or None when the glob is not understood.
 
-    A glob with `/` matches the whole path or, unless parts is "base", a
-    directory above it. Otherwise it matches one part, as parts says. An
-    ignored directory listed as one entry ends in `/`.
+    A glob with `/` (a leading one included) matches the whole path or,
+    unless parts is "base", a directory above it. Otherwise it matches one
+    part, as parts says. An ignored directory listed as one entry ends in `/`.
     """
+    # A directory-only glob is not modelled, so the path is kept.
+    if glob.endswith("/") and parts != "dirs":
+        return None
     pattern = glob.strip("/")
     regex = _glob_regex(pattern, ignore_case)
     if regex is None:
         return None
     is_dir = entry.endswith("/")
     names = entry.rstrip("/").split("/")
-    if "/" in pattern:
+    if "/" in glob.rstrip("/"):
         prefixes = ["/".join(names[:k]) for k in range(1, len(names) + 1)]
         if parts == "base":
             candidates = [] if is_dir else prefixes[-1:]
@@ -1257,6 +1310,8 @@ def _reach_listing(search: EnvSearch, root: str) -> list[str] | None:
         args = ["ls-files", "-z", "--cached"]
         if search.untracked:
             args += ["--others", "--exclude-standard"]
+        if search.submodules:
+            args.append("--recurse-submodules")
         if search.pathspecs:
             args += ["--", *search.pathspecs]
         return _nul_split(_git_output(root, *args))
@@ -1291,9 +1346,30 @@ def _reaches(search: EnvSearch, root: str, entry: str) -> bool:
 
 
 def _positive_reaches(search: EnvSearch, probe: str) -> bool:
-    """Return True when a positive glob can match an env name that no exclude glob removes."""
-    return any(_glob_hit(glob, probe, "any", ignore_case=True) is not False for glob in search.positives) and not any(
-        _glob_hit(glob, probe, parts) for glob, parts in search.excludes
+    """Return True when the last glob that matches an env name is a positive one.
+
+    In rg the last matching glob wins. For a search that reads ignored files,
+    the name also counts when no glob matches it. A git grep that reads ignored
+    files reaches the name unless its exclude pathspecs cover it.
+    """
+    if search.tool == "git grep":
+        patterns = [
+            spec[m.end() :]
+            for spec in search.pathspecs
+            if (m := EXCLUDE_PATHSPEC.match(spec))
+            and not any(magic in m.group(0) for magic in ("glob", "icase", "attr"))
+        ]
+        return not all(any(fnmatch.fnmatchcase(path, p) for p in patterns) for path in (probe, f"x/{probe}"))
+    for glob in reversed(search.positives):
+        if glob.startswith("!"):
+            if _glob_hit(glob[1:], probe, "any"):
+                return False
+        elif _glob_hit(glob, probe, "any", ignore_case=True) is not False:
+            return True
+    return (
+        search.reads_ignored
+        and (search.hidden or not has_dot_part(probe))
+        and all(glob.startswith("!") for glob in search.positives)
     )
 
 
@@ -1325,19 +1401,32 @@ def _path_exclude(tool: str, entry: str) -> str | None:
     return f"-g {_sq('!' + rel)}" if tool == "rg" else f"!{rel}"
 
 
-def _reach_hit(tool: str, context: str, root: str, reached: list[str], probe: bool = False) -> Hit:
+def _reach_hit(
+    tool: str, context: str, root: str, reached: list[str], probe: bool = False, ignored: bool = False
+) -> Hit:
     """Return the block for a search that reaches env files, naming the excludes that skip them."""
     shown = ", ".join(f"`{path}`" for path in reached[:3])
     if len(reached) > 3:
         shown += f" and {len(reached) - 3} more"
-    if probe:
-        found = f"Its positive glob overrides the ignore rules and can match env files such as {shown}."
+    base = ENV_EXCLUDES[tool]
+    if probe and ignored:
+        found = f"It reads files .gitignore hides, so it can reach env files named like {shown}."
+        base = PROBE_EXCLUDES[tool]
         extra: list[str] = []
+    elif probe:
+        found = f"Its positive glob overrides the ignore rules and can match env files such as {shown}."
+        extra = []
     else:
         found = f"Env files it reaches (names only; the hook did not open them): {shown}"
         extra = list(dict.fromkeys(x for path in reached if (x := _path_exclude(tool, path))))
-    route = f"To search without them, {ENV_EXCLUDES[tool]}"
-    if extra:
+    route = f"To search without them, {base}"
+    if extra and tool == "Grep":
+        flags = " ".join(f"-g {_sq(x)}" for x in ["!.env*", *extra[:10]])
+        route = (
+            "The Grep `glob` field holds one exclude, so narrow `path` to a folder without env files, "
+            f"or run `rg {flags}` in Bash"
+        )
+    elif extra:
         route += ", and also exclude " + " ".join(f"`{x}`" for x in extra[:10])
     advice = f"Root: `{root}`\n{found}\n{route}; or {NAMES_ONLY_ROUTES[tool]}."
     return Hit("prints lines from the env files it reaches", ENV_REACH_RULE, reached[0], context, advice)
@@ -1372,10 +1461,11 @@ def env_reach(search: EnvSearch, context: str) -> Hit | None:
     for root in search.roots:
         if not os.path.isdir(root):
             continue
-        if search.positives:
+        if search.positives or search.reads_ignored:
             if probes := [probe for probe in ENV_PROBES if _positive_reaches(search, probe)]:
-                return _reach_hit(search.tool, context, root, probes, probe=True)
-            continue
+                return _reach_hit(search.tool, context, root, probes, probe=True, ignored=search.reads_ignored)
+            if not search.reads_ignored:
+                continue
         try:
             listed = _reach_listing(search, root)
         except ReachUnknown as err:
@@ -1782,7 +1872,8 @@ def unparsed_search_verdict(raw: str, here: str | None, fed_by_pipe: bool) -> Hi
         tool = "rg"
     else:
         return None
-    words = unquoted.split()
+    # git's own options (`git -c k=v grep`) come before grep's; only grep's count here.
+    words = (blank_quoted(raw[git.end() :], "'\"") if git else unquoted).split()
     if set(words) & NAMES_ONLY_OPTS[tool]:
         return None
     root = None if any(s in raw for s in ("$(", "`", "<(", ">(")) else here
@@ -1826,9 +1917,15 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
     dot_cd = False
     # The directory a search runs in; None once a `cd` cannot be resolved.
     here = cwd
+    # The directory to restore when a `( ... )` subshell closes.
+    outer: list[str | None] = []
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
     for i, (raw, feeds_pipe) in enumerate(zip(segments, piped)):
+        if i and segments[i - 1].rstrip().endswith(")") and outer:
+            here = outer.pop()
+        if raw.lstrip().startswith("("):
+            outer.append(here)
         if is_gate_command(raw) and (
             not feeds_pipe or (GATE_PIPE_TARGET.fullmatch(segments[i + 1]) and not piped[i + 1])
         ):
@@ -2203,7 +2300,10 @@ def grep_tool_verdict(tool_input: dict, cwd: str | None) -> Hit | None:
         root = posixpath.normpath(posixpath.join(cwd or "/", path))
     else:
         root = None
-    excludes = ((glob[1:], "any"),) if glob.startswith("!") else ()
+    off_root = root is not None and root != posixpath.normpath(cwd or "")
+    excludes = ((glob[1:], "any"),) if glob.startswith("!") and not (off_root and glob.startswith("!/")) else ()
+    if off_root and not glob.startswith("!"):
+        glob = glob.lstrip("/")
     positives = (glob,) if glob and not glob.startswith("!") else ()
     search = EnvSearch("Grep", None if root is None else [root], excludes=excludes, positives=positives)
     return env_reach(search, root or path)
