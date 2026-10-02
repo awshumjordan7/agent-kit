@@ -37,6 +37,12 @@ Raw dumps of Playwright traces, HAR files, and auth storage-state files are
 blocked separately; scripts/trace-read.py in the forge skill prints a redacted
 view of them instead.
 
+Two narrow exceptions keep forge working in repositories that implement API keys:
+  - A source file (.py, .ts, ...) whose only secret word is api_key, api-key or
+    apikey, under no dot-directory but .venv, is code, not a stored key.
+  - A Bash command that is exactly one of forge.config.json's worktree gate
+    commands may source the repository's .envs files; it never prints them.
+
 Exit codes: 2 = block (stderr is shown to Claude), 0 = allow.
 """
 
@@ -1165,8 +1171,96 @@ def secret_path_hit(path: str) -> tuple[str, str] | None:
     if m := re.search(SECRET_PATH_SHAPES, scan, re.IGNORECASE):
         return "secret-path", m.group(0)
     if not path.lower().endswith(".md") and (m := re.search(SECRET_BARE_WORDS, scan, re.IGNORECASE)):
-        return "secret-word", m.group(0)
+        if not api_key_source(path):
+            return "secret-word", m.group(0)
     return None
+
+
+API_KEY_WORD = re.compile(r"api[_-]?keys?", re.IGNORECASE)
+API_KEY_SOURCE_EXTENSION = re.compile(r"\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs)$", re.IGNORECASE)
+SHELL_WORD = re.compile(r"[^\s;&|<>()`]+")
+
+
+def api_key_source(path: str) -> bool:
+    """Return True when a path is source code whose only secret words are the api-key family.
+
+    A part that starts with `.`, other than `.venv`, `.` or `..`, keeps the
+    block: `~/.config/tool/api_key.py` may hold a key.
+    """
+    path = path.strip("'\"")
+    words = [m.group(0) for m in re.finditer(SECRET_BARE_WORDS, ALLOWLIST.sub(" ", path), re.IGNORECASE)]
+    return (
+        bool(words)
+        and all(API_KEY_WORD.fullmatch(word) for word in words)
+        and bool(API_KEY_SOURCE_EXTENSION.search(path))
+        and not any(part.startswith(".") and part not in (".", "..", ".venv") for part in path.split("/"))
+    )
+
+
+def blank_api_key_sources(text: str) -> str:
+    """Blank the shell words that api_key_source() exempts, before a bare-word check."""
+    return SHELL_WORD.sub(lambda m: " " if api_key_source(m.group(0)) else m.group(0), text)
+
+
+FORGE_CONFIG = "~/.claude/skills/forge/forge.config.json"
+GATE_ARG = r"(?!'?-)(?:'[\w./@+,:~-]+'|[\w./@+,:~-]+)"
+# Forge runs a gate command bare, after `cd <dir> &&`, or under its perl alarm wrapper.
+GATE_PREFIX = (
+    rf"(?:cd[ \t]+(?P<cd>{GATE_ARG})[ \t]*&&[ \t]*)?"
+    r"(?:perl[ \t]+-e[ \t]+'alarm shift @ARGV; exec @ARGV'[ \t]+\d+[ \t]+)?"
+)
+# Output handling an agent may append to keep the result short: `> log 2>&1`, `2>&1 | tail -40`.
+GATE_SUFFIX = (
+    rf"(?:[ \t]*>>?[ \t]*(?P<out>{GATE_ARG}))?"
+    r"(?:[ \t]*2>&1)?"
+    r"(?:[ \t]*\|[ \t]*(?:tail|head)(?:[ \t]+(?:-n[ \t]*\d+|-\d+))?)?"
+)
+# The only command a gate segment may pipe into; anything else (`| sh`) could run its output.
+GATE_PIPE_TARGET = re.compile(r"[ \t]*(?:tail|head)(?:[ \t]+(?:-n[ \t]*\d+|-\d+))?[ \t]*")
+
+
+def _gate_pattern(template: str) -> re.Pattern[str]:
+    """Compile a gate command template: `<paths>` takes plain path words, `<create-db>` is optional."""
+    pattern = ""
+    for i, part in enumerate(re.split(r"(<paths>|<create-db>)", template)):
+        if i % 2 == 0:
+            pattern += re.escape(part)
+        elif part == "<create-db>":
+            pattern += r"(?: --create-db)?"
+        elif pattern.endswith(re.escape(" ")):
+            pattern = pattern[: -len(re.escape(" "))] + rf"(?P<paths{i}>(?:[ \t]+{GATE_ARG})*)"
+        else:
+            pattern += rf"(?P<paths{i}>(?:{GATE_ARG}(?:[ \t]+{GATE_ARG})*)?)"
+    return re.compile(GATE_PREFIX + pattern + GATE_SUFFIX)
+
+
+def is_gate_command(command: str) -> bool:
+    """Return True when one command segment is a worktree gate command from forge.config.json.
+
+    A config that cannot be read grants nothing. Each path word, the `cd`
+    target and an output redirect target must still pass secret_path_hit().
+    """
+    try:
+        with open(posixpath.expanduser(FORGE_CONFIG), encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError, UnicodeError):
+        return False
+    gates = config.get("gate") if isinstance(config, dict) else None
+    if not isinstance(gates, dict):
+        return False
+    command = command.strip()
+    for entry in gates.values():
+        worktree = entry.get("worktree") if isinstance(entry, dict) else None
+        if not isinstance(worktree, dict):
+            continue
+        for template in worktree.values():
+            if not isinstance(template, str) or not (m := _gate_pattern(template).fullmatch(command)):
+                continue
+            words = [w for name, value in m.groupdict().items() if value and name != "cd" for w in value.split()]
+            words += [m.group("cd")] if m.group("cd") else []
+            if not any(secret_path_hit(word.strip("'")) for word in words):
+                return True
+    return False
 
 
 CD_TARGET = re.compile(r"[\s({]*(?:cd|pushd)\s+(.*)")
@@ -1203,6 +1297,10 @@ def verdict(command: str) -> Hit | None:
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
     for i, (raw, feeds_pipe) in enumerate(zip(segments, piped)):
+        if is_gate_command(raw) and (
+            not feeds_pipe or (GATE_PIPE_TARGET.fullmatch(segments[i + 1]) and not piped[i + 1])
+        ):
+            continue
         if cd := CD_TARGET.match(raw):
             dot_cd = dot_cd or any(has_dot_part(word) for word in cd.group(1).split())
         # Blank out only the allowlisted paths, never the whole segment:
@@ -1224,7 +1322,7 @@ def verdict(command: str) -> Hit | None:
             # files rather than stdin gets the plain reader word check.
             if reader.family == "rg" and (reader.files or not fed_by_pipe):
                 reader_text = EXCLUDE_OPTION.sub(" ", strip_redirections(segment, output_only=True))
-                if m := READER_NEAR_SECRET_WORD.search(word_scan(reader_text)):
+                if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
                     return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             # A dot-directory (~/.config/rclone/rclone.conf) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
@@ -1237,7 +1335,7 @@ def verdict(command: str) -> Hit | None:
             names_only = {name for name, _ in reader.options} & NAMES_ONLY_OPTS.get(
                 reader.family, set()
             )
-            word = READER_NEAR_SECRET_WORD.search(word_scan(segment))
+            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(segment)))
             if dotted and (feeds_pipe or not names_only) and (m := word):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         else:
@@ -1248,7 +1346,7 @@ def verdict(command: str) -> Hit | None:
                 return Hit("reads a credential-bearing path", "reader-near-secret", m.group(0), raw)
             if m := READER_NEAR_SECRET_FILE.search(pattern_scan(scan)):
                 return Hit("reads a credential-bearing path", "reader-near-secret-file", m.group(0), raw)
-            if m := READER_NEAR_SECRET_WORD.search(word_scan(reader_text)):
+            if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         if m := REDIRECT_FROM_SECRET.search(segment):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret", m.group(0), raw)
