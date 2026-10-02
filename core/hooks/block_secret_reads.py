@@ -30,8 +30,34 @@ KNOWN GAPS, deliberately not covered:
     reader, so option names such as `--head` and hyphenated branch names
     do not match.
   - Reading a secret indirectly: copy to a neutral name first, then read.
+  - The env-reach rule (below) checks git work trees only. A search root
+    outside one, such as a grep across /Users/jfierro/Projects/work, a non-git
+    parent of many repositories, is not checked.
+  - The env-reach rule assumes the search honours .gitignore. `command grep`,
+    an absolute grep path, rg `--no-ignore` or a single `-u`, and
+    `git grep --no-index` do not, and may read env files git does not list.
+  - `xargs grep` and greps over shell globs (`git ls-files | xargs grep -n X`,
+    `grep -n X **/*`) get no env-reach check.
+  - Revisions passed to `git grep` are checked against the index, not their trees.
+  - The reach set over-blocks tracked files that are also ignored, which ugrep
+    and rg skip.
+  - For a grep root below the work-tree top, an env file inside an ignored
+    directory whose own name is not env-shaped (`build/.env`) is missed.
+  - A positive rg or Grep glob with a directory part is tested against
+    top-level env names only.
 Tighten only if the threat model changes; today's goal is preventing careless
 credential exposure, not defeating circumvention.
+
+A broad search -- every git grep (`git -C <dir> grep` included), a recursive
+grep, an rg over a directory or the working directory, a Grep tool content
+search -- prints lines from every env file it reaches, whatever its pattern.
+Unless it prints names or counts only, the env-reach rule asks git which
+env-shaped files it reaches (`git ls-files` from the payload cwd, after each
+`cd` and `-C`), drops the ones the search itself excludes (git `:!` pathspecs,
+grep `--exclude`/`--exclude-dir`, rg and Grep `!` globs), and blocks when any
+remain. This rule fails closed: a directory it cannot resolve (a variable, a
+command substitution, `cd -`), a git failure other than "not a git
+repository", or git running past its deadline blocks with "could not check".
 
 Raw dumps of Playwright traces, HAR files, and auth storage-state files are
 blocked separately; scripts/trace-read.py in the forge skill prints a redacted
@@ -46,12 +72,16 @@ Two narrow exceptions keep forge working in repositories that implement API keys
 Exit codes: 2 = block (stderr is shown to Claude), 0 = allow.
 """
 
+import fnmatch
 import io
 import json
+import os
 import posixpath
 import re
 import shlex
+import subprocess
 import sys
+import time
 import tokenize
 from typing import NamedTuple
 
@@ -91,8 +121,11 @@ SECRET_COMMANDS = re.compile(
 #     "v"->"s" is not a word boundary.
 #   - The bare-word patterns need trailing \b or they match inside ordinary
 #     identifiers: "token" hits "tokenize", "secret" hits "secretary".
+# ENV_PATH_SHAPES are the env files on their own. `.envrc` and `.env_*` match
+# the settings deny rules.
+ENV_PATH_SHAPES = r"\.envs?\b|\.env\.|/\.envs?\b|\.envrc\b|\.env_"
 SECRET_PATH_SHAPES = (
-    r"\.envs?\b|\.env\.|/\.envs?\b|"
+    ENV_PATH_SHAPES + "|"
     r"\.ssh/|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|authorized_keys|known_hosts|"
     r"\.aws/|\.gnupg/|\.kube/config|"
     # gh writes its token to hosts.yml in plain text when no credential store works.
@@ -418,6 +451,8 @@ class Hit(NamedTuple):
     rule: str
     fragment: str
     context: str
+    # Block text that replaces the shared routes, for rules that name their own.
+    advice: str = ""
 
 
 def split_segments(command: str, piped: list[bool] | None = None) -> list[str]:
@@ -699,6 +734,10 @@ CODE_EXTENSION = re.compile(
     re.IGNORECASE,
 )
 GLOB_CHARS = re.compile(r"[*?\[]")
+# A git pathspec that excludes: `:!x`, `:^x`, `:/!x`, or long magic whose
+# comma list holds `exclude` (`:(top,exclude)x`).
+_EXCLUDE_MAGIC = r":(?:/*[!^]|\((?:[^),]*,)*exclude(?:,[^)]*)?\))"
+EXCLUDE_PATHSPEC = re.compile(_EXCLUDE_MAGIC)
 
 
 class ReaderArgs(NamedTuple):
@@ -710,6 +749,17 @@ class ReaderArgs(NamedTuple):
     files: list[str]
     # True for `xargs grep`, whose file list comes from stdin.
     stdin_files: bool = False
+    # The `-C <dir>` values of `git -C <dir> grep`, in order.
+    git_dirs: tuple[str, ...] = ()
+    # The index in files where the operands after `--` start; None without `--`.
+    dashdash: int | None = None
+
+
+def read_operands(args: ReaderArgs) -> list[str]:
+    """Return the file operands a call reads; a git grep exclude pathspec reads nothing."""
+    if args.family != "git grep":
+        return args.files
+    return [f for f in args.files if not EXCLUDE_PATHSPEC.match(f)]
 
 
 def _skip_xargs_options(tokens: list[str]) -> list[str] | None:
@@ -764,19 +814,31 @@ def parse_reader(raw: str) -> ReaderArgs | None:
         tokens = _skip_xargs_options(tokens[1:])
         if not tokens or tokens[0] not in GREP_COMMANDS:
             return None
-    if tokens[:2] == ["git", "grep"]:
-        tokens = ["git grep"] + tokens[2:]
+    git_dirs: list[str] = []
+    if tokens[:1] == ["git"]:
+        j = 1
+        while j < len(tokens) and tokens[j] in ("-C", "--no-pager"):
+            if tokens[j] == "-C":
+                if j + 1 == len(tokens):
+                    return None
+                git_dirs.append(tokens[j + 1])
+            j += 2 if tokens[j] == "-C" else 1
+        if tokens[j : j + 1] != ["grep"]:
+            return None
+        tokens = ["git grep", *tokens[j + 1 :]]
     if not tokens or tokens[0] not in READER_OPTS:
         return None
     command = tokens[0]
     table = READER_OPTS[command]
     options: list[tuple[str, str]] = []
     positionals: list[str] = []
+    dashdash_at: int | None = None
     i = 1
     while i < len(tokens):
         token = tokens[i]
         i += 1
         if token == "--":
+            dashdash_at = len(positionals)
             positionals.extend(tokens[i:])
             break
         if token.startswith("--"):
@@ -814,16 +876,19 @@ def parse_reader(raw: str) -> ReaderArgs | None:
                 return None
             options.append((f"-{flag}", ""))
     names = {name for name, _ in options}
+    offset = 0
     if names & {"-e", "--regexp", "--expression", "-f", "--file"}:
         patterns = [value for name, value in options if name in ("-e", "--regexp", "--expression")]
         files = positionals
     else:
         patterns, files = positionals[:1], positionals[1:]
+        offset = 1
     if command == "awk":
         # An assignment's value can name the file a getline reads: `f=.env`.
         files = [ASSIGNMENT.sub("", f) for f in files]
     family = "grep" if command in ("egrep", "fgrep") else command
-    return ReaderArgs(family, options, patterns, files, stdin_files)
+    dashdash = None if dashdash_at is None else max(dashdash_at - offset, 0)
+    return ReaderArgs(family, options, patterns, files, stdin_files, tuple(git_dirs), dashdash)
 
 
 def _narrow_glob(glob: str) -> bool:
@@ -859,7 +924,7 @@ def _secret_word_hit(patterns: list[str], raw: str) -> Hit | None:
     return None
 
 
-def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False) -> Hit | None:
+def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, here: str | None) -> Hit | None:
     """Check the file operands and scripts of a parsed grep/git grep/rg/sed/awk call.
 
     A grep pattern is search text and is never checked as a path. A broad
@@ -869,6 +934,9 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False) -> Hit
     `oauth_token: <value>` lines. An rg search is broad when it reaches hidden,
     ignored or symlinked files (`-u`, `--hidden`, `-L`, a positive `-g`), names
     no path and reads no pipe, or names `.`, `~`, `$HOME` or `/`.
+
+    A search that prints lines, run from `here` (None when the directory is
+    unknown), then gets the env-reach check: see env_reach().
     """
     family, options = args.family, args.options
     includes = [
@@ -877,7 +945,7 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False) -> Hit
         if (family == "grep" and name == "--include")
         or (family == "rg" and name in ("-g", "--glob", "--iglob") and not value.startswith("!"))
     ]
-    read_paths = args.files + [value for name, value in options if name in ("-f", "--file")] + includes
+    read_paths = read_operands(args) + [value for name, value in options if name in ("-f", "--file")] + includes
     read_paths += [value.partition("=")[2] for name, value in options if family == "awk" and name == "-v"]
     for path in read_paths:
         # SECRET_BARE_WORDS misses `service_credentials.json`: `_` defeats its \b.
@@ -894,15 +962,20 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False) -> Hit
         return _secret_word_hit(args.patterns, raw) if glob and not all_md else None
     names = {name for name, _ in options}
     shorts = "".join(name[1] for name, _ in options if len(name) == 2)
-    # git grep recurses, and --no-index or --untracked reach ignored files.
-    broad = (
-        family == "git grep"
-        or args.stdin_files
-        or bool(set("rR") & set(shorts))
+    recursive = (
+        bool(set("rR") & set(shorts))
         or bool(names & {"--recursive", "--dereference-recursive"})
         # GNU grep accepts any unambiguous prefix: `-d rec`.
         or any(name in ("-d", "--directories") and value and "recurse".startswith(value) for name, value in options)
-        or glob
+    )
+    # git grep recurses, and --no-index or --untracked reach ignored files.
+    broad = family == "git grep" or args.stdin_files or recursive or glob
+    # rg reads dot files with --hidden, `-.`, `-uu` or --unrestricted twice; one -u only drops the ignore rules.
+    hidden = (
+        "." in shorts
+        or shorts.count("u") >= 2
+        or "--hidden" in names
+        or [name for name, _ in options].count("--unrestricted") >= 2
     )
     if family == "rg":
         # Plain rg skips hidden and git-ignored files, where .env files live;
@@ -921,11 +994,395 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False) -> Hit
                 for f in args.files
             )
         )
-    if not broad or names & NAMES_ONLY_OPTS[family] or all_md:
+    if names & NAMES_ONLY_OPTS[family]:
         return None
-    if includes and all(_narrow_glob(include) for include in includes):
+    narrow = bool(includes) and all(_narrow_glob(include) for include in includes)
+    if broad and not all_md and not narrow and (hit := _secret_word_hit(args.patterns, raw)):
+        return hit
+    search = _reader_env_search(args, includes, here, recursive, hidden, fed_by_pipe)
+    return None if search is None else env_reach(search, raw)
+
+
+# --- Broad searches that reach env files -----------------------------------
+#
+# A repo-wide git grep, recursive grep or rg prints lines from every file it
+# reaches, so an env file in reach prints its values whatever the pattern.
+# git lists those files: the index for git grep, and the files the search does
+# not ignore for grep and rg (the session's grep is ugrep with --ignore-files).
+ENV_REACH_RULE = "search-reaches-env-file"
+REACH_SECONDS = 3.0
+# One deadline for every git call this hook run makes.
+REACH_DEADLINE = time.monotonic() + REACH_SECONDS
+# A positive rg or Grep glob overrides the ignore rules, so it is tested
+# against these names instead of a listing.
+ENV_PROBES = (".env", ".env.local", ".envs/x", "x.env", ".envrc")
+HOME_WORD = re.compile(r"^\$(?:HOME|\{HOME\})(?=/|$)")
+GREP_IGNORE = "--exclude-per-directory=.gitignore"
+ENV_EXCLUDES = {
+    "git grep": "add `-- . ':!.env*' ':!*/.env*'`",
+    "grep": "add `--exclude-dir=.envs --exclude='.env*'`",
+    "rg": "add `-g '!.env*'`",
+    "Grep": 'set `glob` to `"!.env*"`',
+}
+NAMES_ONLY_ROUTES = {
+    "git grep": "print names only with -l (`git grep -l`)",
+    "grep": "print names only with -l (`grep -rl`)",
+    "rg": "print names only with -l (`rg -l`)",
+    "Grep": "use `output_mode` `files_with_matches`",
+}
+
+
+class ReachUnknown(Exception):
+    """git could not list the files a search reaches."""
+
+
+class EnvSearch(NamedTuple):
+    """A broad search for the env-reach check."""
+
+    # "git grep", "grep", "rg", or "Grep" for the Grep tool.
+    tool: str
+    # The directories searched; None when one cannot be resolved.
+    roots: list[str] | None
+    pathspecs: tuple[str, ...] = ()
+    untracked: bool = False
+    hidden: bool = True
+    # (glob, parts): a glob without `/` is matched against one path part,
+    # "base" (the file name), "dirs" (a directory) or "any".
+    excludes: tuple[tuple[str, str], ...] = ()
+    # grep --include globs: only the files they match are read.
+    includes: tuple[str, ...] = ()
+    positives: tuple[str, ...] = ()
+
+
+def _shell_word(word: str) -> str | None:
+    """Return a word with a leading `~` or `$HOME` expanded, or None when it holds another `$` or a backtick."""
+    word = posixpath.expanduser(HOME_WORD.sub("~", word))
+    return None if "$" in word or "`" in word else word
+
+
+def _join_dir(base: str | None, word: str) -> str | None:
+    """Join a directory word onto base, or return None when the result cannot be resolved."""
+    resolved = _shell_word(word)
+    if resolved is None or (base is None and not resolved.startswith("/")):
         return None
-    return _secret_word_hit(args.patterns, raw)
+    return posixpath.normpath(posixpath.join(base or "/", resolved))
+
+
+def _search_roots(here: str | None, operands: list[str]) -> list[str] | None:
+    """Return the directories a grep or rg call searches: its operands joined onto here, or here alone."""
+    if not operands:
+        return None if here is None else [here]
+    roots: list[str] = []
+    for operand in operands:
+        if (root := _join_dir(here, operand)) is None:
+            return None
+        roots.append(root)
+    return roots
+
+
+def _git_pathspecs(args: ReaderArgs, root: str) -> list[str] | None:
+    """Return a git grep call's pathspecs, or None when one holds a variable.
+
+    Before `--`, a word after the pattern is a pathspec only when it starts
+    with `:` or exists under root; any other word is a revision.
+    """
+    start = len(args.files) if args.dashdash is None else args.dashdash
+    words = [f for f in args.files[:start] if f.startswith(":") or os.path.lexists(posixpath.join(root, f))]
+    pathspecs: list[str] = []
+    for word in words + args.files[start:]:
+        if (pathspec := _shell_word(word)) is None:
+            return None
+        pathspecs.append(pathspec)
+    return pathspecs
+
+
+def _reader_env_search(
+    args: ReaderArgs, includes: list[str], here: str | None, recursive: bool, hidden: bool, fed_by_pipe: bool
+) -> EnvSearch | None:
+    """Return the env-reach search of a parsed git grep, recursive grep or rg call, or None for any other call."""
+    options = args.options
+    if args.family == "git grep":
+        root = here
+        for directory in args.git_dirs:
+            root = _join_dir(root, directory)
+        pathspecs = None if root is None else _git_pathspecs(args, root)
+        if root is None or pathspecs is None:
+            return EnvSearch("git grep", None)
+        untracked = "--untracked" in {name for name, _ in options}
+        return EnvSearch("git grep", [root], tuple(pathspecs), untracked)
+    operands = [f for f in args.files if f != "-"]
+    if args.files and not operands:
+        return None
+    if args.family == "grep" and recursive and not args.stdin_files:
+        excludes = tuple(
+            (value, "base" if name == "--exclude" else "dirs")
+            for name, value in options
+            if name in ("--exclude", "--exclude-dir")
+        )
+        return EnvSearch("grep", _search_roots(here, operands), excludes=excludes, includes=tuple(includes))
+    if args.family == "rg" and (args.files or not fed_by_pipe):
+        excludes = tuple(
+            (value[1:], "any") for name, value in options if name in ("-g", "--glob", "--iglob") and value.startswith("!")
+        )
+        return EnvSearch(
+            "rg", _search_roots(here, operands), hidden=hidden, excludes=excludes, positives=tuple(includes)
+        )
+    return None
+
+
+def _glob_regex(glob: str, ignore_case: bool = False) -> re.Pattern[str] | None:
+    """Translate a glob: `*` and `?` stop at `/`, `**` crosses it, `{a,b}` is a choice.
+
+    Returns None for a glob it does not understand.
+    """
+    out: list[str] = []
+    braces, i, n = 0, 0, len(glob)
+    while i < n:
+        c = glob[i]
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+            continue
+        if glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        if c == "[":
+            end = glob.find("]", i + 2)
+            body = glob[i + 1 : end]
+            if end < 0 or "[" in body or "\\" in body:
+                return None
+            out.append("[" + ("^" + body[1:] if body[0] in "!^" else body) + "]")
+            i = end + 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(re.escape(glob[i + 1]))
+            i += 2
+            continue
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "{":
+            braces += 1
+            out.append("(?:")
+        elif c == "}" and braces:
+            braces -= 1
+            out.append(")")
+        elif c == "," and braces:
+            out.append("|")
+        else:
+            out.append(re.escape(c))
+        i += 1
+    if braces:
+        return None
+    try:
+        return re.compile("".join(out), re.IGNORECASE if ignore_case else 0)
+    except re.error:
+        return None
+
+
+def _glob_hit(glob: str, entry: str, parts: str, ignore_case: bool = False) -> bool | None:
+    """Return whether a glob matches a listed path, or None when the glob is not understood.
+
+    A glob with `/` matches the whole path or, unless parts is "base", a
+    directory above it. Otherwise it matches one part, as parts says. An
+    ignored directory listed as one entry ends in `/`.
+    """
+    pattern = glob.strip("/")
+    regex = _glob_regex(pattern, ignore_case)
+    if regex is None:
+        return None
+    is_dir = entry.endswith("/")
+    names = entry.rstrip("/").split("/")
+    if "/" in pattern:
+        prefixes = ["/".join(names[:k]) for k in range(1, len(names) + 1)]
+        if parts == "base":
+            candidates = [] if is_dir else prefixes[-1:]
+        else:
+            candidates = prefixes if parts == "any" or is_dir else prefixes[:-1]
+    elif parts == "base":
+        candidates = [] if is_dir else names[-1:]
+    elif parts == "dirs":
+        candidates = names if is_dir else names[:-1]
+    else:
+        candidates = names
+    return any(regex.fullmatch(candidate) for candidate in candidates)
+
+
+def env_path(path: str) -> bool:
+    """Return True when a path names an env file, blanked as secret_path_hit() blanks it."""
+    if AUTHORIZED_PATHS.search(path):
+        return False
+    return bool(re.search(ENV_PATH_SHAPES, ALLOWLIST.sub(" ", path), re.IGNORECASE))
+
+
+def _git_output(root: str, *args: str) -> bytes | None:
+    """Run git in root and return its output, or None when root is not in a git work tree."""
+    remaining = REACH_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        raise ReachUnknown(f"git did not answer within {REACH_SECONDS:g} seconds")
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, *args],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=remaining,
+            env={**os.environ, "LC_ALL": "C"},
+            check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise ReachUnknown(f"git did not answer within {REACH_SECONDS:g} seconds") from err
+    except OSError as err:
+        raise ReachUnknown(f"git could not run ({err.strerror or err})") from err
+    except ValueError as err:
+        # An argument with a NUL byte cannot be passed to a program.
+        raise ReachUnknown(f"git could not run ({err})") from err
+    if result.returncode == 0:
+        return result.stdout
+    if b"not a git repository" in result.stderr:
+        return None
+    detail = os.fsdecode(result.stderr).strip().splitlines()[:1]
+    raise ReachUnknown(f"git exited {result.returncode}" + (f": {detail[0][:160]}" if detail else ""))
+
+
+def _nul_split(output: bytes | None) -> list[str] | None:
+    """Split `git ls-files -z` output into paths."""
+    return None if output is None else [os.fsdecode(path) for path in output.split(b"\0") if path]
+
+
+def _reach_listing(search: EnvSearch, root: str) -> list[str] | None:
+    """Return the paths under root that git says the search can read, or None outside a git work tree."""
+    if search.tool == "git grep":
+        args = ["ls-files", "-z", "--cached"]
+        if search.untracked:
+            args += ["--others", "--exclude-standard"]
+        if search.pathspecs:
+            args += ["--", *search.pathspecs]
+        return _nul_split(_git_output(root, *args))
+    if search.tool != "grep":
+        return _nul_split(_git_output(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"))
+    prefix = _git_output(root, "rev-parse", "--show-prefix")
+    if prefix is None:
+        return None
+    listed = _nul_split(_git_output(root, "ls-files", "-z", "--cached", "--others", GREP_IGNORE)) or []
+    if prefix.strip():
+        # ugrep reads no .gitignore above its root, so below the work-tree top
+        # the files a parent .gitignore hides are read too.
+        ignored = _git_output(root, "ls-files", "-z", "--others", "--ignored", GREP_IGNORE, "--directory")
+        listed += _nul_split(ignored) or []
+    return listed
+
+
+def _reaches(search: EnvSearch, root: str, entry: str) -> bool:
+    """Return True when a listed path is an env file the search reads."""
+    rel = entry.rstrip("/")
+    if not env_path(posixpath.join(root, rel)):
+        return False
+    if not search.hidden and has_dot_part(rel):
+        return False
+    if any(_glob_hit(glob, entry, parts) for glob, parts in search.excludes):
+        return False
+    return (
+        not search.includes
+        or entry.endswith("/")
+        or any(_glob_hit(glob, entry, "base") is not False for glob in search.includes)
+    )
+
+
+def _positive_reaches(search: EnvSearch, probe: str) -> bool:
+    """Return True when a positive glob can match an env name that no exclude glob removes."""
+    return any(_glob_hit(glob, probe, "any", ignore_case=True) is not False for glob in search.positives) and not any(
+        _glob_hit(glob, probe, parts) for glob, parts in search.excludes
+    )
+
+
+def _sq(text: str) -> str:
+    """Quote text for a shell with single quotes."""
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def _path_exclude(tool: str, entry: str) -> str | None:
+    """Return the exclude for a reached path that the tool's exclude in ENV_EXCLUDES misses, else None."""
+    rel = entry.rstrip("/")
+    names = rel.split("/")
+    if tool == "git grep":
+        # A git pathspec `*` also matches `/`, as fnmatch's does.
+        if fnmatch.fnmatchcase(rel, ".env*") or fnmatch.fnmatchcase(rel, "*/.env*"):
+            return None
+        return _sq(f":!{rel}")
+    if tool == "grep":
+        dirs, base = (names, "") if entry.endswith("/") else (names[:-1], names[-1])
+        if ".envs" in dirs or fnmatch.fnmatchcase(base, ".env*"):
+            return None
+        # grep matches --exclude against the file name only.
+        if env_path(base):
+            return f"--exclude={_sq(base)}"
+        directory = next((name for name in dirs if env_path(name)), None)
+        return None if directory is None else f"--exclude-dir={_sq(directory)}"
+    if any(fnmatch.fnmatchcase(name, ".env*") for name in names):
+        return None
+    return f"-g {_sq('!' + rel)}" if tool == "rg" else f"!{rel}"
+
+
+def _reach_hit(tool: str, context: str, root: str, reached: list[str], probe: bool = False) -> Hit:
+    """Return the block for a search that reaches env files, naming the excludes that skip them."""
+    shown = ", ".join(f"`{path}`" for path in reached[:3])
+    if len(reached) > 3:
+        shown += f" and {len(reached) - 3} more"
+    if probe:
+        found = f"Its positive glob overrides the ignore rules and can match env files such as {shown}."
+        extra: list[str] = []
+    else:
+        found = f"Env files it reaches (names only; the hook did not open them): {shown}"
+        extra = list(dict.fromkeys(x for path in reached if (x := _path_exclude(tool, path))))
+    route = f"To search without them, {ENV_EXCLUDES[tool]}"
+    if extra:
+        route += ", and also exclude " + " ".join(f"`{x}`" for x in extra[:10])
+    advice = f"Root: `{root}`\n{found}\n{route}; or {NAMES_ONLY_ROUTES[tool]}."
+    return Hit("prints lines from the env files it reaches", ENV_REACH_RULE, reached[0], context, advice)
+
+
+def _unchecked_hit(tool: str, context: str, why: str) -> Hit:
+    """Return the block for a broad search whose reach cannot be checked."""
+    advice = (
+        f"Why: {why}.\n"
+        "Name the directory literally (`cd /abs/path && ...`, or a literal path operand) "
+        f"and exclude env files ({ENV_EXCLUDES[tool]}), or {NAMES_ONLY_ROUTES[tool]}."
+    )
+    return Hit(
+        "is a broad search, and the hook could not check which env files it reaches",
+        ENV_REACH_RULE,
+        why,
+        context,
+        advice,
+    )
+
+
+def env_reach(search: EnvSearch, context: str) -> Hit | None:
+    """Return a hit when a broad search can print lines from an env file, or when that cannot be checked.
+
+    Each root is listed with `git ls-files` and filtered to env-shaped names,
+    then the search's own excludes and includes apply. A root that is not a
+    directory, or not in a git work tree, is skipped. Any other git failure,
+    an unresolved directory, or the deadline blocks.
+    """
+    if search.roots is None:
+        return _unchecked_hit(search.tool, context, "a directory is a variable, a command substitution or `cd -`")
+    for root in search.roots:
+        if not os.path.isdir(root):
+            continue
+        if search.positives:
+            if probes := [probe for probe in ENV_PROBES if _positive_reaches(search, probe)]:
+                return _reach_hit(search.tool, context, root, probes, probe=True)
+            continue
+        try:
+            listed = _reach_listing(search, root)
+        except ReachUnknown as err:
+            return _unchecked_hit(search.tool, context, str(err))
+        if reached := [entry for entry in listed or [] if _reaches(search, root, entry)]:
+            return _reach_hit(search.tool, context, root, reached)
+    return None
 
 
 # Commands whose quoted arguments are text to print or store (a report
@@ -1264,17 +1721,90 @@ def is_gate_command(command: str) -> bool:
 
 
 CD_TARGET = re.compile(r"[\s({]*(?:cd|pushd)\s+(.*)")
+BARE_CD = re.compile(r"[\s({]*(?:cd|pushd)\s*")
+
+
+def _cd_dir(here: str | None, target: str) -> str | None:
+    """Return the directory a `cd`/`pushd` with this target text moves to, or None when it cannot be resolved."""
+    try:
+        words = [w for w in shlex.split(strip_redirections(target)) if w not in ("-L", "-P", "-e", "-@", "--")]
+    except ValueError:
+        return None
+    if not words:
+        return posixpath.expanduser("~")
+    return None if words[0] == "-" else _join_dir(here, words[0])
 # `--exclude`, `--exclude-from` and `--exclude-dir` with their value, as
 # `=value` or the next word. `--exclude-vcs` takes no value and stays.
 _OPTION_VALUE = r"""(?:'[^']*'|"[^"]*"|\\.|[^\s'"\\])+"""
 EXCLUDE_OPTION = re.compile(rf"(?<!\S)--exclude(?:-from|-dir)?(?:=|\s+){_OPTION_VALUE}")
+# An rg `!` glob and a git exclude pathspec, quoted or bare.
+EXCLUDE_GLOB_OPTION = re.compile(r"""(?<!\S)(?:-g\s*|--i?glob(?:=|\s+))(?:'![^']*'|"![^"]*"|![^\s'"]*)""")
+EXCLUDE_PATHSPEC_WORD = re.compile(
+    rf"""(?<!\S)(?:'{_EXCLUDE_MAGIC}[^']*'|"{_EXCLUDE_MAGIC}[^"]*"|{_EXCLUDE_MAGIC}[^\s'"]*)"""
+)
+
+
+def blank_excludes(text: str) -> str:
+    """Blank what a search excludes: grep `--exclude*` values, rg `!` globs and git exclude pathspecs."""
+    for pattern in (EXCLUDE_OPTION, EXCLUDE_GLOB_OPTION, EXCLUDE_PATHSPEC_WORD):
+        text = pattern.sub(" ", text)
+    return text
+
+
+# Search commands the parser could not read, found by their command word.
+_LEAD = r"^[\s({]*(?:[A-Za-z_]\w*=\S*\s+)*"
+GIT_GREP_COMMAND = re.compile(
+    rf"{_LEAD}git(?P<opts>(?:\s+(?:-[Cc]\s+{_OPTION_VALUE}|--(?:git-dir|work-tree|namespace)\s+{_OPTION_VALUE}"
+    rf"|--?[\w-]+(?:={_OPTION_VALUE})?))*)\s+grep(?![\w-])"
+)
+GIT_C_VALUE = re.compile(rf"(?<!\S)-C\s+({_OPTION_VALUE})")
+GREP_COMMAND = re.compile(rf"{_LEAD}(?:grep|egrep|fgrep)(?![\w-])")
+RECURSIVE_FLAG = re.compile(
+    r"(?<!\S)(?:-[A-Za-z0-9]*[rR][A-Za-z0-9]*|--(?:dereference-)?recursive|--directories=rec\w*|-d\s*rec\w*)(?!\S)"
+)
+RG_COMMAND = re.compile(rf"{_LEAD}rg(?![\w-])")
+
+
+def unparsed_search_verdict(raw: str, here: str | None, fed_by_pipe: bool) -> Hit | None:
+    """Check a git grep, recursive grep or rg segment that parse_reader() could not read.
+
+    It gets a whole-repo env-reach check from the effective directory, with
+    no excludes, since its options are unknown. A command substitution, or a
+    `-C` value that holds a variable, leaves the directory unresolved.
+    """
+    unquoted = blank_quoted(raw, "'\"")
+    git = GIT_GREP_COMMAND.match(raw)
+    if git:
+        tool = "git grep"
+    elif GREP_COMMAND.match(raw) and RECURSIVE_FLAG.search(unquoted):
+        tool = "grep"
+    elif RG_COMMAND.match(raw) and not fed_by_pipe:
+        tool = "rg"
+    else:
+        return None
+    words = unquoted.split()
+    if set(words) & NAMES_ONLY_OPTS[tool]:
+        return None
+    root = None if any(s in raw for s in ("$(", "`", "<(", ">(")) else here
+    for m in GIT_C_VALUE.finditer(git.group("opts") if git else ""):
+        try:
+            values = shlex.split(m.group(1))
+        except ValueError:
+            values = []
+        root = _join_dir(root, values[0]) if root is not None and values else None
+    search = EnvSearch(tool, None if root is None else [root], untracked="--untracked" in words)
+    hit = env_reach(search, raw)
+    if hit is None or root is None:
+        return hit
+    note = "The hook could not parse this command, so it applied none of its excludes; drop the options it does not know."
+    return hit._replace(advice=f"{hit.advice}\n{note}")
 
 
 # Heredoc bodies are data unless a shell or interpreter on the header line
 # will execute them; strip_heredoc_bodies() applies that split before
 # segments are checked below.
-def verdict(command: str) -> Hit | None:
-    """Return why to block a command, or None to allow."""
+def verdict(command: str, cwd: str | None) -> Hit | None:
+    """Return why to block a command run in cwd (None when unknown), or None to allow."""
     sources_repo_env = ENV_DUMP_WORD.search(command) is None
     heredocs = strip_heredoc_bodies(command)
     command = heredocs.head
@@ -1294,6 +1824,8 @@ def verdict(command: str) -> Hit | None:
     # A search after `cd ~/.config/gh` reads a dot-directory like a search
     # that names it.
     dot_cd = False
+    # The directory a search runs in; None once a `cd` cannot be resolved.
+    here = cwd
     # Evaluate each pipeline/list segment separately so one safe segment in a
     # compound command cannot mask an unsafe one.
     for i, (raw, feeds_pipe) in enumerate(zip(segments, piped)):
@@ -1303,6 +1835,8 @@ def verdict(command: str) -> Hit | None:
             continue
         if cd := CD_TARGET.match(raw):
             dot_cd = dot_cd or any(has_dot_part(word) for word in cd.group(1).split())
+        if cd or BARE_CD.fullmatch(raw):
+            here = _cd_dir(here, cd.group(1) if cd else "")
         # Blank out only the allowlisted paths, never the whole segment:
         # `diff .env .env.example` reads the real file and must still block.
         segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", raw))
@@ -1316,12 +1850,12 @@ def verdict(command: str) -> Hit | None:
         # which token is the pattern.
         if (reader := parse_reader(raw)) is not None:
             fed_by_pipe = i > 0 and piped[i - 1]
-            if hit := reader_verdict(reader, raw, fed_by_pipe=fed_by_pipe):
+            if hit := reader_verdict(reader, raw, fed_by_pipe=fed_by_pipe, here=here):
                 return hit
             # rg recurses into every directory operand, so any rg that reads
             # files rather than stdin gets the plain reader word check.
             if reader.family == "rg" and (reader.files or not fed_by_pipe):
-                reader_text = EXCLUDE_OPTION.sub(" ", strip_redirections(segment, output_only=True))
+                reader_text = blank_excludes(strip_redirections(segment, output_only=True))
                 if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
                     return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             # A dot-directory (~/.config/rclone/rclone.conf) or a variable operand
@@ -1330,17 +1864,17 @@ def verdict(command: str) -> Hit | None:
             # a source file. Names-only output (-l, -c) prints no line unless a
             # pipe hands the names on: `grep -l token ~/.config/rclone/* | xargs cat`.
             dotted = dot_cd or any(
-                has_dot_part(f) or ("$" in f and not _code_file(f)) for f in reader.files
+                has_dot_part(f) or ("$" in f and not _code_file(f)) for f in read_operands(reader)
             )
             names_only = {name for name, _ in reader.options} & NAMES_ONLY_OPTS.get(
                 reader.family, set()
             )
-            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(segment)))
+            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(blank_excludes(segment))))
             if dotted and (feeds_pipe or not names_only) and (m := word):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         else:
             # A file the command writes or excludes is not read.
-            reader_text = EXCLUDE_OPTION.sub(" ", strip_redirections(segment, output_only=True))
+            reader_text = blank_excludes(strip_redirections(segment, output_only=True))
             scan = QUOTED_PROSE.sub(" ", reader_text) if messengers and is_messenger(raw) else reader_text
             if m := READER_NEAR_SECRET.search(scan):
                 return Hit("reads a credential-bearing path", "reader-near-secret", m.group(0), raw)
@@ -1348,6 +1882,8 @@ def verdict(command: str) -> Hit | None:
                 return Hit("reads a credential-bearing path", "reader-near-secret-file", m.group(0), raw)
             if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
+            if hit := unparsed_search_verdict(raw, here, fed_by_pipe=i > 0 and piped[i - 1]):
+                return hit
         if m := REDIRECT_FROM_SECRET.search(segment):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret", m.group(0), raw)
         if m := REDIRECT_FROM_SECRET_WORD.search(segment):
@@ -1646,6 +2182,33 @@ def path_verdict(file_path: str) -> Hit | None:
     return None
 
 
+def grep_tool_verdict(tool_input: dict, cwd: str | None) -> Hit | None:
+    """Check a Grep tool call: its path and glob, then the env files a content search reaches.
+
+    A glob that starts with `!` excludes files, so it is not a path the call
+    reads. The Grep tool searches like `rg --hidden`.
+    """
+    hit = None
+    for field in PATH_FIELDS["Grep"]:
+        value = tool_input.get(field) or ""
+        if isinstance(value, str) and not (field == "glob" and value.startswith("!")):
+            hit = hit or path_verdict(value)
+    path, glob = tool_input.get("path") or "", tool_input.get("glob") or ""
+    if hit or tool_input.get("output_mode") != "content" or not isinstance(path, str) or not isinstance(glob, str):
+        return hit
+    path = posixpath.expanduser(path)
+    if not path:
+        root = cwd
+    elif cwd is not None or path.startswith("/"):
+        root = posixpath.normpath(posixpath.join(cwd or "/", path))
+    else:
+        root = None
+    excludes = ((glob[1:], "any"),) if glob.startswith("!") else ()
+    positives = (glob,) if glob and not glob.startswith("!") else ()
+    search = EnvSearch("Grep", None if root is None else [root], excludes=excludes, positives=positives)
+    return env_reach(search, root or path)
+
+
 def raw_dump_path_verdict(file_path: str) -> str | None:
     """Return a reason to block a Read of a trace, HAR, or auth storage-state file."""
     if RAW_DUMP_READ_PATH.search(file_path):
@@ -1667,6 +2230,7 @@ def main() -> int:
 
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}
+    cwd = start_dir(payload)
 
     if tool_name == "Bash":
         target = tool_input.get("command") or ""
@@ -1684,7 +2248,9 @@ def main() -> int:
             return 2
         if reason := raw_dump_verdict(target):
             return block_raw_dump("command", reason)
-        hit, noun = verdict(target), "command"
+        hit, noun = verdict(target, cwd), "command"
+    elif tool_name == "Grep":
+        hit, noun = grep_tool_verdict(tool_input, cwd), "tool call"
     elif tool_name in PATH_FIELDS:
         if tool_name == "Read" and isinstance(tool_input.get("file_path"), str):
             if reason := raw_dump_path_verdict(tool_input["file_path"]):
@@ -1699,15 +2265,41 @@ def main() -> int:
 
     if hit is None:
         return 0
+    if hit.rule == ENV_REACH_RULE:
+        return block_env_reach(noun, hit)
     return block_secret_read(noun, hit)
+
+
+def start_dir(payload: dict) -> str | None:
+    """Return the payload's cwd when it is a string, else the hook's own working directory."""
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        return cwd
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
+
+
+def _block_context(noun: str, hit: Hit) -> str:
+    """Return the Segment or Path line of a block message."""
+    if noun == "command":
+        return f"Segment: `{' '.join(hit.context.split())[:120]}`"
+    return f"Path: `{hit.context}`"
+
+
+def block_env_reach(noun: str, hit: Hit) -> int:
+    print(
+        f"Blocked by block_secret_reads hook (rule {hit.rule}): this {noun} {hit.reason}.\n"
+        f"{_block_context(noun, hit)}\n{hit.advice}\n{NO_RESHAPE}",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def block_secret_read(noun: str, hit: Hit) -> int:
     # The rule sits in parentheses on the first line so a parser can read it.
-    if noun == "command":
-        context = f"Segment: `{' '.join(hit.context.split())[:120]}`"
-    else:
-        context = f"Path: `{hit.context}`"
+    context = _block_context(noun, hit)
     print(
         f"Blocked by block_secret_reads hook (rule {hit.rule}): this {noun} {hit.reason}.\n"
         f"{context}\n"
