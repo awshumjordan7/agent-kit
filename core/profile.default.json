@@ -68,7 +68,8 @@
         "exclude_bullets": []
       }
     },
-    "auto_update": false
+    "auto_update": false,
+    "ask_register_projects": []
   },
   "recommendations": {
     "agents.scout.maxTurns": {"evidence": "126 of 314 runs reached 25 turns; p90 was 45", "confidence": "medium"},

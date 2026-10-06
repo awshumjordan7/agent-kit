@@ -13,6 +13,7 @@ doctor settings. Schema 1 rejects unknown keys so misspelled settings fail early
 | `ship_pr` | base branch overrides by `owner/repo` |
 | `doctor` | repository roots and Codex mirror settings; the mirror is always `~/.codex/AGENTS.md`, and `codex.agents_md` is ignored |
 | `auto_update` | allow the daily hook to apply available updates |
+| `ask_register_projects` | project folders whose `scripts/asks.py` the start hook and `handoff.py` run; each entry starts with `/` or `~`, and those two readers expand `~` when they read the list |
 
 Agent settings have two sources: the agent file's frontmatter and the profile's `agents.<name>` entry. At install
 the profile wins: each `model`, `maxTurns`, or `effort` it sets replaces the frontmatter value. An omitted key, or a
