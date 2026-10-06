@@ -15,10 +15,13 @@ MAX_TOTAL_CHARS = 8000
 
 
 def listed_projects() -> list[Path]:
-    layers_root = Path(os.environ.get("AISETUP_LAYERS_ROOT", "~/.ai-setup")).expanduser()
     try:
+        layers_root = Path(os.environ.get("AISETUP_LAYERS_ROOT", "~/.ai-setup")).expanduser()
+        # A relative root would read profile.json from whatever folder the session started in.
+        if not layers_root.is_absolute():
+            return []
         profile = json.loads((layers_root / "profile.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return []
     if not isinstance(profile, dict):
         return []
@@ -99,7 +102,7 @@ def _print_agenda(agenda: str, used: int) -> None:
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError, OSError):
+    except (OSError, ValueError):
         payload = {}
     cwd = payload.get("cwd") if isinstance(payload, dict) else None
     try:
@@ -110,7 +113,8 @@ def main() -> int:
     if project is None:
         return 0
     script = project / "scripts" / "asks.py"
-    if not script.is_file():
+    # Path.is_file() raises PermissionError on Python 3.12 when scripts/ cannot be searched.
+    if not os.path.isfile(script):
         _say(f"ask register: {script} not found")
         return 0
     used = 0

@@ -123,10 +123,13 @@ def _write_handoff_marker(session_name: str, state_path: Path, pids: set[int]) -
 
 
 def _ask_register_projects() -> list[Path]:
-    layers_root = Path(os.environ.get("AISETUP_LAYERS_ROOT", "~/.ai-setup")).expanduser()
     try:
+        layers_root = Path(os.environ.get("AISETUP_LAYERS_ROOT", "~/.ai-setup")).expanduser()
+        # A relative root would read profile.json from whatever folder handoff.py was called from.
+        if not layers_root.is_absolute():
+            return []
         profile = json.loads((layers_root / "profile.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return []
     if not isinstance(profile, dict):
         return []
@@ -160,7 +163,8 @@ def _ask_register_refusal(state_path: Path, cwd: Path) -> str | None:
     if project is None:
         return None
     script = project / "scripts" / "asks.py"
-    if not script.is_file():
+    # Path.is_file() raises PermissionError on Python 3.12 when scripts/ cannot be searched.
+    if not os.path.isfile(script):
         sys.stderr.write(f"handoff.py: ask register not checked: {script} not found\n")
         return None
     try:
