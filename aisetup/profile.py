@@ -29,6 +29,7 @@ TOP_LEVEL_KEYS = {
     "ship_pr",
     "doctor",
     "auto_update",
+    "ask_register_projects",
 }
 LAYER_KEYS = {"path", "commit", "track"}
 AGENT_KEYS = {"model", "maxTurns", "effort"}
@@ -187,6 +188,13 @@ def validate_profile(profile: dict[str, Any]) -> None:
         raise ProfileError("profile.doctor.metrics values must be strings or null")
     if not isinstance(profile.get("auto_update"), bool):
         raise ProfileError("profile.auto_update must be a boolean")
+    ask_register_projects = profile.get("ask_register_projects", [])
+    if not isinstance(ask_register_projects, list) or not all(
+        isinstance(item, str) for item in ask_register_projects
+    ):
+        raise ProfileError("profile.ask_register_projects must be an array of strings")
+    if not all(item.startswith(("/", "~")) for item in ask_register_projects):
+        raise ProfileError("profile.ask_register_projects entries must start with / or ~")
     if "installed_at" in profile and not isinstance(profile["installed_at"], str):
         raise ProfileError("profile.installed_at must be a string")
 
