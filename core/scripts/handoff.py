@@ -15,6 +15,11 @@ from datetime import datetime, timedelta, timezone
 from difflib import unified_diff
 from pathlib import Path
 
+# user_log.py sits next to this file in both the repo and the installed layout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import user_log
+
 USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>] [--transcript <path>] [--dry-run]"
 POLL_INTERVAL_SECONDS = 1
 START_TIMEOUT_SECONDS = 20
@@ -348,6 +353,22 @@ def _same_entry(key: str, reference: str) -> bool:
     return key.startswith(reference) or reference.startswith(key)
 
 
+def _user_log_sync(run_dir: Path, transcript: Path | None) -> None:
+    """Bring user-log.md up to date before the checks read it; warns, never refuses."""
+    if transcript is None:
+        transcript = user_log.latest_transcript(run_dir)
+    if transcript is None:
+        sys.stderr.write(
+            "handoff.py: user log not synced: no --transcript given and no transcript "
+            "synced for this run yet\n"
+        )
+        return
+    if not transcript.is_file():
+        sys.stderr.write(f"handoff.py: user log not synced: transcript not found: {transcript}\n")
+        return
+    user_log.sync(transcript, run_dir)
+
+
 def _goal_change_report(goal_lines: list[str], checkpoint: dict, record: dict) -> str | None:
     """Return a diff of the Goal section against the previous handoff's snapshot; never refuses."""
     snapshot = checkpoint.get("goal_snapshot")
@@ -593,6 +614,7 @@ def _run_handoff(
         bullet.startswith("- [answered") for bullet in question_bullets
     )
     run_dir = state_path.parent
+    _user_log_sync(run_dir, transcript)
     checkpoint = _load_checkpoint(run_dir)
     goal_lines = [line.strip() for line in sections[GOAL_HEADING] if line.strip()]
     entries = _read_user_log(run_dir)
