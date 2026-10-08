@@ -10,7 +10,10 @@ A Codex session gets its inputs inline and a numeric budget. It reads the reposi
 confirm a named `file:line`, with ranged reads. It never gets "read these files in full".
 Stall timeout is 300 s (`stallTimeoutSeconds`), the same for the run and `watch`. A session counts
 as stalled only when neither its event log nor its Codex rollout file (which grows with reasoning)
-changed for that long. `watch` always runs in the background so a stall surfaces as a notification,
+changed for that long. Each `watch` call restarts the idle count, so its own stall exit (75) needs
+`--max-wait` above the stall timeout (`CODEX_STARTED` prints `--max-wait 2400`); the run's
+watchdog, which kills a stalled session and writes `<log>.failed`, is the primary stall detector.
+`watch` always runs in the background so a stall surfaces as a notification,
 never as a silent hang.
 
 - `references/codex-prompt-contract.md` is prepended to every prompt by `codex-exec.sh`

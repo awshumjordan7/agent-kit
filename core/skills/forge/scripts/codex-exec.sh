@@ -51,7 +51,10 @@
 # idle when neither the event log nor Codex's rollout file (sessions/.../rollout-*-<thread>.jsonl
 # under CODEX_HOME, which grows with each reasoning item) changed size or mtime; any change
 # resets the count. Until the rollout file appears, the event log alone decides. The timeout is
-# FORGE_CODEX_STALL_TIMEOUT, then --stall, then codex.stallTimeoutSeconds, then 600 s.
+# --stall, then FORGE_CODEX_STALL_TIMEOUT, then codex.stallTimeoutSeconds, then 600 s.
+# Each watch call restarts the idle count, so watch's own stall exit (75) needs --max-wait above
+# the stall timeout (CODEX_STARTED prints --max-wait 2400). The start/resume watchdog, which kills
+# a stalled session and writes <log>.failed, is the primary stall detector.
 # On a start/resume stall:
 #   - stall at ZERO progress (no item.completed events — the resume-wedge
 #     signature): the process is killed, the log rotated to <log>.stalled, and the
@@ -232,8 +235,8 @@ usage_line() {
     jq -r '"tool_calls=\(.calls) tool_output_kb=\((.bytes / 1024) | floor) tokens_in=\(.usage.input_tokens // "n/a") tokens_cached=\(.usage.cached_input_tokens // "n/a") tokens_out=\(.usage.output_tokens // "n/a") tokens_reasoning=\(.usage.reasoning_output_tokens // "n/a")"' <<<"$1"
 }
 abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac; }
-log_sig() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+log_sig() { local s; s=$(stat -f '%m %z' "$1" 2>/dev/null) || s=$(stat -c '%Y %s' "$1" 2>/dev/null) || s=0; printf '%s\n' "$s"; }
+mtime() { local s; s=$(stat -f %m "$1" 2>/dev/null) || s=$(stat -c %Y "$1" 2>/dev/null) || s=0; printf '%s\n' "$s"; }
 thread_id_from_log() { jq -r 'select(.type == "thread.started") | .thread_id' "$LOG" 2>/dev/null | head -1 || true; }
 find_rollout() {
     # $1 = thread id. Prints Codex's own session (rollout) file for it, or nothing if it does not exist yet.
@@ -288,7 +291,7 @@ if [ "$MODE" = "stats" ]; then
     exit 0
 fi
 
-# Watch and start/resume use the same stall timeout: env, then --stall, then config, then 600.
+# Watch and start/resume use the same stall timeout: --stall, then env, then config, then 600.
 [ -n "$STALL_TIMEOUT" ] || STALL_TIMEOUT="$(resolve_config '.codex.stallTimeoutSeconds')"
 STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
 
@@ -319,7 +322,7 @@ if [ "$MODE" = "watch" ]; then
             exit 10
         fi
         sleep "$POLL_INTERVAL"
-        [ -n "$rollout_file" ] || rollout_file="$(find_rollout "$(thread_id_from_log)")"
+        rollout_file="$(find_rollout "$(thread_id_from_log)")"
         if stall_tick "$rollout_file"; then
             echo "WATCH_STALLED no event-log or rollout change for ${STALL_TIMEOUT}s (log=$LOG)" >&2
             exit 75
