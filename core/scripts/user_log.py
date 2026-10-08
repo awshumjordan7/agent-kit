@@ -38,8 +38,12 @@ RECENT_LIMIT = 20
 PENDING_LIMIT = 50
 GOAL_PREFIX = "GOAL:"
 INTERRUPT_PREFIX = "[Request interrupted"
-# Harness-generated turns start with a tag such as <task-notification> or <command-name>.
-HARNESS_PREFIX = "<"
+# Harness-generated user turns start with one of these tags.
+HARNESS_TAG = re.compile(
+    r"^<(?:task-notification|cross-session-message|command-name|command-message|command-args"
+    r"|local-command-stdout|local-command-stderr|local-command-caveat|bash-input|bash-stdout"
+    r"|bash-stderr|user-prompt-submit-hook)\b"
+)
 RESUME_PROMPT = re.compile(r"^Read \S*STATE\.md and continue from it\b")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 # handoff.py starts a new log entry at any line shaped like an entry header.
@@ -54,7 +58,8 @@ SECRET_PATTERNS = (
     re.compile(r"\beyJ[\w-]+\.eyJ[\w-]+(?:\.[\w-]+)?"),
 )
 ASSIGNED_SECRET = re.compile(
-    r"(?i)\b((?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)['\"]?[^\s'\"]{4,}['\"]?"
+    r"(?i)\b((?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)"
+    r"(?:\"[^\"\n]*\"?|'[^'\n]*'?|[^\s'\"]+)"
 )
 LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
 
@@ -66,8 +71,8 @@ def redact(text: str) -> str:
 
     def long_token(match: re.Match[str]) -> str:
         token = match.group(0)
-        # Hex ids, uuids and paths are long but not secret.
-        if re.fullmatch(r"[0-9a-f-]+", token) or token.strip("/").count("/") > 1:
+        # Hex ids, uuids and absolute paths are long but not secret.
+        if re.fullmatch(r"[0-9a-f-]+", token) or token.startswith("/"):
             return token
         mixed = (
             re.search(r"[a-z]", token) and re.search(r"[A-Z]", token) and re.search(r"\d", token)
@@ -126,7 +131,7 @@ def _content_text(content: object) -> str | None:
 
 
 def _is_human_text(text: str | None) -> bool:
-    return bool(text) and not text.startswith((HARNESS_PREFIX, INTERRUPT_PREFIX))
+    return bool(text) and not HARNESS_TAG.match(text) and not text.startswith(INTERRUPT_PREFIX)
 
 
 def _user_text(line: dict) -> str | None:
@@ -201,6 +206,7 @@ class Sync:
             for item in transcripts.values()
             if isinstance(item, dict) and isinstance(item.get("ids"), list)
             for ident in item["ids"]
+            if isinstance(ident, str)
         }
         self.entries: list[Entry] = []
         self.parse_errors = 0
@@ -355,8 +361,11 @@ def _locked(run_dir: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def sync(transcript: Path, run_dir: Path, session_id: str | None = None) -> int:
-    """Append new user entries from transcript to the run dir's log; return how many."""
+def sync(transcript: Path, run_dir: Path, session_id: str | None = None) -> int | None:
+    """Append new user entries from transcript to the run dir's log.
+
+    Return how many, or None when the sync failed.
+    """
     transcript = transcript.expanduser().resolve()
     run_dir = run_dir.expanduser().resolve()
     session_id = session_id or transcript.stem
@@ -381,7 +390,7 @@ def sync(transcript: Path, run_dir: Path, session_id: str | None = None) -> int:
             _write_json(run_dir / SESSIONS_NAME, sessions)
     except OSError as error:
         sys.stderr.write(f"user_log.py: sync of {transcript} failed: {error}\n")
-        return 0
+        return None
     if reader.parse_errors:
         sys.stderr.write(
             f"user_log.py: skipped {reader.parse_errors} unparseable line(s) in {transcript}\n"
@@ -423,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"user_log.py: run dir not found: {arguments.run_dir}\n")
         return 1
     count = sync(arguments.transcript, arguments.run_dir, arguments.session)
+    if count is None:
+        return 1
     sys.stdout.write(f"user_log.py: {count} new entries\n")
     return 0
 

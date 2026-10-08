@@ -4,7 +4,7 @@ Updated: <ISO timestamp>   Session: <n>   Lane: <build|review>
 Read this file first. Do not read plan.md, the Codex logs, or other run-dir files unless a step below points at them.
 ## Goal and standing rules
 - <YYYY-MM-DD> "<the user's words, verbatim>" (<source: session8 or relay name>)
-- Handoff: manual (<date>, "<the user's words>")   (optional; only when the user asked to hand off themselves)
+  (optional, only when the user asked to hand off themselves: add the bullet - Handoff: manual (<date>, "<the user's words>"))
 ## Open questions to the user
 - [open] <YYYY-MM-DD> <question>
 - [answered <YYYY-MM-DD>] <question> -> "<the user's answer, verbatim>"

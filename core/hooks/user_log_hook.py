@@ -14,14 +14,22 @@ from pathlib import Path
 # The installer copies hooks/ and scripts/ side by side, as they sit in the repo.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from run_dir import resolve_run_dir
-from user_log import sync
+try:
+    from run_dir import resolve_run_dir
+    from user_log import sync
+except ImportError as error:
+    resolve_run_dir = sync = None
+    IMPORT_ERROR = str(error)
 
 
 def main() -> int:
+    if sync is None:
+        sys.stderr.write(f"user_log_hook.py: scripts not importable: {IMPORT_ERROR}\n")
+        return 0
     try:
         payload = json.load(sys.stdin)
-    except (ValueError, OSError):
+    except (ValueError, OSError) as error:
+        sys.stderr.write(f"user_log_hook.py: unreadable hook payload: {error}\n")
         return 0
     if not isinstance(payload, dict) or payload.get("agent_id"):
         return 0
@@ -33,7 +41,10 @@ def main() -> int:
     run_dir = resolve_run_dir(cwd if isinstance(cwd, str) else None, transcript_path)
     if run_dir is None:
         return 0
-    sync(Path(transcript_path), run_dir, session_id if isinstance(session_id, str) else None)
+    try:
+        sync(Path(transcript_path), run_dir, session_id if isinstance(session_id, str) else None)
+    except (TypeError, ValueError) as error:
+        sys.stderr.write(f"user_log_hook.py: sync failed: {error}\n")
     return 0
 
 

@@ -5,11 +5,12 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 METRICS_NAME = "drift-metrics.jsonl"
 REVIEW_DONE_NAME = "drift-review-done"
+REVIEW_CYCLE_NAME = "drift-review-cycle-start"
 
 
 def _drift_state_dir() -> Path:
@@ -80,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "--reset-review",
         action="store_true",
-        help="delete the review record to start a new review cycle",
+        help="delete the review record and start a new review cycle from now",
     )
     parser.add_argument("--file", type=Path, help="metrics file (default: the global one)")
     args = parser.parse_args(argv)
@@ -97,9 +98,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.reset_review:
         try:
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / REVIEW_CYCLE_NAME).write_text(
+                datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8"
+            )
             done.unlink(missing_ok=True)
         except OSError as error:
-            sys.stderr.write(f"drift_report.py: failed to delete {done}: {error}\n")
+            sys.stderr.write(f"drift_report.py: failed to reset the review cycle: {error}\n")
             return 1
         sys.stdout.write("review cycle reset\n")
         return 0

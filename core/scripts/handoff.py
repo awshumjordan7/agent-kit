@@ -15,10 +15,11 @@ from datetime import datetime, timedelta, timezone
 from difflib import unified_diff
 from pathlib import Path
 
-# user_log.py sits next to this file in both the repo and the installed layout.
+# user_log.py and drift_report.py sit next to this file in both the repo and the installed layout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import user_log
+from drift_report import METRICS_NAME, REVIEW_CYCLE_NAME, REVIEW_DONE_NAME, _drift_state_dir
 
 USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>] [--transcript <path>] [--dry-run]"
 POLL_INTERVAL_SECONDS = 1
@@ -32,8 +33,6 @@ NEXT_HEADING = "## Next"
 REQUIRED_HEADINGS = (GOAL_HEADING, QUESTIONS_HEADING)
 CHECKPOINT_NAME = ".handoff-checkpoint.json"
 USER_LOG_NAME = "user-log.md"
-METRICS_NAME = "drift-metrics.jsonl"
-REVIEW_DONE_NAME = "drift-review-done"
 MATCH_PREFIX_CHARS = 60
 PROMPT_UNREFLECTED_LIMIT = 10
 REVIEW_LAUNCH_COUNT = 10
@@ -353,7 +352,7 @@ def _same_entry(key: str, reference: str) -> bool:
     return key.startswith(reference) or reference.startswith(key)
 
 
-def _user_log_sync(run_dir: Path, transcript: Path | None) -> None:
+def _user_log_sync(run_dir: Path, transcript: Path | None) -> bool:
     """Bring user-log.md up to date before the checks read it; warns, never refuses."""
     if transcript is None:
         transcript = user_log.latest_transcript(run_dir)
@@ -362,11 +361,11 @@ def _user_log_sync(run_dir: Path, transcript: Path | None) -> None:
             "handoff.py: user log not synced: no --transcript given and no transcript "
             "synced for this run yet\n"
         )
-        return
+        return False
     if not transcript.is_file():
         sys.stderr.write(f"handoff.py: user log not synced: transcript not found: {transcript}\n")
-        return
-    user_log.sync(transcript, run_dir)
+        return False
+    return user_log.sync(transcript, run_dir) is not None
 
 
 def _goal_change_report(goal_lines: list[str], checkpoint: dict, record: dict) -> str | None:
@@ -396,7 +395,7 @@ def _unreflected_messages_warning(
     """Return one line naming log entries since the previous handoff that STATE.md lacks."""
     if entries is None:
         sys.stderr.write(
-            f"handoff.py: user messages not checked: log not synced ({USER_LOG_NAME} not found)\n"
+            "handoff.py: user messages not checked: log not synced\n"
         )
         return None
     seen = set(checkpoint.get("user_log_uuids_seen") or [])
@@ -496,10 +495,6 @@ def _advance_checkpoint(
         sys.stderr.write(f"handoff.py: failed to write {path}: {error}\n")
 
 
-def _drift_state_dir() -> Path:
-    return Path(os.environ.get("DRIFT_STATE_DIR") or "~/.claude/state").expanduser()
-
-
 def _write_metrics(run_dir: Path | None, session_name: str, record: dict) -> None:
     line = json.dumps(
         {
@@ -526,6 +521,12 @@ def _review_reminder() -> str | None:
     if (state_dir / REVIEW_DONE_NAME).exists():
         return None
     try:
+        cycle_start = datetime.fromisoformat(
+            (state_dir / REVIEW_CYCLE_NAME).read_text(encoding="utf-8").strip()
+        )
+    except (OSError, ValueError):
+        cycle_start = None
+    try:
         lines = (state_dir / METRICS_NAME).read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
@@ -538,6 +539,14 @@ def _review_reminder() -> str | None:
             continue
         if not isinstance(item, dict):
             continue
+        if cycle_start is not None:
+            # A naive or malformed ts raises TypeError or ValueError; such lines are kept.
+            try:
+                before_cycle = datetime.fromisoformat(item.get("ts")) < cycle_start
+            except (TypeError, ValueError):
+                before_cycle = False
+            if before_cycle:
+                continue
         if first_ts is None and isinstance(item.get("ts"), str):
             first_ts = item["ts"]
         if item.get("outcome") == "launched":
@@ -614,10 +623,10 @@ def _run_handoff(
         bullet.startswith("- [answered") for bullet in question_bullets
     )
     run_dir = state_path.parent
-    _user_log_sync(run_dir, transcript)
+    synced = _user_log_sync(run_dir, transcript)
     checkpoint = _load_checkpoint(run_dir)
     goal_lines = [line.strip() for line in sections[GOAL_HEADING] if line.strip()]
-    entries = _read_user_log(run_dir)
+    entries = _read_user_log(run_dir) if synced else None
     goal_report = _goal_change_report(goal_lines, checkpoint, record)
     if goal_report:
         sys.stdout.write(goal_report)

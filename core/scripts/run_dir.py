@@ -5,8 +5,12 @@ import re
 from pathlib import Path
 
 STATE_PATH_PATTERN = re.compile(r"(?:~|/)[^\s'\"`<>]*STATE\.md")
-# Harness-generated user turns start with a tag such as <task-notification> or <command-name>.
-HARNESS_PREFIX = "<"
+# Harness-generated user turns start with one of these tags.
+HARNESS_TAG = re.compile(
+    r"^<(?:task-notification|cross-session-message|command-name|command-message|command-args"
+    r"|local-command-stdout|local-command-stderr|local-command-caveat|bash-input|bash-stdout"
+    r"|bash-stderr|user-prompt-submit-hook)\b"
+)
 
 
 def _message_text(entry: dict) -> str | None:
@@ -33,7 +37,7 @@ def _message_text(entry: dict) -> str | None:
     else:
         return None
     text = text.strip()
-    if not text or text.startswith(HARNESS_PREFIX):
+    if not text or HARNESS_TAG.match(text):
         return None
     return text
 
