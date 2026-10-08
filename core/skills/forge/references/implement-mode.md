@@ -35,8 +35,8 @@ on the top-level model; that was the most expensive path in the skill.
      - gate mode `none`:
        `gate.sh --repo <repo> --run-dir <runDir> --label phase-<n> --no-stages --files <changed> --commit "<msg>"`.
        It runs no tests and commits.
-   - Never pass `--push`. A failed gate sends its output back to the implementer (resume the
-     Codex thread, or a new `claude-implementer` turn) and re-sends the order. A phase gets at
+   - Never pass `--push`. A failed gate sends its output back to the implementer (a new
+     `claude-implementer` turn) and re-sends the order. A phase gets at
      most `MAX_FIX_ROUNDS` (2) fix rounds; then the phase stops. Never skip a gate to reach the
      next phase.
 5. After the last phase: `git status --porcelain` and a one-screen summary per phase

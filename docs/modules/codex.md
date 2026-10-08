@@ -1,7 +1,7 @@
 # Codex
 
-Disabled by default. Installs the Codex collaboration contract and configuration under `~/.codex` and switches
-forge implementation and review roles to their configured Codex models.
+Disabled by default. Installs the Codex collaboration contract and configuration under `~/.codex`. Forge review and
+plan review run through Codex when their role's provider is `codex`; implementation always uses the `claude-implementer` agent.
 
 Codex reads its global `AGENTS.md` only from `$CODEX_HOME` (default `~/.codex`). Install, update, and doctor's
 `codex-agents-sync` check always use `~/.codex/AGENTS.md`. The old `doctor.codex.agents_md` profile setting still

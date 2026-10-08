@@ -140,8 +140,8 @@ if (PARAMS.checkpointDecision && !['ship', 'smoke', 'qa'].includes(PARAMS.checkp
   throw new Error(`unsupported checkpointDecision: ${PARAMS.checkpointDecision}; allowed values are ship, smoke, qa`)
 }
 
-// Spawns one phase adds: implement, a possible Codex wrapper retry, commit, phases.json write, gate.
-const PHASE_SPAWNS = 5
+// Spawns one phase adds: implement, commit, phases.json write, gate.
+const PHASE_SPAWNS = 4
 // Spawns a phased run adds once: phases.json read, branch switch, resume file scan, final phases.json write.
 const PHASED_RUN_SPAWNS = 4
 const GATE_CHECKOUT = `${PARAMS.runDir}/gate-checkout`
@@ -1479,8 +1479,7 @@ async function reviewPanel(context) {
   return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed: [...ruled.applied, ...partitioned.fix], failures, returned: present.length }
 }
 
-// The applier gets only the decider's fix items, already verified, so it applies them without
-// re-triage. The applier is the claude-implementer agent.
+// The applier gets only the decider's fix items, already verified, so it applies them without re-triage.
 async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
   const { round, planPhase, diffStat } = extra
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
