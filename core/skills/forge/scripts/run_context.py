@@ -621,19 +621,18 @@ def checkpoint_facts(run_dir: Path, plan_file: Path) -> dict:
     saved_plan = facts["planSha256"]
     facts["planChanged"] = bool(saved_plan) and saved_plan != (_sha256(plan_file) or "")
     facts["error"] = error
-    # Empty branch and phases are left out: forge-core.js drops them before it recomputes the
-    # digest, because an echoing agent drops or invents empty optional fields.
+    # The facts schema requires branch and phases, so both are printed, empty when the file has
+    # none; forge-core.js drops the empty ones after it checks the digest.
     branch = document.get("branch")
-    if isinstance(branch, str) and branch:
-        facts["branch"] = branch
+    facts["branch"] = branch if isinstance(branch, str) else ""
     rows = document.get("phases")
-    if isinstance(rows, list) and rows:
-        # Facts hold no null, so a phase without a sha or a gate carries an empty string.
-        facts["phases"] = [
-            {key: str(values.get(key) or "") for key in ("id", "title", "sha", "gate")}
-            for values in rows
-            if isinstance(values, dict)
-        ]
+    rows = rows if isinstance(rows, list) else []
+    # Facts hold no null, so a phase without a sha or a gate carries an empty string.
+    facts["phases"] = [
+        {key: str(values.get(key) or "") for key in ("id", "title", "sha", "gate")}
+        for values in rows
+        if isinstance(values, dict)
+    ]
     return _checked(facts)
 
 
