@@ -10,15 +10,44 @@ import subprocess
 import sys
 import time
 import xml.parsers.expat
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from difflib import unified_diff
 from pathlib import Path
 
-USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>]"
+USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>] [--transcript <path>] [--dry-run]"
 POLL_INTERVAL_SECONDS = 1
 START_TIMEOUT_SECONDS = 20
 STATE_MAX_AGE_SECONDS = 120
 ASK_REGISTER_CHECK_TIMEOUT_SECONDS = 10
 ASK_REGISTER_REASON_LINES = 10
+GOAL_HEADING = "## Goal and standing rules"
+QUESTIONS_HEADING = "## Open questions to the user"
+NEXT_HEADING = "## Next"
+REQUIRED_HEADINGS = (GOAL_HEADING, QUESTIONS_HEADING)
+CHECKPOINT_NAME = ".handoff-checkpoint.json"
+USER_LOG_NAME = "user-log.md"
+METRICS_NAME = "drift-metrics.jsonl"
+REVIEW_DONE_NAME = "drift-review-done"
+MATCH_PREFIX_CHARS = 60
+PROMPT_UNREFLECTED_LIMIT = 10
+REVIEW_LAUNCH_COUNT = 10
+REVIEW_AGE_DAYS = 21
+REVIEW_REMINDER = (
+    "Drift-fix review due: run `python3 ~/.claude/scripts/drift_report.py`, "
+    "then `python3 ~/.claude/scripts/drift_report.py --mark-reviewed`"
+)
+LOG_HEADER = re.compile(r"^### (\S+) (\S+) (\S+) (\S+)(.*)$")
+RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
+ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
+METRIC_COUNT_KEYS = (
+    "log_entries_since_last",
+    "unreflected",
+    "open_questions",
+    "answered_questions",
+    "goal_changed",
+    "mow_candidates",
+)
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -203,9 +232,335 @@ def _ask_register_refusal(state_path: Path, cwd: Path) -> str | None:
     return None
 
 
-def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
+@dataclass
+class LogEntry:
+    key: str
+    channel: str
+    text: str
+    resend_of: str | None
+
+
+def _normalise(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _sections(state_text: str) -> dict[str, list[str]]:
+    """Map each `## ` heading to its lines; `#` and `##` headings end a section, `###` does not."""
+    sections: dict[str, list[str]] = {}
+    current = None
+    for line in state_text.splitlines():
+        stripped = line.rstrip()
+        if re.match(r"^#{1,2} ", stripped):
+            current = stripped if stripped.startswith("## ") else None
+            if current is not None:
+                sections.setdefault(current, [])
+        elif current is not None:
+            sections[current].append(stripped)
+    return sections
+
+
+def _bullets(lines: list[str]) -> list[str]:
+    return [line.strip() for line in lines if line.lstrip().startswith("- ")]
+
+
+def _answered_questions(sections: dict[str, list[str]]) -> list[str]:
+    questions = []
+    for bullet in _bullets(sections.get(QUESTIONS_HEADING, [])):
+        match = ANSWERED_QUESTION.match(bullet)
+        if match:
+            questions.append(_normalise(match.group(1)))
+    return questions
+
+
+def _required_sections_refusal(sections: dict[str, list[str]]) -> str | None:
+    """Return the refusal text when a required STATE.md section is missing or has no bullet."""
+    missing = [heading for heading in REQUIRED_HEADINGS if not _bullets(sections.get(heading, []))]
+    if not missing:
+        return None
+    return "\n".join(
+        [
+            "handoff.py: STATE.md lacks required sections (missing heading or no bullet):",
+            *(f"  {heading}" for heading in missing),
+            "Add each one from the user's own words, quoted verbatim, never paraphrased; "
+            "write `- None` under the open questions heading when there are none. "
+            "The format is in ~/.claude/references/state-template.md. Then rerun handoff.py.",
+        ]
+    ) + "\n"
+
+
+def _load_checkpoint(run_dir: Path) -> dict:
+    path = run_dir / CHECKPOINT_NAME
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        sys.stderr.write(f"handoff.py: ignoring unreadable {path}: {error}\n")
+        return {}
+    return checkpoint if isinstance(checkpoint, dict) else {}
+
+
+def _read_user_log(run_dir: Path) -> list[LogEntry] | None:
+    path = run_dir / USER_LOG_NAME
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        sys.stderr.write(f"handoff.py: failed to read {path}: {error}\n")
+        return None
+    entries: list[LogEntry] = []
+    header: re.Match[str] | None = None
+    body: list[str] = []
+
+    def flush() -> None:
+        if header is None:
+            return
+        label = RESEND_LABEL.search(header.group(5))
+        lines = list(body)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if label is None and lines and RESEND_LABEL.fullmatch(lines[0].strip()):
+            label = RESEND_LABEL.fullmatch(lines.pop(0).strip())
+        entries.append(
+            LogEntry(
+                key=header.group(4),
+                channel=header.group(3),
+                text="\n".join(lines).strip(),
+                resend_of=label.group(1) if label else None,
+            )
+        )
+
+    for line in text.splitlines():
+        match = LOG_HEADER.match(line)
+        if match:
+            flush()
+            header = match
+            body = []
+        elif header is not None:
+            body.append(line)
+    flush()
+    return entries
+
+
+def _same_entry(key: str, reference: str) -> bool:
+    """A log header carries a short uuid while a resend label may carry the full one."""
+    return key.startswith(reference) or reference.startswith(key)
+
+
+def _goal_change_report(goal_lines: list[str], checkpoint: dict, record: dict) -> str | None:
+    """Return a diff of the Goal section against the previous handoff's snapshot; never refuses."""
+    snapshot = checkpoint.get("goal_snapshot")
+    if not isinstance(snapshot, list):
+        return None
+    record["goal_changed"] = snapshot != goal_lines
+    if not record["goal_changed"]:
+        return None
+    diff = unified_diff(
+        snapshot, goal_lines, "goal at previous handoff", "goal now", lineterm=""
+    )
+    return (
+        "handoff.py: the Goal and standing rules section changed since the previous handoff; "
+        "check that no rule was paraphrased or dropped:\n" + "\n".join(diff) + "\n"
+    )
+
+
+def _unreflected_messages_warning(
+    entries: list[LogEntry] | None,
+    checkpoint: dict,
+    state_text: str,
+    run_dir: Path,
+    record: dict,
+) -> str | None:
+    """Return one line naming log entries since the previous handoff that STATE.md lacks."""
+    if entries is None:
+        sys.stderr.write(
+            f"handoff.py: user messages not checked: log not synced ({USER_LOG_NAME} not found)\n"
+        )
+        return None
+    seen = set(checkpoint.get("user_log_uuids_seen") or [])
+    since = [entry for entry in entries if entry.key not in seen]
+    record["log_entries_since_last"] = len(since)
+    state_haystack = _normalise(state_text)
+    try:
+        decisions = (run_dir / "decisions.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        decisions = ""
+    full_haystack = state_haystack + " " + _normalise(decisions)
+    unreflected = []
+    for index, entry in enumerate(since):
+        later = since[index + 1 :]
+        # Only the latest message of a resend chain has to be recorded.
+        if any(item.resend_of and _same_entry(entry.key, item.resend_of) for item in later):
+            continue
+        if entry.channel == "ask":
+            answers = [line[2:] for line in entry.text.splitlines() if line.startswith("A:")]
+            needle = _normalise(" ".join(answers))[:MATCH_PREFIX_CHARS]
+            haystack = state_haystack
+        else:
+            needle = _normalise(entry.text)[:MATCH_PREFIX_CHARS]
+            haystack = full_haystack
+        if needle and needle not in haystack:
+            unreflected.append(entry)
+    record["unreflected"] = len(unreflected)
+    if not unreflected:
+        return None
+    shown = [
+        f'{entry.key[:8]} "{_normalise(entry.text)[:MATCH_PREFIX_CHARS]}"'
+        for entry in unreflected[:PROMPT_UNREFLECTED_LIMIT]
+    ]
+    more = len(unreflected) - len(shown)
+    suffix = f" | and {more} more in {USER_LOG_NAME}" if more else ""
+    return f"Check these were recorded in STATE.md: {' | '.join(shown)}{suffix}"
+
+
+def _mow_list(sections: dict[str, list[str]], checkpoint: dict, record: dict) -> str | None:
+    """Return answered questions kept for a full handoff and DONE Next items; never edits."""
+    seen = set(checkpoint.get("answered_questions_seen") or [])
+    stale = [question for question in _answered_questions(sections) if question in seen]
+    done = [
+        line.strip()
+        for line in sections.get(NEXT_HEADING, [])
+        if re.search(r"\bDONE\b", line)
+    ]
+    record["mow_candidates"] = len(stale) + len(done)
+    if not stale and not done:
+        return None
+    lines = [
+        "handoff.py: Close these in STATE.md "
+        "(answered at the previous handoff, or DONE in Next):"
+    ]
+    lines += [f"  - answered: {question}" for question in stale]
+    lines += [f"  - next: {item}" for item in done]
+    return "\n".join(lines) + "\n"
+
+
+def _summary_line(record: dict) -> str:
+    def show(key: str) -> str:
+        value = record.get(key)
+        if value is None:
+            return "not checked"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        return str(value)
+
+    return (
+        f"Drift check: {show('log_entries_since_last')} user-log entries since the previous "
+        f"handoff, {show('unreflected')} unreflected, {show('open_questions')} open and "
+        f"{show('answered_questions')} answered questions, goal changed: {show('goal_changed')}."
+    )
+
+
+def _advance_checkpoint(
+    run_dir: Path,
+    checkpoint: dict,
+    entries: list[LogEntry] | None,
+    answered: list[str],
+    goal_lines: list[str],
+) -> None:
+    seen = set(checkpoint.get("user_log_uuids_seen") or [])
+    seen.update(entry.key for entry in entries or [])
+    data = {
+        "last_handoff_ts": datetime.now(timezone.utc).isoformat(),
+        "user_log_uuids_seen": sorted(seen),
+        "answered_questions_seen": answered,
+        "goal_snapshot": goal_lines,
+    }
+    path = run_dir / CHECKPOINT_NAME
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    except OSError as error:
+        sys.stderr.write(f"handoff.py: failed to write {path}: {error}\n")
+
+
+def _drift_state_dir() -> Path:
+    return Path(os.environ.get("DRIFT_STATE_DIR") or "~/.claude/state").expanduser()
+
+
+def _write_metrics(run_dir: Path | None, session_name: str, record: dict) -> None:
+    line = json.dumps(
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "run_dir": str(run_dir) if run_dir else None,
+            "session": session_name,
+            **record,
+        }
+    )
+    targets = [_drift_state_dir() / METRICS_NAME]
+    if run_dir is not None:
+        targets.append(run_dir / METRICS_NAME)
+    for target in targets:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError as error:
+            sys.stderr.write(f"handoff.py: failed to write drift metrics to {target}: {error}\n")
+
+
+def _review_reminder() -> str | None:
+    state_dir = _drift_state_dir()
+    if (state_dir / REVIEW_DONE_NAME).exists():
+        return None
+    try:
+        lines = (state_dir / METRICS_NAME).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    launched = 0
+    first_ts = None
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        if first_ts is None and isinstance(item.get("ts"), str):
+            first_ts = item["ts"]
+        if item.get("outcome") == "launched":
+            launched += 1
+    due = launched >= REVIEW_LAUNCH_COUNT
+    if not due and first_ts:
+        try:
+            first = datetime.fromisoformat(first_ts)
+        except ValueError:
+            first = None
+        if first is not None and first.tzinfo is not None:
+            due = datetime.now(timezone.utc) - first >= timedelta(days=REVIEW_AGE_DAYS)
+    return REVIEW_REMINDER if due else None
+
+
+def handoff(
+    state_path: Path,
+    session_name: str,
+    cwd: Path,
+    transcript: Path | None = None,
+    dry_run: bool = False,
+) -> int:
+    record: dict = {"outcome": "error", **dict.fromkeys(METRIC_COUNT_KEYS)}
+    run_dir = state_path.parent if state_path.is_file() else None
+    try:
+        return _run_handoff(state_path, session_name, cwd, transcript, dry_run, record)
+    finally:
+        _write_metrics(run_dir, session_name, record)
+        reminder = _review_reminder()
+        if reminder:
+            sys.stdout.write(f"{reminder}\n")
+
+
+def _run_handoff(
+    state_path: Path,
+    session_name: str,
+    cwd: Path,
+    transcript: Path | None,
+    dry_run: bool,
+    record: dict,
+) -> int:
     if not state_path.is_file():
         sys.stderr.write(f"handoff.py: STATE.md not found: {state_path}\n")
+        record["outcome"] = "refused:missing-state"
         return 1
     age = time.time() - state_path.stat().st_mtime
     if age > STATE_MAX_AGE_SECONDS:
@@ -213,16 +568,57 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
             f"handoff.py: STATE.md is {int(age)}s old (limit {STATE_MAX_AGE_SECONDS}s); "
             "rewrite it, then rerun handoff.py in a later tool call\n"
         )
+        record["outcome"] = "refused:stale-state"
         return 1
     refusal = _ask_register_refusal(state_path, cwd)
     if refusal:
         sys.stderr.write(refusal)
+        record["outcome"] = "refused:ask-register"
+        return 3
+    try:
+        state_text = state_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        sys.stderr.write(f"handoff.py: failed to read STATE.md: {error}\n")
+        record["outcome"] = "refused:missing-state"
         return 1
+    sections = _sections(state_text)
+    refusal = _required_sections_refusal(sections)
+    if refusal:
+        sys.stderr.write(refusal)
+        record["outcome"] = "refused:sections"
+        return 1
+    question_bullets = _bullets(sections[QUESTIONS_HEADING])
+    record["open_questions"] = sum(bullet.startswith("- [open]") for bullet in question_bullets)
+    record["answered_questions"] = sum(
+        bullet.startswith("- [answered") for bullet in question_bullets
+    )
+    run_dir = state_path.parent
+    checkpoint = _load_checkpoint(run_dir)
+    goal_lines = [line.strip() for line in sections[GOAL_HEADING] if line.strip()]
+    entries = _read_user_log(run_dir)
+    goal_report = _goal_change_report(goal_lines, checkpoint, record)
+    if goal_report:
+        sys.stdout.write(goal_report)
+    check_line = _unreflected_messages_warning(entries, checkpoint, state_text, run_dir, record)
+    if check_line:
+        sys.stdout.write(f"handoff.py: {check_line}\n")
+    mow = _mow_list(sections, checkpoint, record)
+    if mow:
+        sys.stdout.write(mow)
     prompt = (
         f"Read {state_path} and continue from it. "
-        "Read only that file to start; it points at everything else."
+        "Read only that file to start; it points at everything else. "
+        + _summary_line(record)
+        + (f" {check_line}" if check_line else "")
     )
-    input_text = f"claude --name {session_name!r} --permission-mode bypassPermissions {prompt!r}"
+    if dry_run:
+        sys.stdout.write(f"dry run: nothing launched; successor prompt:\n{prompt}\n")
+        record["outcome"] = "dry-run"
+        return 0
+    record["outcome"] = "failed:launch"
+    input_text = shlex.join(
+        ["claude", "--name", session_name, "--permission-mode", "bypassPermissions", prompt]
+    )
     manual_command = f"cd {shlex.quote(str(cwd))} && " + shlex.join(
         ["claude", "--name", session_name, "--permission-mode", "bypassPermissions", prompt]
     )
@@ -287,6 +683,10 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
         )
         return 1
     _write_handoff_marker(session_name, state_path, new_pids)
+    _advance_checkpoint(
+        run_dir, checkpoint, entries, _answered_questions(sections), goal_lines
+    )
+    record["outcome"] = "launched"
     sys.stdout.write(f"session: {session_name}\n")
     sys.stdout.write(f"state:   {state_path}\n")
     return 0
@@ -294,11 +694,26 @@ def handoff(state_path: Path, session_name: str, cwd: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) not in {2, 3}:
+    positional: list[str] = []
+    transcript = None
+    dry_run = False
+    arguments = iter(argv)
+    for argument in arguments:
+        if argument == "--dry-run":
+            dry_run = True
+        elif argument == "--transcript":
+            value = next(arguments, None)
+            if value is None:
+                sys.stderr.write(f"{USAGE}\n")
+                return 64
+            transcript = Path(value).expanduser().resolve()
+        else:
+            positional.append(argument)
+    if len(positional) not in {2, 3}:
         sys.stderr.write(f"{USAGE}\n")
         return 64
-    cwd = Path(argv[2]).resolve() if len(argv) == 3 else Path.cwd()
-    return handoff(Path(argv[0]).resolve(), argv[1], cwd)
+    cwd = Path(positional[2]).resolve() if len(positional) == 3 else Path.cwd()
+    return handoff(Path(positional[0]).resolve(), positional[1], cwd, transcript, dry_run)
 
 
 if __name__ == "__main__":
