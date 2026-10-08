@@ -34,7 +34,11 @@ REQUIRED_HEADINGS = (GOAL_HEADING, QUESTIONS_HEADING)
 CHECKPOINT_NAME = ".handoff-checkpoint.json"
 USER_LOG_NAME = "user-log.md"
 MATCH_PREFIX_CHARS = 60
-PROMPT_UNREFLECTED_LIMIT = 10
+MIN_CANDIDATE_CHARS = 12
+SHOWN_UNREFLECTED_LIMIT = 10
+MATCH_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+LIST_MARKER = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+")
+SENTENCE_END = re.compile(r"(?<=[.?!])\s+")
 REVIEW_LAUNCH_COUNT = 10
 REVIEW_AGE_DAYS = 21
 REVIEW_REMINDER = (
@@ -248,6 +252,24 @@ def _normalise(text: str) -> str:
     return " ".join(text.split())
 
 
+def _match_normalise(text: str) -> str:
+    return _normalise(text).casefold().translate(MATCH_QUOTES)
+
+
+def _match_needles(text: str) -> list[str]:
+    """Return the prefixes of each line and sentence of `text` long enough to match on their own."""
+    needles = []
+    for line in text.splitlines():
+        for piece in SENTENCE_END.split(LIST_MARKER.sub("", line)):
+            piece = _match_normalise(piece)
+            if len(piece) >= MIN_CANDIDATE_CHARS:
+                needles.append(piece[:MATCH_PREFIX_CHARS])
+    if needles:
+        return needles
+    whole = _match_normalise(text)[:MATCH_PREFIX_CHARS]
+    return [whole] if whole else []
+
+
 def _sections(state_text: str) -> dict[str, list[str]]:
     """Map each `## ` heading to its lines; `#` and `##` headings end a section, `###` does not."""
     sections: dict[str, list[str]] = {}
@@ -401,12 +423,12 @@ def _unreflected_messages_warning(
     seen = set(checkpoint.get("user_log_uuids_seen") or [])
     since = [entry for entry in entries if entry.key not in seen]
     record["log_entries_since_last"] = len(since)
-    state_haystack = _normalise(state_text)
+    state_haystack = _match_normalise(state_text)
     try:
         decisions = (run_dir / "decisions.md").read_text(encoding="utf-8", errors="replace")
     except OSError:
         decisions = ""
-    full_haystack = state_haystack + " " + _normalise(decisions)
+    full_haystack = state_haystack + " " + _match_normalise(decisions)
     unreflected = []
     for index, entry in enumerate(since):
         later = since[index + 1 :]
@@ -415,19 +437,19 @@ def _unreflected_messages_warning(
             continue
         if entry.channel == "ask":
             answers = [line[2:] for line in entry.text.splitlines() if line.startswith("A:")]
-            needle = _normalise(" ".join(answers))[:MATCH_PREFIX_CHARS]
+            needles = _match_needles("\n".join(answers))
             haystack = state_haystack
         else:
-            needle = _normalise(entry.text)[:MATCH_PREFIX_CHARS]
+            needles = _match_needles(entry.text)
             haystack = full_haystack
-        if needle and needle not in haystack:
+        if needles and not any(needle in haystack for needle in needles):
             unreflected.append(entry)
     record["unreflected"] = len(unreflected)
     if not unreflected:
         return None
     shown = [
         f'{entry.key[:8]} "{_normalise(entry.text)[:MATCH_PREFIX_CHARS]}"'
-        for entry in unreflected[:PROMPT_UNREFLECTED_LIMIT]
+        for entry in unreflected[:SHOWN_UNREFLECTED_LIMIT]
     ]
     more = len(unreflected) - len(shown)
     suffix = f" | and {more} more in {USER_LOG_NAME}" if more else ""
@@ -640,8 +662,12 @@ def _run_handoff(
         f"Read {state_path} and continue from it. "
         "Read only that file to start; it points at everything else. "
         + _summary_line(record)
-        + (f" {check_line}" if check_line else "")
     )
+    if record.get("unreflected"):
+        prompt += (
+            f" {record['unreflected']} user-log entries may be missing from STATE.md; "
+            f"compare {(run_dir / USER_LOG_NAME).resolve()} with STATE.md."
+        )
     if dry_run:
         sys.stdout.write(f"dry run: nothing launched; successor prompt:\n{prompt}\n")
         record["outcome"] = "dry-run"
