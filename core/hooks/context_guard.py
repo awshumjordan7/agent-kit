@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """UserPromptSubmit/PostToolUse/Stop hook: warn at 225k, stop new work at 250k, block once at 275k.
 
+A run whose STATE.md Goal section has a `- Handoff: manual` line gets a one-time
+notice at 275k instead of the block; the user decides when to hand off.
+
 As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
 block at 250k, then at 300k every tool call except progress-file edits and
 StructuredOutput is blocked. Other sub-agents and the main session pass through.
@@ -15,6 +18,14 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
+
+# The installer copies hooks/ and scripts/ side by side, as they sit in the repo.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+try:
+    from run_dir import resolve_run_dir
+except ImportError:
+    resolve_run_dir = None
 
 BAND_225K = 225_000
 BAND_250K = 250_000
@@ -53,6 +64,13 @@ MESSAGES = {
         "run in its final stage finishes first. " + REPORT_ISSUE_LINE
     ),
 }
+
+MANUAL_HANDOFF_MESSAGE = (
+    "Context guard: ~{n}k tokens. Manual handoff set for this run; hand off when the user says. "
+    "Keep STATE.md current so the handoff is one command away."
+)
+GOAL_HEADING = "## Goal and standing rules"
+MANUAL_HANDOFF_LINE = "- Handoff: manual"
 
 
 HANDOFF_SUFFIX = ".handoff"
@@ -262,6 +280,32 @@ def emit_block(reason):
     print(json.dumps({"decision": "block", "reason": reason}))
 
 
+def emit_system_message(message):
+    # additionalContext on Stop would start a new turn; systemMessage only informs.
+    print(json.dumps({"systemMessage": message}))
+
+
+def manual_handoff_set(cwd, transcript_path):
+    """True when the run's STATE.md has a `- Handoff: manual` line in its Goal section."""
+    if resolve_run_dir is None:
+        return False
+    run_dir = resolve_run_dir(cwd if isinstance(cwd, str) else None, transcript_path)
+    if run_dir is None:
+        return False
+    try:
+        text = (run_dir / "STATE.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    in_goal = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^#{1,2} ", stripped):
+            in_goal = stripped == GOAL_HEADING
+        elif in_goal and stripped.startswith(MANUAL_HANDOFF_LINE):
+            return True
+    return False
+
+
 def find_agent_transcript(transcript_path, session_id, agent_id):
     """Sub-agent transcripts live under <session dir>/subagents/, optionally
     nested under workflows/<runId>/."""
@@ -369,6 +413,13 @@ def main() -> int:
         if handoff_successor_running(session_id):
             return 0
         if measure >= BAND_275K and not payload.get("stop_hook_active") and not state["blocked"]:
+            if manual_handoff_set(payload.get("cwd"), transcript_path):
+                try:
+                    save_state(state_path, state["band"], True)
+                except OSError:
+                    return 0
+                emit_system_message(MANUAL_HANDOFF_MESSAGE.format(n=measure // 1000))
+                return 0
             # Leave blocked unset so a later Stop can still block once the tasks finish.
             if pending_background_tasks(transcript_path) > 0:
                 return 0
