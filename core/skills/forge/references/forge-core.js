@@ -407,7 +407,7 @@ const CHECKPOINT_FILE_SCHEMA = {
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
-  required: ['recommendation', 'command', 'decidedBy', 'implementFilesChanged', 'context', 'planSha256', 'planChanged', 'error'],
+  required: ['recommendation', 'command', 'decidedBy', 'implementFilesChanged', 'context', 'planSha256', 'planChanged', 'error', 'branch', 'phases'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -665,7 +665,7 @@ const STUBS = {
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
-    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '' })
+    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -992,13 +992,22 @@ function fullTestPromptInstruction() {
   return `With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for ${PARAMS.projectDir}, and name its exact tests command in the Codex prompt under FULL TEST COMMAND. Tell Codex to run that full test command before returning; the gate re-runs it, and Codex's run is the first line of defense. Codex must include the test summary line in summary and never report tests as intentionally skipped.`
 }
 
-function claudeTestPromptInstruction() {
-  if (configuredGateMode() === 'none') return fullTestPromptInstruction()
-  return 'With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for this repository, and run its exact tests command before returning. The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped.'
+// The configured worktree test commands source env files, which the secret-read hook blocks
+// whenever a Claude agent rewraps them, so Claude agents reach those commands only through gate.sh.
+function gateScriptInstruction() {
+  if (configuredGateMode() === 'none') return ''
+  const gateDir = `${PARAMS.runDir}/implementer-gate`
+  return `Run tests and the migrations check only with this command, Bash timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(gateDir)} --label implementer-gate --only tests,migrations --files <repository-relative paths of every changed file>\`. It prints JSON and names the log of any failing stage. Never run, copy, or wrap a tests or migrations command from forge.config.json, and never source env files yourself.`
 }
 
-function runBeforeReturningInstruction() {
+function claudeTestPromptInstruction() {
+  if (configuredGateMode() === 'none') return fullTestPromptInstruction()
+  return `${gateScriptInstruction()} The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped.`
+}
+
+function runBeforeReturningInstruction(claude = false) {
   if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint determines whether further verification is useful.'
+  if (claude) return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
   return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
@@ -1055,7 +1064,7 @@ function implement(phase = null) {
   const scope = phaseScope(phase)
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
     const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-    return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
+    return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction(true)} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
       { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
   }
   const promptPath = `${PARAMS.runDir}/implement${suffix}-prompt.md`
@@ -1217,8 +1226,8 @@ function restorePhaseRow(row) {
   return { ...row, sha: row.sha || null, gate: row.gate || null }
 }
 
-// Echoing agents drop or invent empty optional fields, so both sides of the digest leave them out;
-// a kept empty phases array would also make a single-pass run look phased.
+// An empty phases array would make a single-pass run look phased, so empty branch and phases
+// are dropped once the digest has been checked.
 function dropEmptyOptionalKeys(checkpoint) {
   const kept = { ...checkpoint }
   for (const key of ['branch', 'phases']) {
@@ -1231,9 +1240,10 @@ function dropEmptyOptionalKeys(checkpoint) {
 // still reads, and it hashes the plan file itself to report a plan edited since the checkpoint.
 async function readCheckpoint() {
   PARAMS.spawnCap += 1
-  const saved = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)}`,
-    CHECKPOINT_FACTS_SCHEMA, 'Checkpoint', dropEmptyOptionalKeys)
-  if (!saved) return null
+  const facts = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)}`,
+    CHECKPOINT_FACTS_SCHEMA, 'Checkpoint')
+  if (!facts) return null
+  const saved = dropEmptyOptionalKeys(facts)
   if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
   return saved
 }
@@ -1525,7 +1535,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
   const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
   if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
+    const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${gateScriptInstruction()} ${runBeforeReturningInstruction(true)} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
       { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
     return result || null
   }
