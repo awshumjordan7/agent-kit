@@ -12,12 +12,11 @@ Stall timeout is 300 s (`stallTimeoutSeconds`). `watch` always runs in the backg
 surfaces as a notification, never as a silent hang.
 
 - `references/codex-prompt-contract.md` is prepended to every prompt by `codex-exec.sh`
-  (section per role: `review` for plan review, code review, verify; `impl` for implementation).
+  (one `review` section for plan review, code review, verify).
   The role's budget numbers are filled in.
 - `forge.config.json` per role: `maxToolCalls`, `maxToolOutputKB` (the harness kills the session
   past either), `toolOutputTokenLimit` (Codex's own per-call truncation), `webSearch: disabled`,
-  `mcp` (normally false for reviewers and configurable for implementers), and
-  `contract`.
+  `mcp` (normally false), and `contract`.
 - Plan review prompts inline the plan, recon, code standards, and an excerpt pack cut from every
   `file:line` the recon cites (capped, default 60 KB). The main session adds numbered checks, each
   a claim with a `file:line`. The configured reviewer verifies; it does not explore.
@@ -103,7 +102,3 @@ dashboard before comparing dollars.
 - Evaluate `codex review` (top-level, diff-only, non-interactive) as the code-review mechanism
   once it can take the checklist and plan summary.
 - Re-test Codex sub-agents on a cheaper model when the model-selection regression is closed.
-
-## quick-impl Codex role
-
-`codex.roles.quick-impl` (gpt-6-sol, high) applies only when implementation is switched back to Codex.

@@ -24,15 +24,10 @@ on the top-level model; that was the most expensive path in the skill.
      recon's reuse table when one exists, `references/code-standards.md` verbatim, and
      "implement only this phase; do not touch later phases". In gate mode `full`, add "run the
      tests named in the plan for this phase". Never "read plan.md".
-   - `provider: claude`: add "progress file: `<runDir>/impl-progress-<n>.md`" to the prompt and
+   - Add "progress file: `<runDir>/impl-progress-<n>.md`" to the prompt and
      spawn the `claude-implementer` agent with the role's `model` and that prompt. When it
      returns `PARTIAL`, spawn it again with the same prompt plus a `## Continuation` section that
      names that progress file; allow at most 2 continuations, then stop the phase.
-   - `provider: codex`: `codex-exec.sh start|resume --role impl --sandbox workspace-write
-     --thread-file <runDir>/codex-impl.thread` (start on the first phase, resume after) with
-     that prompt. The helper prepends the prompt contract and enforces the `impl` budget.
-     Start and resume detach by default; no `perl alarm` wrapper is needed. Wait with
-     `codex-exec.sh watch --max-wait 2400`; repeat when it exits 10.
    - Send one `worker` order with `model: "haiku"`:
      - gate mode `full`:
        `gate.sh --repo <repo> --run-dir <runDir> --label phase-<n> --files <changed> --commit "<msg>"`.

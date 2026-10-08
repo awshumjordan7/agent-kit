@@ -135,6 +135,11 @@ def validate_profile(profile: dict[str, Any]) -> None:
             raise ProfileError(f"profile.forge.roles.{name} fields must be strings")
         if role["provider"] not in {"claude", "codex"}:
             raise ProfileError(f"profile.forge.roles.{name}.provider must be claude or codex")
+        if name in ("impl", "quick-impl") and role["provider"] != "claude":
+            raise ProfileError(
+                f"profile.forge.roles.{name}: Codex implementation was removed; "
+                f"set roles.{name}.provider to claude"
+            )
     stages = _table(forge.get("stages"), "profile.forge.stages")
     _unknown(stages, STAGE_KEYS, "profile.forge.stages")
     if not all(isinstance(key, str) and isinstance(value, bool) for key, value in stages.items()):

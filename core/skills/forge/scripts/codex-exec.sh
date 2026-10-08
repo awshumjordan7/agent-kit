@@ -5,7 +5,7 @@
 # CLI contract lives in exactly one file (SKILL.md and forge-core.js both call this).
 #
 # Usage:
-#   codex-exec.sh config [--role impl|review|plan-review]   # print the resolved settings and exit
+#   codex-exec.sh config [--role review|plan-review]   # print the resolved settings and exit
 #   codex-exec.sh start  --thread-file <f> --prompt-file <p> --log <events.jsonl> --out <last-msg.md> \
 #                        [--sandbox read-only|workspace-write] [--role <r>] [--model <m>] [--effort <e>] [--cd <dir>] \
 #                        [--writable <dir>] (repeatable) \
@@ -293,7 +293,18 @@ if [ -z "$ROLE" ]; then
     ROLE="${ROLE:-review}"
 fi
 role_cfg() { resolve_config ".codex.roles[\"$ROLE\"].$1"; }
-role_runtime_cfg() { resolve_config ".roles[\"$ROLE\"].$1 // .codex.roles[\"$ROLE\"].$1"; }
+# Top-level roles.<role> holds Codex settings only when its provider is codex; a Claude-provider
+# role (plan-review) carries a Claude model name there, so its Codex settings live in codex.roles.
+ROLE_PROVIDER="$(resolve_config ".roles[\"$ROLE\"].provider")"
+if [ "$ROLE_PROVIDER" = codex ]; then
+    role_runtime_cfg() { resolve_config ".roles[\"$ROLE\"].$1"; }
+else
+    role_runtime_cfg() { role_cfg "$1"; }
+fi
+if [ -n "$ROLE_PROVIDER" ] && [ "$ROLE_PROVIDER" != codex ] && [ -z "$(resolve_config ".codex.roles[\"$ROLE\"] | objects | \"y\"")" ]; then
+    echo "error: role '$ROLE' has provider $ROLE_PROVIDER and no codex.roles entry in $CONFIG_FILE" >&2
+    exit 65
+fi
 [ -n "$MODEL" ]  || MODEL="$(role_runtime_cfg model)"
 [ -n "$EFFORT" ] || EFFORT="$(role_runtime_cfg effort)"
 [ -n "$MAX_TOOL_CALLS" ] || MAX_TOOL_CALLS="$(role_cfg maxToolCalls)"
@@ -310,15 +321,8 @@ STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
 LOCK_WAIT="$(resolve_config '.codex.lockWaitSeconds')"; LOCK_WAIT="${LOCK_WAIT:-1800}"
 MAX_TOOL_CALLS="${MAX_TOOL_CALLS:-40}"
 MAX_TOOL_OUTPUT_KB="${MAX_TOOL_OUTPUT_KB:-300}"
-# Only impl sessions keep a state file, so a handed-off session of any other
-# contract restarts with nothing; those contracts get no handoff by default.
-if [ "$CONTRACT" = "impl" ]; then
-    HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-120000}"
-    HANDOFF_TOOL_CALLS="${HANDOFF_TOOL_CALLS:-60}"
-else
-    HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-0}"
-    HANDOFF_TOOL_CALLS="${HANDOFF_TOOL_CALLS:-0}"
-fi
+HANDOFF_CONTEXT_TOKENS="${HANDOFF_CONTEXT_TOKENS:-0}"
+HANDOFF_TOOL_CALLS="${HANDOFF_TOOL_CALLS:-0}"
 MAX_HANDOFFS="${MAX_HANDOFFS:-3}"
 if [ "$HANDOFF_TOOL_CALLS" -gt 0 ] && [ "$HANDOFF_TOOL_CALLS" -gt "$MAX_TOOL_CALLS" ]; then
     HANDOFF_TOOL_CALLS=$(( MAX_TOOL_CALLS - 1 ))
@@ -435,7 +439,7 @@ fi
 compose_prompt() {
     if [ "$USE_CONTRACT" = "true" ] && [ "$CONTRACT" != "none" ] && [ -f "$CONTRACT_FILE" ]; then
         awk -v want="## $CONTRACT" '
-            /^## (review|impl)$/ { on = ($0 == want); next }
+            /^## review$/ { on = ($0 == want); next }
             on { print }
         ' "$CONTRACT_FILE" \
         | sed -e "s/{{MAX_TOOL_CALLS}}/$MAX_TOOL_CALLS/g" \

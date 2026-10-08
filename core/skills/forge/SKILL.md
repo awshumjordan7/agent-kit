@@ -61,7 +61,7 @@ Top-level `roles` selects provider, model, and effort:
 - `review`: final review and verification;
 - `plan-review`: pre-implementation review.
 
-The implementation provider comes from `roles`: `provider: claude` uses the `claude-implementer` agent, and `provider: codex` uses `codex-exec.sh`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
+Implementation always uses the `claude-implementer` agent; `provider` must be `claude` for `impl` and `quick-impl`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
 
 To run an already confirmed plan, follow `references/implement-mode.md`.
 

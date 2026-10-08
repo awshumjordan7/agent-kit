@@ -104,19 +104,14 @@ PARAMS.spawnCap += PARAMS.resumeAttempt
 
 let FORGE_CONFIG = PARAMS.forgeConfig
 
-// Codex model/effort/budget per role live in ~/.claude/skills/forge/forge.config.json and are
-// resolved by codex-exec.sh from `--role`. The Workflow only passes explicit --model/--effort
-// when args override them (codexModelImpl / codexModelReview / codexModel, codexEffortImpl /
-// codexEffortReview). Quick-lane implement and fix rounds use quick-impl; other implementation
-// uses impl, while reviewer and verifier rounds use review.
+// Codex model/effort/budget for the review role live in ~/.claude/skills/forge/forge.config.json
+// and are resolved by codex-exec.sh from `--role`. The Workflow only passes explicit
+// --model/--effort when args override them (codexModelReview / codexModel, codexEffortReview).
 // codex-exec.sh prepends references/codex-prompt-contract.md (ranged reads only, no web/MCP,
 // the tool-call and output-byte budget) to every prompt and kills a session that exceeds the
 // budget, so prompts written here carry their inputs inline and never say "read file X".
 function codexFlags(role, model, effort) {
   return `--role ${role}` + (model ? ` --model ${model}` : '') + (effort ? ` --effort ${effort}` : '')
-}
-function codexImplFlags() {
-  return codexFlags(pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold()), args.codexModelImpl || args.codexModel, args.codexEffortImpl)
 }
 const CODEX_REVIEW_FLAGS = codexFlags('review', args.codexModelReview || args.codexModel, args.codexEffortReview)
 const CODEX_SH = '~/.claude/skills/forge/scripts/codex-exec.sh'
@@ -126,7 +121,6 @@ const PLAN = PARAMS.planPath
 // CODEX_PLAN_THREAD / codex-plan.thread is reserved for Phase 3 plan review outside this script.
 // CODEX_REVIEW_THREAD / codex-review.thread owns review and all fix verification.
 const CODEX_PLAN_THREAD = `${PARAMS.runDir}/codex-plan.thread`
-const CODEX_IMPL_THREAD = `${PARAMS.runDir}/codex-impl.thread`
 const CODEX_REVIEW_THREAD = `${PARAMS.runDir}/codex-review.thread`
 
 if (!PARAMS.runDir || !PARAMS.projectDir) {
@@ -177,17 +171,6 @@ const REVIEW_SCHEMA = {
     },
   },
   required: ['verdict', 'score', 'findings'],
-}
-const CODEX_RESULT = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
-    threadExists: { type: 'boolean' }, filesChanged: { type: 'array', items: { type: 'string' } },
-    testsWritten: { type: 'integer' }, summary: { type: 'string' }, error: { type: ['string', 'null'] },
-    handoffs: { type: 'integer', minimum: 0, default: 0 },
-    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
-  },
-  required: ['codexInvoked', 'threadMode', 'threadExists', 'filesChanged', 'testsWritten', 'summary'],
 }
 const IMPL_RESULT = {
   type: 'object', additionalProperties: false,
@@ -241,16 +224,6 @@ const FIX_SCHEMA = {
     },
   },
   required: ['fixed', 'couldNotFix', 'touchedFiles', 'diff', 'notes', 'results'],
-}
-const CODEX_FIX_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    codexInvoked: { type: 'boolean' }, threadMode: { type: 'string', enum: ['start', 'resume'] },
-    threadExists: { type: 'boolean' }, fix: FIX_SCHEMA, error: { type: ['string', 'null'] },
-    handoffs: { type: 'integer', minimum: 0, default: 0 },
-    handoffDetails: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { contextTokens: { type: 'integer' }, toolCalls: { type: 'integer' } }, required: ['contextTokens', 'toolCalls'] } },
-  },
-  required: ['codexInvoked', 'threadMode', 'threadExists', 'fix'],
 }
 const SCOPED_VERIFY_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -679,9 +652,7 @@ const STUBS = {
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
   codexWrap: opts => {
-    if (opts.schema === CODEX_RESULT) return { codexInvoked: true, threadMode: 'start', threadExists: true, filesChanged: ['auth/api/client.py'], testsWritten: 0, summary: 'dry-run Codex', error: '', handoffs: 0 }
     if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
-    if (opts.schema === CODEX_FIX_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, fix: { fixed: [], couldNotFix: [], touchedFiles: PARAMS.dryRunFindings ? ['auth/api/client.py'] : [], diff: 'dry-run fix diff', notes: 'dry-run fix', results: dryFindings().map(finding => ({ id: findingKey(finding), reason: 'dry-run fix explanation' })) }, error: '', handoffs: 0 }
     return { written: true }
   },
 }
@@ -868,8 +839,6 @@ function assertCodex(result, where) {
 }
 
 function assertImplementation(result, where) {
-  const role = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
-  if ((configuredRole(role) || {}).provider !== 'claude') return assertCodex(result, where)
   if (capBlocked && !result) return false
   if (result && result.limitReached) return false
   if (!result || result.error) {
@@ -927,6 +896,11 @@ async function loadForgeConfig() {
     repos: { ...defaults.repos, ...((result && result.repos) || {}) },
     gate: { ...defaults.gate, ...((result && result.gate) || {}) },
   }
+  for (const name of ['impl', 'quick-impl']) {
+    if (((FORGE_CONFIG.roles || {})[name] || {}).provider === 'codex') {
+      throw new Error(`forge.config.json: Codex implementation was removed; set roles.${name}.provider to claude`)
+    }
+  }
 }
 
 function configuredGateEntry() {
@@ -956,17 +930,15 @@ function shellQuote(value) {
 
 // One agent runs one command that prints { facts, canonLength, fnv1a }. The digest is recomputed over
 // the returned facts, so an echo that adds, drops or edits a field is a miss. The caller's spawn
-// budget covers the first attempt; only the retry raises the cap here. normalize, when given, is
-// applied to the returned facts before the digest is recomputed.
-async function factsCommand(label, command, schema, phaseLabel, normalize = null) {
+// budget covers the first attempt; only the retry raises the cap here.
+async function factsCommand(label, command, schema, phaseLabel) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) PARAMS.spawnCap += 1
     const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: ${command}`,
       { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
     if (read && read.facts && typeof read.facts === 'object') {
-      const facts = normalize ? normalize(read.facts) : read.facts
-      const canon = canonicalJson(facts)
-      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return facts
+      const canon = canonicalJson(read.facts)
+      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return read.facts
     }
     if (!read && capBlocked) return null
     await decide(`${label} attempt ${attempt} ${read ? 'did not match the facts digest' : 'returned no result'}.`)
@@ -987,28 +959,22 @@ function baselineContext(reuse = false) {
     { label: 'baseline', phase: 'Implement', schema: ACK_SCHEMA })
 }
 
-function fullTestPromptInstruction() {
-  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, Semgrep, or parity commands.'
-  return `With ranged reads, read ~/.claude/skills/forge/forge.config.json, resolve the gate entry for ${PARAMS.projectDir}, and name its exact tests command in the Codex prompt under FULL TEST COMMAND. Tell Codex to run that full test command before returning; the gate re-runs it, and Codex's run is the first line of defense. Codex must include the test summary line in summary and never report tests as intentionally skipped.`
-}
-
 // The configured worktree test commands source env files, which the secret-read hook blocks
 // whenever a Claude agent rewraps them, so Claude agents reach those commands only through gate.sh.
 function gateScriptInstruction() {
   if (configuredGateMode() === 'none') return ''
   const gateDir = `${PARAMS.runDir}/implementer-gate`
-  return `Run tests and the migrations check only with this command, Bash timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(gateDir)} --label implementer-gate --only tests,migrations --files <repository-relative paths of every changed file>\`. It prints JSON and names the log of any failing stage. Never run, copy, or wrap a tests or migrations command from forge.config.json, and never source env files yourself.`
+  return `Run tests and the migrations check only with this command, Bash timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(gateDir)} --label implementer-gate --only tests,migrations --files <repository-relative paths of every changed file>\`. If the call times out, the gate did not finish: read the last lines of ${gateDir}/gate-implementer-gate-tests-*.log, report tests as unverified (gate timeout) in summary, and do not retry in the foreground. It prints JSON (also saved as ${gateDir}/gate-implementer-gate.json); a failing stage's last log lines are in failures[].summary, and each stage's full log is ${gateDir}/gate-implementer-gate-<stage>.log (tests: gate-implementer-gate-tests-1.log, -2, ... one per tests command in commands). Never run, copy, or wrap a tests or migrations command from forge.config.json, and never source env files yourself.`
 }
 
 function claudeTestPromptInstruction() {
-  if (configuredGateMode() === 'none') return fullTestPromptInstruction()
-  return `${gateScriptInstruction()} The gate re-runs it; include the test summary line in summary and never report tests as intentionally skipped.`
+  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, Semgrep, or parity commands.'
+  return `${gateScriptInstruction()} The gate re-runs it; copy the final pytest summary line from the last lines of each tests log into summary (or state that commands shows tests skipped), and never report tests as intentionally skipped.`
 }
 
-function runBeforeReturningInstruction(claude = false) {
+function runBeforeReturningInstruction() {
   if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint determines whether further verification is useful.'
-  if (claude) return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
-  return 'Before returning, run service-free tests relevant to the touched files, ruff check, ruff format --check, makemigrations --check --dry-run in Django repositories, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
+  return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
 function phaseScope(phase) {
@@ -1057,26 +1023,13 @@ Continue from the progress file; do not redo work it marks done; do not re-read 
 }
 
 function implement(phase = null) {
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
   const suffix = phase ? `-phase-${phase.id}` : ''
   const label = `implement${suffix}`
   const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
   const scope = phaseScope(phase)
-  if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-    return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction(true)} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
-      { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
-  }
-  const promptPath = `${PARAMS.runDir}/implement${suffix}-prompt.md`
-  const logPath = `${PARAMS.runDir}/codex-implement${suffix}.jsonl`
-  const outPath = `${PARAMS.runDir}/codex-implement${suffix}-final.md`
-  const scopeInstruction = scope
-    ? `Put this scope instruction verbatim directly above the PLAN heading: "${scope}" Implement only that phase and the rows of its approved test table.`
-    : 'Implement only the confirmed plan and its approved test table.'
-  return codexAgent(`You orchestrate the IMPLEMENT stage. ${codexWrapper}
-Read ~/.claude/skills/forge/references/implementer.md and ~/.claude/skills/forge/references/code-standards.md in full. ${fullTestPromptInstruction()} Write ${promptPath} as a self-contained Codex prompt containing the implementer contract, then the code-standards contents verbatim, then the full text of ${PLAN} under a PLAN heading and of ${PARAMS.runDir}/context.md (if present) under a CONTEXT heading, and of ${PARAMS.runDir}/recon.md (if present) under a RECON heading. Do not tell Codex to read those files, AGENTS.md, or CLAUDE.md; Codex loads AGENTS.md itself. ${scopeInstruction} ${runBeforeReturningInstruction()} Do not commit, and write ${summaryPath}. If ${PLAN} declares a Phase 0 evidence harness, build it first and keep it runnable; report every live-dependent capability as implemented-unverified — a worker-run harness against a live target is what marks it verified.
-Run test -f ${CODEX_IMPL_THREAD} && MODE=resume || MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --thread-file ${CODEX_IMPL_THREAD} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexImplFlags()} --log ${logPath} --out ${outPath}. Collect changed and untracked files. Return the structured result.`,
-  { label, phase: 'Implement', schema: CODEX_RESULT }, { threadFile: CODEX_IMPL_THREAD, log: logPath })
+  const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
+  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
+    { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
 }
 
 function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', logName = 'smoke.log') {
@@ -1527,31 +1480,14 @@ async function reviewPanel(context) {
 }
 
 // The applier gets only the decider's fix items, already verified, so it applies them without
-// re-triage. The quick-impl role's provider picks the Claude or Codex branch.
+// re-triage. The applier is the claude-implementer agent.
 async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
   const { round, planPhase, diffStat } = extra
-  const reviewDiffPath = (context && context.diffPath) || `${PARAMS.runDir}/gate-gate.diff`
-  const implementationRole = configRoleForTier('applier')
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
   const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
-  if ((configuredRole(implementationRole) || {}).provider === 'claude') {
-    const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${gateScriptInstruction()} ${runBeforeReturningInstruction(true)} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
-      { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
-    return result || null
-  }
-  const promptPath = `${PARAMS.runDir}/${label}-prompt.md`
-  const partPath = `${PARAMS.runDir}/${label}-prompt.part.md`
-  const planNote = planPhase
-    ? `State in it that the full plan follows under PLAN, and that the section headed ### Phase ${planPhase.id}: ${planPhase.title}, with the section ## Public API contract when the plan has one, is the part that applies.`
-    : 'State in it that the full plan follows under PLAN.'
-  const result = await codexAgent(`You orchestrate FIX ROUND ${round} (${label}). ${codexWrapper}
-Read ~/.claude/skills/forge/references/code-standards.md in full. Write ${partPath} as the first part of a self-contained Codex prompt containing those standards verbatim, the fix spec and diff stat below verbatim, and the instruction that the fix decider already verified every item against current code, so Codex applies each change as written and does not re-triage or widen scope. ${planNote} With ranged reads, include the review diff at ${reviewDiffPath} when present. End ${partPath} with a line that reads exactly PLAN. Then build the prompt file with exactly this one shell command, which adds the plan file below that line: \`{ cat ${shellQuote(partPath)}; echo; cat ${shellQuote(PLAN)}; } > ${shellQuote(promptPath)}\`. Never copy plan text yourself. Do not refactor adjacent code or commit. ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason explaining what changed or why it could not be applied. A failure caused by an unreachable service (Redis, Postgres, Docker, network, a missing binary) is environmental: list it under couldNotFix with the evidence and never change tests, fixtures, caches, or settings to route around it. Work in ${PARAMS.projectDir}.
-Run MODE=start, then invoke exactly: bash ${CODEX_SH} "$MODE" --fresh --thread-file ${threadFile} --prompt-file ${promptPath} --state-file ${PARAMS.runDir}/codex-state-fix-${round}.md --cd ${PARAMS.projectDir} --sandbox workspace-write --writable ${PARAMS.runDir} ${codexFlags(implementationRole, args.codexModelImpl || args.codexModel, args.codexEffortImpl)} --log ${PARAMS.runDir}/codex-${label}.jsonl --out ${PARAMS.runDir}/codex-${label}-final.md. Return invocation evidence plus touched files and git diff limited to 12000 characters in the wrapper schema.
-
-${inputs}`,
-  { label, phase: fixPhase, schema: CODEX_FIX_SCHEMA }, { threadFile, log: `${PARAMS.runDir}/codex-${label}.jsonl` })
-  if (!assertCodex(result, label)) return null
-  return result.fix
+  const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${gateScriptInstruction()} ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
+    { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
+  return result || null
 }
 
 function verifyFixes(items, fixResult, label = 'verify-review', recheckIds = []) {

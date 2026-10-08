@@ -27,8 +27,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 ## Delegation and context hygiene
 
 - **Routing.** A small, fully specified fix of up to three files (nothing left to decide): the main session
-  makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: the Opus
-  implementer through forge. The `shipper` always commits and pushes. The main session never edits code otherwise.
+  makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: forge,
+  whose `claude-implementer` agent writes the code. The `shipper` always commits and pushes. The main session never edits code otherwise.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
   (its turn cap is 75).
