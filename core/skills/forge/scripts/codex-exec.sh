@@ -24,8 +24,8 @@
 # watch:  cheap blocking wait for orchestrator agents. Blocks until --out is
 #         non-empty (exit 0), --max-wait elapses while the session is still
 #         making progress (exit 10 — call watch again), the session recorded a
-#         terminal failure in <log>.failed (exits with that code), or the event
-#         log stops changing for --stall seconds (exit 75).
+#         terminal failure in <log>.failed (exits with that code), or the stall
+#         check below finds no progress (exit 75; watch kills nothing).
 #
 # PROMPT CONTRACT: every start/resume prepends the role's section of
 # references/codex-prompt-contract.md (inline inputs, ranged reads only, no web
@@ -47,8 +47,12 @@
 # event log so watch stays alive, then exits 78. --parallel or
 # FORGE_CODEX_PARALLEL=1 skips the lock.
 #
-# STALL WATCHDOG (start/resume): if the event log stops changing for
-# FORGE_CODEX_STALL_TIMEOUT seconds (default 600):
+# STALL WATCHDOG (start/resume and watch share one check, stall_tick): a poll is
+# idle when neither the event log nor Codex's rollout file (sessions/.../rollout-*-<thread>.jsonl
+# under CODEX_HOME, which grows with each reasoning item) changed size or mtime; any change
+# resets the count. Until the rollout file appears, the event log alone decides. The timeout is
+# FORGE_CODEX_STALL_TIMEOUT, then --stall, then codex.stallTimeoutSeconds, then 600 s.
+# On a start/resume stall:
 #   - stall at ZERO progress (no item.completed events — the resume-wedge
 #     signature): the process is killed, the log rotated to <log>.stalled, and the
 #     SAME prompt retried ONCE as a fresh session. Prompts must be self-contained.
@@ -230,6 +234,50 @@ usage_line() {
 abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac; }
 log_sig() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+thread_id_from_log() { jq -r 'select(.type == "thread.started") | .thread_id' "$LOG" 2>/dev/null | head -1 || true; }
+find_rollout() {
+    # $1 = thread id. Prints Codex's own session (rollout) file for it, or nothing if it does not exist yet.
+    local candidate
+    [ -n "$1" ] && [ "$1" != "null" ] || return 0
+    for candidate in "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*-"$1".jsonl; do
+        if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+    return 0
+}
+
+# ---------- stall check (shared by watch and start/resume) ----------
+# `codex exec --json` does not stream reasoning to the event log, but the rollout file grows with
+# every reasoning item, so a change in either file counts as progress. Idle time is counted in
+# polls rather than from file age, so a laptop waking from sleep does not trip the timeout at once.
+stall_reset() {
+    # $1 = rollout path or empty.
+    STALL_LOG_SIG=$(log_sig "$LOG")
+    STALL_ROLLOUT_SIG=""
+    [ -z "${1:-}" ] || STALL_ROLLOUT_SIG=$(log_sig "$1")
+    STALLED_FOR=0
+}
+stall_tick() {
+    # $1 = rollout path or empty (the event log alone decides then). Call once per poll.
+    # Returns 0 once neither file has changed for STALL_TIMEOUT seconds.
+    local log_now rollout_now=""
+    log_now=$(log_sig "$LOG")
+    [ -z "${1:-}" ] || rollout_now=$(log_sig "$1")
+    if [ "$log_now" != "$STALL_LOG_SIG" ] || [ "$rollout_now" != "$STALL_ROLLOUT_SIG" ]; then
+        STALL_LOG_SIG=$log_now
+        STALL_ROLLOUT_SIG=$rollout_now
+        STALLED_FOR=0
+        return 1
+    fi
+    STALLED_FOR=$(( STALLED_FOR + POLL_INTERVAL ))
+    [ "$STALLED_FOR" -ge "$STALL_TIMEOUT" ]
+}
+
+# ---------- config resolution ----------
+resolve_config() {
+    # $1 = jq path; prints the value or nothing.
+    [ -f "$CONFIG_FILE" ] || return 0
+    jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null
+}
 
 # ---------- stats mode ----------
 if [ "$MODE" = "stats" ]; then
@@ -240,16 +288,19 @@ if [ "$MODE" = "stats" ]; then
     exit 0
 fi
 
+# Watch and start/resume use the same stall timeout: env, then --stall, then config, then 600.
+[ -n "$STALL_TIMEOUT" ] || STALL_TIMEOUT="$(resolve_config '.codex.stallTimeoutSeconds')"
+STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
+
 # ---------- watch mode: cheap blocking wait, no codex invocation ----------
 if [ "$MODE" = "watch" ]; then
     if [ -z "$LOG" ] || [ -z "$OUT" ]; then
         echo "error: watch requires --log and --out" >&2
         exit 64
     fi
-    STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
     start_ts=$(date +%s)
-    last_sig=$(log_sig "$LOG")
-    stalled_for=0
+    rollout_file="$(find_rollout "$(thread_id_from_log)")"
+    stall_reset "$rollout_file"
     while :; do
         if [ -s "$OUT" ] && [ -s "$LOG.result.json" ]; then
             echo "WATCH_DONE out=$OUT"
@@ -268,26 +319,15 @@ if [ "$MODE" = "watch" ]; then
             exit 10
         fi
         sleep "$POLL_INTERVAL"
-        sig=$(log_sig "$LOG")
-        if [ "$sig" != "$last_sig" ]; then
-            last_sig=$sig
-            stalled_for=0
-        else
-            stalled_for=$(( stalled_for + POLL_INTERVAL ))
-            if [ "$stalled_for" -ge "$STALL_TIMEOUT" ]; then
-                echo "WATCH_STALLED no event-log change for ${STALL_TIMEOUT}s (log=$LOG)" >&2
-                exit 75
-            fi
+        [ -n "$rollout_file" ] || rollout_file="$(find_rollout "$(thread_id_from_log)")"
+        if stall_tick "$rollout_file"; then
+            echo "WATCH_STALLED no event-log or rollout change for ${STALL_TIMEOUT}s (log=$LOG)" >&2
+            exit 75
         fi
     done
 fi
 
-# ---------- config resolution ----------
-resolve_config() {
-    # $1 = jq path; prints the value or nothing.
-    [ -f "$CONFIG_FILE" ] || return 0
-    jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null
-}
+# ---------- role settings ----------
 if [ -z "$ROLE" ]; then
     ROLE="$(resolve_config '.codex.defaultRole')"
     ROLE="${ROLE:-review}"
@@ -316,8 +356,6 @@ TOOL_OUTPUT_TOKEN_LIMIT="$(role_cfg toolOutputTokenLimit)"
 WEB_SEARCH="$(role_cfg webSearch)"
 MCP_ENABLED="$(role_cfg mcp)"
 CONTRACT="$(role_cfg contract)"
-[ -n "$STALL_TIMEOUT" ] || STALL_TIMEOUT="$(resolve_config '.codex.stallTimeoutSeconds')"
-STALL_TIMEOUT="${STALL_TIMEOUT:-600}"
 LOCK_WAIT="$(resolve_config '.codex.lockWaitSeconds')"; LOCK_WAIT="${LOCK_WAIT:-1800}"
 MAX_TOOL_CALLS="${MAX_TOOL_CALLS:-40}"
 MAX_TOOL_OUTPUT_KB="${MAX_TOOL_OUTPUT_KB:-300}"
@@ -566,9 +604,10 @@ run_codex() {
             >"$LOG" 2>"$LOG.stderr" &
     fi
     local pid=$!
-    local last_size=0 stalled_for=0 size stats calls bytes thread_id context=0
-    local rollout_file="" rollout_warned=false candidate reason
+    local stats calls bytes thread_id context=0
+    local rollout_file="" rollout_warned=false reason
     local max_bytes=$(( MAX_TOOL_OUTPUT_KB * 1024 ))
+    stall_reset ""
     while kill -0 "$pid" 2>/dev/null; do
         sleep "$POLL_INTERVAL"
         if [ "$1" = "start" ] && [ ! -s "$THREAD_FILE" ]; then
@@ -586,12 +625,10 @@ run_codex() {
         thread_id="$(thread_id_from_log)"
         # The rollout file can appear a poll or two after thread.started; keep looking until it does.
         if [ -n "$thread_id" ] && [ "$thread_id" != "null" ] && [ -z "$rollout_file" ]; then
-            for candidate in "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*-"$thread_id".jsonl; do
-                if [ -f "$candidate" ]; then rollout_file="$candidate"; break; fi
-            done
+            rollout_file="$(find_rollout "$thread_id")"
             if [ -z "$rollout_file" ] && [ "$rollout_warned" = "false" ]; then
                 rollout_warned=true
-                echo "warn: rollout file not found yet for thread $thread_id; context handoff check unavailable until it appears" >&2
+                echo "warn: rollout file not found yet for thread $thread_id; context handoff and rollout stall checks unavailable until it appears" >&2
             fi
         fi
         if [ -n "$rollout_file" ]; then
@@ -633,17 +670,10 @@ run_codex() {
             kill_codex "$pid"
             return 76
         fi
-        size=$(wc -c <"$LOG" 2>/dev/null || echo 0)
-        if [ "$size" != "$last_size" ]; then
-            last_size=$size
-            stalled_for=0
-        else
-            stalled_for=$(( stalled_for + POLL_INTERVAL ))
-            if [ "$stalled_for" -ge "$STALL_TIMEOUT" ]; then
-                echo "warn: no event-log change for ${STALL_TIMEOUT}s — killing stalled codex (pid $pid)" >&2
-                kill_codex "$pid"
-                return 75
-            fi
+        if stall_tick "$rollout_file"; then
+            echo "warn: no event-log or rollout change for ${STALL_TIMEOUT}s — killing stalled codex (pid $pid)" >&2
+            kill_codex "$pid"
+            return 75
         fi
     done
     local rc=0
@@ -651,7 +681,6 @@ run_codex() {
     return "$rc"
 }
 
-thread_id_from_log() { jq -r 'select(.type == "thread.started") | .thread_id' "$LOG" 2>/dev/null | head -1; }
 record_usage() {
     # $1 = outcome label. One line per run so cost is visible across sessions.
     local stats; stats="$(log_stats "$LOG")"
@@ -721,7 +750,7 @@ case "$rc" in
         ;;
     75)
         record_usage stalled >/dev/null
-        fail 75 "CODEX_STALLED: no event-log change for ${STALL_TIMEOUT}s (fresh retry attempted only for zero-progress stalls). Log: $LOG — if progress was made before the stall, triage manually rather than blindly restarting."
+        fail 75 "CODEX_STALLED: no event-log or rollout change for ${STALL_TIMEOUT}s (fresh retry attempted only for zero-progress stalls). Log: $LOG — if progress was made before the stall, triage manually rather than blindly restarting."
         ;;
     0) ;;
     *)
