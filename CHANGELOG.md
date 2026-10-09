@@ -4,6 +4,8 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
 ## 2026-10-09
+- core/skills/forge (forge-core.js, run_context.py, build-lane.md, SKILL.md): when every changed file is docs, instruction text or config, the pre-ship checkpoint agent is skipped (fixed ship recommendation, the run still pauses) and the Codex reviewer is skipped unless an instruction file changed.
+- core/skills/forge (forge-core.js): decisions.md names the reviewer and severity on each dropped and confirmed review finding; forge-stats.py removed (no callers).
 - core/skills/forge (forge-core.js, run_context.py, gate.sh): drop baseline.json; a fresh build launch needs a clean tree with no commits ahead of the base branch, and Ship stops when run files are left uncommitted (C-198).
 - core/skills/forge/SKILL.md and references (build-lane.md, gate-commands.md): diffs and the Semgrep base start at the merge-base with the base branch; a new `localOnly` gate key keeps tracked local files out of every run, including phase commits.
 - core/skills/forge (SKILL.md, forge-core.js, run_context.py): forge launches now require base, resolved by the main session with resolve-base-branch.sh, with no silent fallback to main (C-198).
