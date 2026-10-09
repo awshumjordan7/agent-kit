@@ -316,8 +316,9 @@ const GATE_SCHEMA = {
     commands: { type: 'array', items: { type: 'string' } },
     files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
     diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
+    excludedFiles: { type: 'array', items: { type: 'string' } },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' },
-    head: { type: 'string' }, baselineSha256: { type: 'string' }, diffSha256: { type: 'string' },
+    head: { type: 'string' }, baseSha: { type: 'string' }, diffSha256: { type: 'string' },
     configSha256: { type: 'string' }, filesSha256: { type: 'string' }, stageSelection: { type: 'string' },
     reusedFrom: { type: 'string' },
     commit: {
@@ -1089,12 +1090,16 @@ function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', log
     { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
+function gateBaseArg() {
+  return LAUNCH.base ? ` --base ${shellQuote(LAUNCH.base)}` : ''
+}
+
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sha = '') {
   const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
   const shaArg = sha ? ` --sha ${quote(sha)}` : ''
-  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -2164,12 +2169,13 @@ async function commitFiles(label, message, files) {
   if (!files.length) return { sha: null, empty: true, error: '' }
   const quote = shellQuote
   const subject = String(message).replace(/`/g, '')
-  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
+  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
     { label, phase: 'Implement', schema: GATE_SCHEMA })
   const commit = result && result.commit
   if (commit && Array.isArray(commit.dropped) && commit.dropped.length) {
     await decide(`${label} dropped --files entries that match no file on disk, in the index, or in HEAD: ${commit.dropped.join(', ')}`)
   }
+  if (result && Array.isArray(result.excludedFiles)) await decideExcluded(label, result.excludedFiles)
   if (commit && commit.sha) return { sha: commit.sha, empty: false, error: '' }
   const error = (commit && commit.error) || (result && (result.failures || [])[0] && result.failures[0].summary) || 'commit agent returned null'
   // Every entry dropped means the reported paths were wrong, so the uncommitted work must block the phase.
