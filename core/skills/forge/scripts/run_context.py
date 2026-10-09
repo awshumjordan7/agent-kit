@@ -227,6 +227,35 @@ def _is_source_path(path: str) -> bool:
     )
 
 
+_INSTRUCTION_DIRS = frozenset({"agents", "skills", "references", "commands", "hooks"})
+
+
+def _file_class(path: str) -> str:
+    # Returns code, instruction, docs or config. Anything not recognized is code, so a miss runs
+    # the full review lane. settings*.json is Claude Code permission and hook config. CI workflow
+    # files hold shell run: steps, so they are code whatever their extension.
+    normalized = path.replace("\\", "/").lower()
+    if "/.github/workflows/" in f"/{normalized}":
+        return "code"
+    parts = normalized.split("/")
+    name = parts[-1]
+    if name.endswith(".md"):
+        if (
+            name in {"claude.md", "agents.md"}
+            or name.endswith(".fragment.md")
+            or _INSTRUCTION_DIRS.intersection(parts[:-1])
+        ):
+            return "instruction"
+        return "docs"
+    if name.startswith("settings") and name.endswith(".json"):
+        return "instruction"
+    if name.endswith(".txt"):
+        return "docs"
+    if name.endswith((".json", ".toml", ".yml", ".yaml")):
+        return "config"
+    return "code"
+
+
 def _planned_source_files(plan: str) -> int:
     section = _PHASES_SECTION.search(plan)
     if not section:
@@ -473,6 +502,8 @@ def context(
         "error": "",
         "briefPath": str(brief_path),
         "hasContract": bool(_section(plan, "Public API contract")),
+        "noCode": bool(files) and all(_file_class(path) != "code" for path in files),
+        "instructionFiles": [path for path in files if _file_class(path) == "instruction"],
     }
     _write_atomic(run_dir / f"context-{label}.json", json.dumps(facts, indent=2) + "\n")
     return _checked(facts)
@@ -609,6 +640,8 @@ _CONTEXT_DEFAULTS: dict = {
     "error": "",
     "briefPath": "",
     "hasContract": False,
+    "noCode": False,
+    "instructionFiles": [],
 }
 _CHECKPOINT_DEFAULTS: dict = {
     "recommendation": "",

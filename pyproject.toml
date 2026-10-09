@@ -23,14 +23,12 @@ ignore = ["RUF012"]
 "core/hooks/*.py" = ["T201"]
 ".github/scripts/*.py" = ["T201"]
 "core/scripts/doctor.py" = ["I001", "RUF005", "RUF021", "T201"]
-"core/skills/forge/scripts/forge-stats.py" = ["I001", "T201"]
 
 [tool.ruff.format]
 exclude = [
   "core/hooks/context_guard.py",
   "core/hooks/require_agent_model.py",
   "core/scripts/doctor.py",
-  "core/skills/forge/scripts/forge-stats.py",
   "tests/golden/expected",
 ]
 

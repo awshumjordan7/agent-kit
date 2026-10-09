@@ -40,7 +40,7 @@ Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and
 
 ## Review panel
 
-The Codex reviewer receives the validated diff file through `codex-exec.sh --inline-diff`. The Claude reviewer and path-selected lenses read that same file with the Read tool in ranges of at most 2,000 lines. Reviewers work independently and return file-and-line findings in the shared schema.
+The Codex reviewer receives the validated diff file through `codex-exec.sh --inline-diff`. The Claude reviewer and path-selected lenses read that same file with the Read tool in ranges of at most 2,000 lines. Reviewers work independently and return file-and-line findings in the shared schema. When every changed file is docs, instruction text or config and none is an instruction file, the Codex reviewer is skipped and decisions.md records the skip; the Claude reviewer and triage always run.
 
 The triage agent confirms each finding against current code. Confirmed findings, and gate failures, go through the capped fix loop: at most `MAX_FIX_ROUNDS` (2) rounds of decide, apply, then check. The `judge` agent decides the fix spec and applies a small fix set itself; otherwise the quick-impl applier applies only that spec. In gate mode `full`, gate-failure rounds re-run the full gate, and review-fix rounds run lint, typecheck and Semgrep only. When review fixes were applied, one full gate (`gate-fix-final`) runs on the final state; a failing final gate runs up to 2 more fix rounds with a full gate each. A fresh Claude reviewer re-checks only the review items fixed that round. The loop returns BLOCKED `fix-cap` at the cap and BLOCKED `no-progress` when a round shrinks neither the open review set nor the failing gate count. Rejected, deferred, and cannot-decide review items stop the run for a human ruling, and verified fixes stay unpushed until that ruling.
 
@@ -48,7 +48,7 @@ The triage agent confirms each finding against current code. Confirmed findings,
 
 `gate.mode` is resolved per repository and defaults to `full`. Full mode retains the configured gate. Personal repositories use `none`: they have no tests, spawn no gate agent, and run no test, lint, typecheck, migration, Semgrep, or parity command; Forge still creates the review diff with plain `git diff`.
 
-Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer summarizes the change and recommends shipping, one smoke command, or a QA round. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without an enabled sandbox stops before shipping. Mode `none` still reaches this checkpoint after skipping its gate.
+Every build pauses after the gate at a pre-ship checkpoint. A fresh reviewer summarizes the change and recommends shipping, one smoke command, or a QA round. When no changed file is code, the reviewer does not run: forge records a fixed ship recommendation, and an attended run still pauses. Attended runs ask the user; `auto` follows the recommendation, except a QA recommendation without an enabled sandbox stops before shipping. Mode `none` still reaches this checkpoint after skipping its gate.
 
 ## Multi-repository work
 
