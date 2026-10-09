@@ -1529,11 +1529,16 @@ async function reviewPanel(context) {
     await decide('Triage agent returned no result; retaining the pre-triage confirmed findings.')
     partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
   }
+  const attribution = finding => `[${finding.reviewer || 'unknown'}, ${finding.severity || 'unknown'}]`
   for (const item of partitioned.dropped) {
-    await decide(`Triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
+    await decide(`Triage dropped ${attribution(item.finding)} ${item.finding.file}:${item.finding.line}: ${item.reason}`)
+  }
+  const confirmed = [...ruled.applied, ...partitioned.fix]
+  for (const finding of confirmed) {
+    await decide(`Review confirmed ${attribution(finding)} ${finding.file}:${finding.line}`)
   }
   const unresolvedDisputes = [...ruled.unresolved, ...partitioned.disputes]
-  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed: [...ruled.applied, ...partitioned.fix], failures, returned: present.length }
+  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed, failures, returned: present.length }
 }
 
 // The applier gets only the decider's fix items, already verified, so it applies them without re-triage.
