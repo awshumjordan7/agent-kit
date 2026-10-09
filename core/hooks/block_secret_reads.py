@@ -133,8 +133,9 @@ SECRET_COMMANDS = re.compile(
 #   - The bare-word patterns need trailing \b or they match inside ordinary
 #     identifiers: "token" hits "tokenize", "secret" hits "secretary".
 # ENV_PATH_SHAPES are the env files on their own. `.envrc` and `.env_*` match
-# the settings deny rules.
-ENV_PATH_SHAPES = r"\.envs?\b|\.env\.|/\.envs?\b|\.envrc\b|\.env_"
+# the settings deny rules. `/app/env.sh` is the env file of a Daytona fork; an
+# `env.sh` anywhere else is usually a script.
+ENV_PATH_SHAPES = r"\.envs?\b|\.env\.|/\.envs?\b|\.envrc\b|\.env_|(?<![\w.~-])/app/env\.sh\b"
 SECRET_PATH_SHAPES = (
     ENV_PATH_SHAPES + "|"
     r"\.ssh/|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|authorized_keys|known_hosts|"
@@ -159,12 +160,23 @@ SECRET_BARE_WORDS = (
 )
 
 # A bare word that is also a file name with a data extension (tokens.txt,
-# credentials.json). Checked for reader commands only, never in interpreter
-# heredoc bodies, where prose such as "writes credentials.json" is common.
+# credentials.json). Checked for path tools and reader commands, never in
+# interpreter heredoc bodies, where prose such as "writes credentials.json" is common.
 SECRET_FILE_SHAPES = (
     r"(?:\b|_)(?:credentials?|secrets?|tokens?|api[_-]?keys?)[\w-]*"
     r"\.(?:json|ya?ml|txt|ini|toml|cfg|conf|key)\b"
 )
+# The system account files, bare or with a data extension: `/etc/shadow`,
+# `passwd.txt`. A base name that only contains the word (`box-shadow.css`) is not one.
+SYSTEM_SECRET_FILE = re.compile(
+    r"(?:^|/)(?:passwd|shadow)(?:\.(?:json|ya?ml|txt|ini|toml|cfg|conf|key))?$", re.IGNORECASE
+)
+# A folder named for credentials holds them whatever its files are called
+# (`/run/secrets/db_password`). `.secrets/` is left out: AUTHORIZED_PATHS opts it out.
+SECRET_FOLDER = re.compile(r"(?:^|/)(?:secrets?|\.secret|credentials?)/", re.IGNORECASE)
+# A forge gate output (`gate-apikey.log`, `gate-commit-phase-1.json`) is named
+# after the gate's label, not after what it holds.
+GATE_OUTPUT = re.compile(r"(?:^|/)gate-[\w-]+\.(?:log|json|diff)$", re.IGNORECASE)
 
 # Explicitly fine: sample/template files that carry no real values.
 ALLOWLIST = re.compile(
@@ -960,9 +972,15 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, her
     read_paths = read_operands(args) + [value for name, value in options if name in ("-f", "--file")] + includes
     read_paths += [value.partition("=")[2] for name, value in options if family == "awk" and name == "-v"]
     for path in read_paths:
-        # SECRET_BARE_WORDS misses `service_credentials.json`: `_` defeats its \b.
-        file_shape = re.search(SECRET_FILE_SHAPES, ALLOWLIST.sub(" ", path), re.IGNORECASE)
-        if secret_path_hit(path) or (file_shape and not AUTHORIZED_PATHS.search(path)):
+        # A reader operand still blocks on a bare credential word (`config/token`); a path tool does not.
+        word = (
+            re.search(SECRET_BARE_WORDS, ALLOWLIST.sub(" ", path), re.IGNORECASE)
+            and not path.lower().endswith(".md")
+            and not AUTHORIZED_PATHS.search(path)
+            and not api_key_source(path)
+            and not gate_output(path)
+        )
+        if secret_path_hit(path) or word:
             return Hit("reads a credential-bearing path", "reader-operand", path, raw)
     glob = any(GLOB_CHARS.search(f) for f in args.files)
     all_md = not args.stdin_files and bool(args.files) and all(f.lower().endswith(".md") for f in args.files)
@@ -1705,22 +1723,35 @@ def interpreter_body_scans(body: str, words: set[str]) -> list[str]:
     return [code] + [literal for literal in literals if not re.search(r"\s", literal)]
 
 
-def secret_path_hit(path: str) -> tuple[str, str] | None:
+def secret_path_hit(path: str, new_file: bool = False) -> tuple[str, str] | None:
     """Return (rule, matched text) when a path names credential material, else None.
 
     ALLOWLIST names are blanked, not exempted, so a token-info file under
     ~/.aws/ still blocks. AUTHORIZED_PATHS exempts the whole path: its
-    `/.secrets/` directory form covers every file below it.
+    `/.secrets/` directory form covers every file below it. A bare credential
+    word alone (`sidebar-tokens.css`, `hs-token/x.json`) does not count. A file
+    that does not exist yet (`new_file`) holds nothing, so only
+    SECRET_PATH_SHAPES apply to it.
     """
     if AUTHORIZED_PATHS.search(path):
         return None
     scan = ALLOWLIST.sub(" ", path)
     if m := re.search(SECRET_PATH_SHAPES, scan, re.IGNORECASE):
         return "secret-path", m.group(0)
-    if not path.lower().endswith(".md") and (m := re.search(SECRET_BARE_WORDS, scan, re.IGNORECASE)):
-        if not api_key_source(path):
-            return "secret-word", m.group(0)
+    if new_file:
+        return None
+    if m := SECRET_FOLDER.search(scan):
+        return "secret-folder", m.group(0)
+    if gate_output(path):
+        return None
+    if m := re.search(SECRET_FILE_SHAPES, scan, re.IGNORECASE) or SYSTEM_SECRET_FILE.search(path):
+        return "secret-file", m.group(0)
     return None
+
+
+def gate_output(path: str) -> bool:
+    """Return True when a path's base name is a forge gate output, such as `gate-apikey.log`."""
+    return bool(GATE_OUTPUT.search(path.strip("'\"")))
 
 
 API_KEY_WORD = re.compile(r"api[_-]?keys?", re.IGNORECASE)
@@ -1744,9 +1775,11 @@ def api_key_source(path: str) -> bool:
     )
 
 
-def blank_api_key_sources(text: str) -> str:
-    """Blank the shell words that api_key_source() exempts, before a bare-word check."""
-    return SHELL_WORD.sub(lambda m: " " if api_key_source(m.group(0)) else m.group(0), text)
+def blank_exempt_paths(text: str) -> str:
+    """Blank the shell words that api_key_source() or gate_output() exempts, before a word check."""
+    return SHELL_WORD.sub(
+        lambda m: " " if api_key_source(m.group(0)) or gate_output(m.group(0)) else m.group(0), text
+    )
 
 
 FORGE_CONFIG = "~/.claude/skills/forge/forge.config.json"
@@ -1891,6 +1924,44 @@ def unparsed_search_verdict(raw: str, here: str | None, fed_by_pipe: bool) -> Hi
     return hit._replace(advice=f"{hit.advice}\n{note}")
 
 
+# A grep call up to the end of its arguments, followed by redirects to
+# /dev/null only and then the end of a command or of a quoted `sh -c` script.
+GREP_CALL = re.compile(
+    r"(?<![\w./-])[ef]?grep(?:[ \t]+(?:'[^']*'|\"[^\"]*\"|[^\s;&|<>()'\"`]+))+"
+    r"(?:[ \t]*(?:[\d&]?>>?[ \t]*/dev/null|\d?>&\d))*"
+    r"(?=[ \t]*(?:$|[;\n'\"]|&&|\|\||&(?![>&])))"
+)
+SAFE_REDIRECT = re.compile(r"[\d&]?>>?[ \t]*/dev/null|\d?>&\d")
+
+
+def blank_names_only_env_greps(segment: str, feeds_pipe: bool) -> str:
+    """Blank the env-file operands of each grep that prints only names, counts or nothing.
+
+    `grep -q`, `-c`, `-l` and `-L` print no line of an env file. `-o` still
+    does, and a pipe, a file redirect or a substitution can hand the names on
+    to another reader (`grep -l X .env | xargs cat`), so those keep the segment whole.
+    """
+    if (
+        feeds_pipe
+        or any(s in segment for s in ("$(", "`", "<(", ">("))
+        or re.search(r"(?<!\|)\|(?!\|)", segment)
+        or ">" in SAFE_REDIRECT.sub(" ", segment)
+    ):
+        return segment
+
+    def blank(m: re.Match[str]) -> str:
+        args = parse_reader(m.group(0))
+        if args is None or args.family != "grep" or args.stdin_files:
+            return m.group(0)
+        names = {name for name, _ in args.options}
+        if not names & NAMES_ONLY_OPTS["grep"] or names & {"-o", "--only-matching"}:
+            return m.group(0)
+        env_files = {f for f in args.files if env_path(f)}
+        return re.sub(r"[^\s'\"]+", lambda t: " " if t.group(0) in env_files else t.group(0), m.group(0))
+
+    return GREP_CALL.sub(blank, segment)
+
+
 # Heredoc bodies are data unless a shell or interpreter on the header line
 # will execute them; strip_heredoc_bodies() applies that split before
 # segments are checked below.
@@ -1934,18 +2005,19 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             dot_cd = dot_cd or any(has_dot_part(word) for word in cd.group(1).split())
         if cd or BARE_CD.fullmatch(raw):
             here = _cd_dir(here, cd.group(1) if cd else "")
+        read = blank_names_only_env_greps(raw, feeds_pipe)
         # Blank out only the allowlisted paths, never the whole segment:
         # `diff .env .env.example` reads the real file and must still block.
-        segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", raw))
+        segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", read))
         if sources_repo_env:
             segment = SOURCED_REPO_ENV.sub(r"\g<lead> ", segment)
         if not segment.strip():
             continue
         if m := SECRET_COMMANDS.search(segment):
             return Hit("prints a stored credential", "secret-command", m.group(0), raw)
-        # Tokenized from the raw segment: allowlist blanking must not shift
-        # which token is the pattern.
-        if (reader := parse_reader(raw)) is not None:
+        # Tokenized before allowlist blanking: that must not shift which
+        # token is the pattern.
+        if (reader := parse_reader(read)) is not None:
             fed_by_pipe = i > 0 and piped[i - 1]
             if hit := reader_verdict(reader, raw, fed_by_pipe=fed_by_pipe, here=here):
                 return hit
@@ -1953,7 +2025,7 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             # files rather than stdin gets the plain reader word check.
             if reader.family == "rg" and (reader.files or not fed_by_pipe):
                 reader_text = blank_excludes(strip_redirections(segment, output_only=True))
-                if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
+                if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_exempt_paths(reader_text))):
                     return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             # A dot-directory (~/.config/rclone/rclone.conf) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
@@ -1966,7 +2038,7 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             names_only = {name for name, _ in reader.options} & NAMES_ONLY_OPTS.get(
                 reader.family, set()
             )
-            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(blank_excludes(segment))))
+            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_exempt_paths(blank_excludes(segment))))
             if dotted and (feeds_pipe or not names_only) and (m := word):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         else:
@@ -1975,9 +2047,9 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             scan = QUOTED_PROSE.sub(" ", reader_text) if messengers and is_messenger(raw) else reader_text
             if m := READER_NEAR_SECRET.search(scan):
                 return Hit("reads a credential-bearing path", "reader-near-secret", m.group(0), raw)
-            if m := READER_NEAR_SECRET_FILE.search(pattern_scan(scan)):
+            if m := READER_NEAR_SECRET_FILE.search(pattern_scan(blank_exempt_paths(scan))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-file", m.group(0), raw)
-            if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
+            if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_exempt_paths(reader_text))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             if hit := unparsed_search_verdict(raw, here, fed_by_pipe=i > 0 and piped[i - 1]):
                 return hit
@@ -2271,9 +2343,9 @@ PATH_FIELDS = {
 }
 
 
-def path_verdict(file_path: str) -> Hit | None:
+def path_verdict(file_path: str, new_file: bool = False) -> Hit | None:
     """Return why to block a direct file read, or None to allow."""
-    if found := secret_path_hit(file_path):
+    if found := secret_path_hit(file_path, new_file):
         rule, fragment = found
         return Hit("reads a credential-bearing path", rule, fragment, file_path)
     return None
@@ -2359,7 +2431,10 @@ def main() -> int:
         for field in PATH_FIELDS[tool_name]:
             value = tool_input.get(field) or ""
             if isinstance(value, str):
-                hit = hit or path_verdict(value)
+                new_file = tool_name == "Write" and not os.path.lexists(
+                    posixpath.join(cwd or "", posixpath.expanduser(value))
+                )
+                hit = hit or path_verdict(value, new_file)
     else:
         return 0
 

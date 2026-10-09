@@ -1459,5 +1459,281 @@
   "id": "D-RB4",
   "cmd": "rg -L token src/",
   "cwd": "clean"
+ },
+ {
+  "id": "N08a",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/ui/src/styles/sidebar-tokens.css"
+  }
+ },
+ {
+  "id": "N08b",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/ui/node_modules/@x/tokens/theme.css"
+  }
+ },
+ {
+  "id": "N09a",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/qol/gate-apikey.log"
+  }
+ },
+ {
+  "id": "C208a",
+  "exp": "pass",
+  "tool": "Write",
+  "input": {
+   "file_path": "{pathfiles}/scratchpad/hs-token/x.json",
+   "content": "{\"n\": \"DUMMY\"}"
+  }
+ },
+ {
+  "id": "N05a",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/run-12/secrets-11/paylink-q8.txt"
+  }
+ },
+ {
+  "id": "C208e",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "{pathfiles}/secrets.json"
+  }
+ },
+ {
+  "id": "N08x",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/ui/tokens.json"
+  }
+ },
+ {
+  "id": "N09x",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/qol/apikey.json"
+  }
+ },
+ {
+  "id": "C217c",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/out/19-vendorx-token-info.json"
+  }
+ },
+ {
+  "id": "P2a",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/credentials.json"
+  }
+ },
+ {
+  "id": "P2b",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/config/secrets.yaml"
+  }
+ },
+ {
+  "id": "P2c",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/tokens.txt"
+  }
+ },
+ {
+  "id": "P2d",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/passwd.txt"
+  }
+ },
+ {
+  "id": "P2e",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/etc/shadow"
+  }
+ },
+ {
+  "id": "B03-write-ssh",
+  "exp": "block",
+  "tool": "Write",
+  "input": {
+   "file_path": "/tmp/k9run/.ssh/config",
+   "content": "x"
+  }
+ },
+ {
+  "id": "P2f",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/ui/box-shadow.css"
+  }
+ },
+ {
+  "id": "N05x",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/run-12/secrets/stripe.json"
+  }
+ },
+ {
+  "id": "P2g",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/run/secrets/db_password"
+  }
+ },
+ {
+  "id": "P2h",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/credentials/gcp.json"
+  }
+ },
+ {
+  "id": "P2i",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/.secret/app.json"
+  }
+ },
+ {
+  "id": "P2j",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/.secrets/app.json"
+  }
+ },
+ {
+  "id": "C208b",
+  "exp": "pass",
+  "tool": "Write",
+  "input": {
+   "file_path": "{pathfiles}/new/capture-secrets-r2.json",
+   "content": "[\"DUMMY\"]"
+  }
+ },
+ {
+  "id": "C208d",
+  "exp": "block",
+  "tool": "Write",
+  "input": {
+   "file_path": "{pathfiles}/secrets.json",
+   "content": "{}"
+  }
+ },
+ {
+  "id": "N09b",
+  "exp": "pass",
+  "cmd": "tail -40 /tmp/k9run/qol/gate-apikey.log"
+ },
+ {
+  "id": "N09c",
+  "exp": "pass",
+  "cmd": "jq '.passed' /tmp/k9run/qol/gate-apikey.json"
+ },
+ {
+  "id": "P2k",
+  "exp": "pass",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/k9run/qol/gate-apikey.json"
+  }
+ },
+ {
+  "id": "N09y",
+  "exp": "block",
+  "cmd": "cat /tmp/k9run/apikey.txt"
+ },
+ {
+  "id": "N03u",
+  "exp": "block",
+  "cmd": "cat /app/env.sh"
+ },
+ {
+  "id": "N03x",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- cat /app/env.sh"
+ },
+ {
+  "id": "N03y",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- sh -c 'grep DUMMY_A /app/env.sh'"
+ },
+ {
+  "id": "N03z",
+  "exp": "block",
+  "cmd": "uv run python manage.py sandbox_exec fork-dummy \"cat /app/env.sh\""
+ },
+ {
+  "id": "N03d",
+  "exp": "block",
+  "cmd": "cut -d= -f1 /app/env.sh"
+ },
+ {
+  "id": "E06a",
+  "exp": "block",
+  "cmd": "cut -d= -f1 /app/.env"
+ },
+ {
+  "id": "E06b",
+  "exp": "block",
+  "cmd": "awk -F= '{print $1}' /app/.env"
+ },
+ {
+  "id": "P2l",
+  "exp": "block",
+  "cmd": "grep -o DUMMY_A /app/.env"
+ },
+ {
+  "id": "E06c",
+  "exp": "pass",
+  "cmd": "grep -q DUMMY_A /app/.env"
+ },
+ {
+  "id": "E06d",
+  "exp": "pass",
+  "cmd": "grep -c DUMMY_A /app/.env"
+ },
+ {
+  "id": "E06e",
+  "exp": "pass",
+  "cmd": "grep -l DUMMY_A /app/.env"
+ },
+ {
+  "id": "E06j",
+  "exp": "pass",
+  "cmd": "grep -q DUMMY_A /app/env.sh"
+ },
+ {
+  "id": "N03c",
+  "exp": "pass",
+  "cmd": "uv run python -m app_api.cli sandbox exec fork-dummy -- sh -c 'for k in DUMMY_A DUMMY_B; do grep -q \"^$k=.\" /app/env.sh && echo \"$k set\" || echo \"$k blank\"; done'"
  }
 ]

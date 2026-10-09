@@ -69,5 +69,12 @@
       "certs/dev.pem": "DUMMY placeholder, not a key\n"
     },
     "track": ["app/settings.py", "certs/dev.pem"]
+  },
+  "pathfiles": {
+    "git": false,
+    "files": {
+      "secrets.json": "{}\n"
+    },
+    "track": []
   }
 }
