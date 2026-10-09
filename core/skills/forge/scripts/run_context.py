@@ -497,23 +497,6 @@ def _relaunch_marker(run_dir: Path) -> str:
     return ""
 
 
-def _resolve_base(repo: Path) -> str:
-    script = Path(__file__).resolve().parents[2] / "ship-pr" / "scripts" / "resolve-base-branch.sh"
-    try:
-        completed = subprocess.run(
-            ["bash", str(script)],
-            cwd=repo,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        return "main"
-    lines = completed.stdout.strip().splitlines()
-    return lines[-1].strip() if completed.returncode == 0 and lines else "main"
-
-
 def launch_facts(
     repo: Path,
     run_dir: Path,
@@ -522,7 +505,22 @@ def launch_facts(
     relaunch: bool = False,
     no_check: bool = False,
 ) -> dict:
-    base = base or _resolve_base(repo)
+    if not base:
+        return _checked(
+            {
+                "ok": False,
+                "base": "",
+                "baseRef": "",
+                "mergeBase": "",
+                "head": "",
+                "relaunch": relaunch,
+                "marker": "",
+                "dirty": [],
+                "excluded": [],
+                "aheadCount": 0,
+                "error": "launch-facts needs --base: the main session sets base in the launch args (resolve it with ship-pr/scripts/resolve-base-branch.sh and ask the user if that fails)",
+            }
+        )
     base_ref, merge_base = _merge_base(repo, base)
     head = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", "HEAD"],
@@ -530,7 +528,7 @@ def launch_facts(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    marker = "" if relaunch else _relaunch_marker(run_dir)
+    marker = "" if relaunch or no_check else _relaunch_marker(run_dir)
     _porcelain, paths = _status(repo)
     dirty, excluded = _split_excluded(paths, _excluder(repo, run_dir, patterns or []))
     ahead = (
@@ -574,6 +572,22 @@ def filter_paths(
         if entry
     ]
     excludes = _excluder(repo, run_dir, patterns or [])
+    # A directory entry would stage everything beneath it, so it is split into its files
+    # when any of them is excluded.
+    expanded: list[str] = []
+    for entry in entries:
+        if (repo / entry).is_dir():
+            raw = _git(
+                repo,
+                "ls-files", "-z", "--full-name", "--cached", "--others", "--exclude-standard", "--", entry,
+                text=False,
+            )
+            listed = [item.decode("utf-8", "surrogateescape") for item in raw.split(b"\0") if item]
+            if any(excludes(item) for item in listed):
+                expanded.extend(listed)
+                continue
+        expanded.append(entry)
+    entries = expanded
     kept = [entry for entry in entries if not excludes(entry)]
     excluded = list(dict.fromkeys(entry for entry in entries if excludes(entry)))
     temporary = files_file.with_name(files_file.name + ".tmp")

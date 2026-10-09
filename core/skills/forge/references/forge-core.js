@@ -993,8 +993,9 @@ async function decideExcluded(source, paths) {
 // A fresh build launch must start on a clean tree at the base branch, so every dirty or committed
 // path the run later sees is its own. A relaunch already owns its dirty files and skips the check.
 async function launchCheck(relaunch) {
+  if (!args.base) throw new Error(`forge needs base in the launch args for ${PARAMS.projectDir}: the main session resolves it with ship-pr/scripts/resolve-base-branch.sh, asks the user if that fails, and passes it as base. Forge does not guess the base branch.`)
   const review = PARAMS.lane === 'review'
-  const base = args.base ? ` --base ${shellQuote(args.base)}` : ''
+  const base = ` --base ${shellQuote(args.base)}`
   const mode = review ? ' --no-check' : relaunch ? ' --relaunch' : ''
   const facts = await factsCommand('launch-facts', `python3 ~/.claude/skills/forge/scripts/run_context.py launch-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${base}${localOnlyFlags()}${mode}`,
     LAUNCH_FACTS_SCHEMA, review ? 'Review' : 'Implement')
@@ -1628,7 +1629,7 @@ async function converge(panel, context) {
 
 function fixDiffStatCommand() {
   const repo = shellQuote(PARAMS.projectDir)
-  return `git -C ${repo} diff --stat "$(git -C ${repo} merge-base HEAD ${shellQuote(LAUNCH.baseRef || 'main')})"`
+  return `git -C ${repo} diff --stat "$(git -C ${repo} merge-base HEAD ${shellQuote(LAUNCH.baseRef)})"`
 }
 
 function deciderPrompt(round, open, gate, opts, history) {
@@ -2155,7 +2156,7 @@ function phaseBranch(name) {
   const repo = shellQuote(PARAMS.projectDir)
   const branch = shellQuote(name)
   const report = `python3 -c 'import json, subprocess; print(json.dumps({"branch": subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()}))'`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && base=$(bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || true) && case "$current" in ''|develop|main|master|"$base") git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && case "$current" in ''|develop|main|master|${shellQuote(LAUNCH.base)}) git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
     { label: 'phase-branch', phase: 'Implement', schema: BRANCH_SCHEMA })
 }
 
@@ -2474,6 +2475,7 @@ async function fullLane() {
         return state
       }
       // Fresh, not the checkpoint's saved context: that one predates any later localOnly change.
+      PARAMS.spawnCap += 1
       state.context = await changedFiles()
       if (contextFailed(state.context)) {
         state.status = 'BLOCKED'
@@ -2588,6 +2590,7 @@ async function fullLane() {
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
         } else {
           state.ship = synced
+          if (state.status === 'BLOCKED') return state
           if (state.checkpointSmokeCommand) {
             // The checkpoint smoke ran before review; the fix round changed the shipped head.
             PARAMS.spawnCap += 1

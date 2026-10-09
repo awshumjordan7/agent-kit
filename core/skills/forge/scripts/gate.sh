@@ -540,14 +540,15 @@ fi
 
 excluded_files_file="$state_prefix-excluded.json"
 printf '{"excluded": []}\n' >"$excluded_files_file" || die "gate.sh: cannot write run directory: $run_dir"
-if $files_given; then
-  python3 "$script_dir/run_context.py" filter-paths --repo "$repo" --run-dir "$run_dir" \
-    ${exclude_args[@]+"${exclude_args[@]}"} --files-file "$files_file" >"$excluded_files_file" \
-    || die 'gate.sh: cannot filter --files entries'
-  files=()
-  while IFS= read -r -d '' file; do
-    files+=("$file")
-  done <"$files_file"
+python3 "$script_dir/run_context.py" filter-paths --repo "$repo" --run-dir "$run_dir" \
+  ${exclude_args[@]+"${exclude_args[@]}"} --files-file "$files_file" >"$excluded_files_file" \
+  || die 'gate.sh: cannot filter --files entries'
+files=()
+while IFS= read -r -d '' file; do
+  files+=("$file")
+done <"$files_file"
+if [[ $files_given == true && -z $commit_message ]] && ((${#files[@]} == 0)); then
+  die 'gate.sh: every --files path was excluded (localOnly patterns or the run dir)'
 fi
 
 diff_command=(python3 "$script_dir/run_context.py" diff --run-dir "$run_dir" --repo "$repo" --label "$label")
