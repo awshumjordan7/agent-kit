@@ -232,8 +232,11 @@ _INSTRUCTION_DIRS = frozenset({"agents", "skills", "references", "commands", "ho
 
 def _file_class(path: str) -> str:
     # Returns code, instruction, docs or config. Anything not recognized is code, so a miss runs
-    # the full review lane. settings*.json is Claude Code permission and hook config.
+    # the full review lane. settings*.json is Claude Code permission and hook config. CI workflow
+    # files hold shell run: steps, so they are code whatever their extension.
     normalized = path.replace("\\", "/").lower()
+    if "/.github/workflows/" in f"/{normalized}":
+        return "code"
     parts = normalized.split("/")
     name = parts[-1]
     if name.endswith(".md"):

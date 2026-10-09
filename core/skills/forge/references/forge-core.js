@@ -1533,6 +1533,7 @@ async function reviewPanel(context) {
   const present = raw.filter(Boolean)
   const rows = specs.map((spec, index) => raw[index] ? { key: spec.key, result: raw[index] } : null).filter(Boolean)
   const failures = specs.flatMap((spec, index) => raw[index] ? [] : [{ key: spec.key, status: 'FAIL', reason: 'agent returned null' }])
+  if (skipCodex && failures.some(failure => failure.key === 'claude')) return { status: 'BLOCKED', reason: 'Review panel: Claude reviewer failed and Codex was skipped, so no general review ran' }
   const findings = uniqueFindings(rows)
   const disputes = detectContradictions(rows)
   const ruled = await applyRulings(findings, disputes)
@@ -2698,7 +2699,10 @@ async function reviewLane() {
     return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
   }
   const review = await reviewPanel(context)
-  if (review.status === 'BLOCKED') return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+  if (review.status === 'BLOCKED') {
+    await decide(review.reason)
+    return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+  }
   if ((configuredRole('review') || {}).provider !== 'claude' && review.failures.some(failure => failure.key === 'codex')) {
     await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the review lane is BLOCKED instead of continuing Claude-only.')
     return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
