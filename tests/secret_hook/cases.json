@@ -1,0 +1,1463 @@
+[
+ {
+  "id": "G1",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY",
+  "stderr_has": [
+   "search-reaches-env-file",
+   "':!.env*' ':!*/.env*'",
+   " -l"
+  ]
+ },
+ {
+  "id": "G2",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY -- . ':!.env*' ':!*/.env*'"
+ },
+ {
+  "id": "G3",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -l DUMMY"
+ },
+ {
+  "id": "G4",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "git -C {tracked} grep -n DUMMY"
+ },
+ {
+  "id": "G5",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "cd {tracked} && git grep -n DUMMY"
+ },
+ {
+  "id": "G6",
+  "exp": "pass",
+  "cwd": "ignored",
+  "cmd": "git grep -n DUMMY"
+ },
+ {
+  "id": "G7",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "git grep -n DUMMY"
+ },
+ {
+  "id": "G8",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY -- app/"
+ },
+ {
+  "id": "G9",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "git --no-pager grep -n DUMMY"
+ },
+ {
+  "id": "G10",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY -- . ':(exclude).envs' ':(exclude)svc/.env.local'"
+ },
+ {
+  "id": "G11",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY -- . ':!.envs'",
+  "stderr_has": [
+   "svc/.env.local"
+  ]
+ },
+ {
+  "id": "G12",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "cd \"$FIXTURE_DIR\" && git grep -n DUMMY"
+ },
+ {
+  "id": "G13",
+  "exp": "block",
+  "cwd": "tracked",
+  "payload_cwd": false,
+  "cmd": "git grep -n DUMMY"
+ },
+ {
+  "id": "G14",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -c DUMMY"
+ },
+ {
+  "id": "G15",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY HEAD",
+  "note": "revision, not a pathspec: list the whole index"
+ },
+ {
+  "id": "G16",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY HEAD -- . ':!.env*' ':!*/.env*'"
+ },
+ {
+  "id": "G17",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "git grep --untracked -n DUMMY",
+  "note": "--untracked must keep --cached"
+ },
+ {
+  "id": "G18",
+  "exp": "pass",
+  "cwd": "visible",
+  "cmd": "git grep -n DUMMY",
+  "note": "untracked env files are not searched by git grep"
+ },
+ {
+  "id": "G19",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "git -C \"$(git rev-parse --show-toplevel)\" grep -n DUMMY",
+  "stderr_has": [
+   "could not check"
+  ]
+ },
+ {
+  "id": "G20",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git grep -n DUMMY -- . ':(top,exclude).envs' ':^svc/.env.local'"
+ },
+ {
+  "id": "G21",
+  "exp": "pass",
+  "cwd": "othershape",
+  "cmd": "git grep -n DUMMY",
+  "note": "a tracked non-env secret file is out of scope"
+ },
+ {
+  "id": "R1",
+  "exp": "block",
+  "cwd": "visible",
+  "cmd": "grep -rn DUMMY .",
+  "stderr_has": [
+   "search-reaches-env-file",
+   "--exclude-dir=.envs --exclude='.env*'",
+   " -l"
+  ]
+ },
+ {
+  "id": "R2",
+  "exp": "pass",
+  "cwd": "visible",
+  "cmd": "grep -rn --exclude-dir=.envs --exclude='.env*' DUMMY ."
+ },
+ {
+  "id": "R3",
+  "exp": "pass",
+  "cwd": "ignored",
+  "cmd": "grep -rn DUMMY ."
+ },
+ {
+  "id": "R4",
+  "exp": "pass",
+  "cwd": "visible",
+  "cmd": "grep -rln DUMMY ."
+ },
+ {
+  "id": "R5",
+  "exp": "pass",
+  "cwd": "visible",
+  "cmd": "rg -n DUMMY"
+ },
+ {
+  "id": "R6",
+  "exp": "block",
+  "cwd": "visible",
+  "cmd": "rg --hidden -n DUMMY",
+  "stderr_has": [
+   "search-reaches-env-file",
+   "-g '!.env*'",
+   " -l"
+  ]
+ },
+ {
+  "id": "R7",
+  "exp": "pass",
+  "cwd": "visible",
+  "cmd": "rg --hidden -n DUMMY -g '!.env*'"
+ },
+ {
+  "id": "R8",
+  "exp": "pass",
+  "cwd": "nogit",
+  "cmd": "grep -rn DUMMY .",
+  "note": "non-git roots are out of scope (KNOWN GAPS)"
+ },
+ {
+  "id": "R9",
+  "exp": "pass",
+  "cwd": "visible",
+  "cmd": "grep -rn DUMMY app/"
+ },
+ {
+  "id": "R10",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "grep -rn DUMMY {visible}"
+ },
+ {
+  "id": "R11",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "grep -rn DUMMY .",
+  "note": "svc/.env.local is tracked and not ignored"
+ },
+ {
+  "id": "R12",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "grep -rn --hidden DUMMY .",
+  "note": "unparsed (ugrep-only flag) in a repo with no env files"
+ },
+ {
+  "id": "R13",
+  "exp": "block",
+  "cwd": "visible",
+  "cmd": "grep -rn --hidden DUMMY .",
+  "note": "unparsed (ugrep-only flag) in a repo with visible env files"
+ },
+ {
+  "id": "R14",
+  "exp": "block",
+  "cwd": "ignored",
+  "cmd": "rg -n DUMMY -g '*'",
+  "note": "a positive glob reads ignored and dot files"
+ },
+ {
+  "id": "R15",
+  "exp": "block",
+  "cwd": "tracked",
+  "proc_cwd": "clean",
+  "cmd": "cd svc && grep -rn DUMMY .",
+  "note": "relative cd joins onto the payload cwd, not the process cwd"
+ },
+ {
+  "id": "R16",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "grep -rn DUMMY \"$REPO\"",
+  "stderr_has": [
+   "could not check"
+  ]
+ },
+ {
+  "id": "R17",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "git log --oneline | rg -n DUMMY",
+  "note": "rg fed by a pipe reads stdin"
+ },
+ {
+  "id": "R18",
+  "exp": "block",
+  "cwd": "visible",
+  "cmd": "rg -. -n DUMMY",
+  "note": "-. is --hidden"
+ },
+ {
+  "id": "R19",
+  "exp": "block",
+  "cwd": "subignored",
+  "cmd": "grep -rn DUMMY svc/",
+  "note": "ugrep skips the parent .gitignore from a subdirectory root"
+ },
+ {
+  "id": "R20",
+  "exp": "block",
+  "cwd": "subignored",
+  "cmd": "cd svc && grep -rn DUMMY .",
+  "note": "same, from a subdirectory cwd"
+ },
+ {
+  "id": "R21",
+  "exp": "pass",
+  "cwd": "subignored",
+  "cmd": "rg --hidden -n DUMMY svc/",
+  "note": "rg honours the parent .gitignore"
+ },
+ {
+  "id": "R22",
+  "exp": "pass",
+  "cwd": "subignored",
+  "cmd": "grep -rn DUMMY .",
+  "note": "ugrep honours .gitignore from the repo top"
+ },
+ {
+  "id": "R23",
+  "exp": "block",
+  "cwd": "shapes",
+  "cmd": "grep -rn --exclude-dir=.envs --exclude='.env*' DUMMY .",
+  "stderr_has": [
+   "--exclude='prod.env'"
+  ],
+  "note": "the canonical exclude misses config/prod.env"
+ },
+ {
+  "id": "R24",
+  "exp": "block",
+  "cwd": "shapes",
+  "cmd": "grep -rn DUMMY .",
+  "stderr_has": [
+   ".envrc"
+  ]
+ },
+ {
+  "id": "R25",
+  "exp": "pass",
+  "cwd": "shapes",
+  "cmd": "grep -rn --exclude-dir=.envs --exclude='.env*' --exclude='prod.env' DUMMY ."
+ },
+ {
+  "id": "R26",
+  "exp": "pass",
+  "cwd": "shapes",
+  "cmd": "rg --hidden -n DUMMY -g '!.env*' -g '!config/prod.env'"
+ },
+ {
+  "id": "T1",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{visible}",
+   "output_mode": "content"
+  },
+  "stderr_has": [
+   "search-reaches-env-file",
+   "glob",
+   "!.env*",
+   "files_with_matches"
+  ]
+ },
+ {
+  "id": "T2",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{visible}",
+   "output_mode": "content",
+   "glob": "!.env*"
+  }
+ },
+ {
+  "id": "T3",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{visible}",
+   "output_mode": "files_with_matches"
+  }
+ },
+ {
+  "id": "T4",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{visible}",
+   "glob": "!**/.envs/**"
+  }
+ },
+ {
+  "id": "T5",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{ignored}",
+   "output_mode": "content"
+  }
+ },
+ {
+  "id": "T6",
+  "exp": "block",
+  "cwd": "visible",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "output_mode": "content"
+  }
+ },
+ {
+  "id": "T7",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{visible}",
+   "output_mode": "content",
+   "glob": "*.py"
+  }
+ },
+ {
+  "id": "T8",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{visible}/.envs",
+   "output_mode": "content"
+  }
+ },
+ {
+  "id": "T9",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "DUMMY",
+   "path": "{ignored}",
+   "output_mode": "content",
+   "glob": "*"
+  },
+  "note": "a positive glob reads ignored files"
+ },
+ {
+  "id": "E1",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run python manage.py makemigrations --dry-run --no-input --check'",
+  "note": "app-api gate.worktree.migrations, verbatim"
+ },
+ {
+  "id": "E2",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run ruff check \"$@\"' -- app/settings.py",
+  "note": "app-api gate.worktree.lint with <paths> = app/settings.py"
+ },
+ {
+  "id": "K1",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/x/.envs/.django/.fake"
+  }
+ },
+ {
+  "id": "K2",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "VENDORX",
+   "path": "/tmp/x"
+  }
+ },
+ {
+  "id": "K3",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "token",
+   "path": "/tmp/x"
+  }
+ },
+ {
+  "id": "K4",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "x",
+   "path": "/tmp/x",
+   "glob": "**/.envs/**"
+  }
+ },
+ {
+  "id": "K5",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/.envs/**",
+   "path": "/tmp/x"
+  }
+ },
+ {
+  "id": "K6",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "git -C /tmp/x grep -n VENDORX"
+ },
+ {
+  "id": "K7",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "git -C /tmp/x grep -n TOKEN"
+ },
+ {
+  "id": "K8",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "cd /tmp/x && git grep -n VENDORX"
+ },
+ {
+  "id": "K9",
+  "exp": "block",
+  "cwd": "clean",
+  "cmd": "cd /tmp/x && git grep -n token"
+ },
+ {
+  "id": "K10",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "grep -rn VENDORX /tmp/x"
+ },
+ {
+  "id": "K11",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "rg -n VENDORX /tmp/x"
+ },
+ {
+  "id": "K12",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "rg -n --hidden VENDORX /tmp/x"
+ },
+ {
+  "id": "K13",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "git -C /tmp/x ls-files .envs"
+ },
+ {
+  "id": "K14",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "ls -la /tmp/x/.envs/.django"
+ },
+ {
+  "id": "K15",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "git -C /tmp/x grep -n VENDORX -- ':!.envs'"
+ },
+ {
+  "id": "K16",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "grep -rn VENDORX /tmp/x --exclude-dir=.envs --exclude='.env*'"
+ },
+ {
+  "id": "K17",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "rg -n VENDORX /tmp/x -g '!.envs'"
+ },
+ {
+  "id": "K18",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "git -C /tmp/x grep -n VENDORX -- . ':(exclude).envs'"
+ },
+ {
+  "id": "K19",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Grep",
+  "input": {
+   "pattern": "VENDORX",
+   "path": "/tmp/x",
+   "glob": "!**/.envs/**"
+  }
+ },
+ {
+  "id": "K20",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "git -C /tmp/x grep -l VENDORX"
+ },
+ {
+  "id": "K21",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "find /tmp/x -path '*/.envs/*' -type f"
+ },
+ {
+  "id": "K22",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Glob",
+  "input": {
+   "pattern": "/tmp/x/.envs/**"
+  }
+ },
+ {
+  "id": "D-B1",
+  "exp": "block",
+  "cmd": "cat .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B2",
+  "exp": "block",
+  "cmd": "cat ~/.ssh/id_ed25519",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B3",
+  "exp": "block",
+  "cmd": "head -5 service/.envs/.django",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B4",
+  "exp": "block",
+  "cmd": "cp ~/.aws/credentials /tmp/aws-copy",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B5",
+  "exp": "block",
+  "cmd": "cp ../app-api/.envs/.local/.django .envs/.local/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B6",
+  "exp": "block",
+  "cmd": "source .env && ./run.sh",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B7",
+  "exp": "block",
+  "cmd": "while read l; do echo \"$l\"; done < .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B8",
+  "exp": "block",
+  "cmd": "cat config/secrets.yaml",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B9",
+  "exp": "block",
+  "cmd": "grep DB_PASS .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B10",
+  "exp": "block",
+  "cmd": "rg -n api_key ~/.aws/credentials",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B11",
+  "exp": "block",
+  "cmd": "ls /tmp; cat ~/.netrc",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B12",
+  "exp": "block",
+  "cmd": "printenv GITHUB_TOKEN",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B13",
+  "exp": "block",
+  "cmd": "echo $OPENAI_API_KEY",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B14",
+  "exp": "block",
+  "cmd": "env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B15",
+  "exp": "block",
+  "cmd": "env | grep TOKEN",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B16",
+  "exp": "block",
+  "cmd": "python3 -c \"import os; print(os.environ['OPENAI_API_KEY'])\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B17",
+  "exp": "block",
+  "cmd": "gh auth token",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B18",
+  "exp": "block",
+  "cmd": "bash <<'EOF'\ncat .env\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B19",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\nprint(open('.envs/.django').read())\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B20",
+  "exp": "block",
+  "cmd": "cat \"my dir/.env\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B21",
+  "exp": "block",
+  "cmd": "echo 'x;y' && cat .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B23",
+  "exp": "block",
+  "cmd": "cat \"a;b\" .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B24",
+  "exp": "block",
+  "cmd": "rg -n host -g '*.env*' .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B22",
+  "exp": "block",
+  "cmd": "grep -e TOKEN -f pats.txt .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P1",
+  "src": "inbox 113",
+  "exp": "pass",
+  "cmd": "sed -n '1,40p' RD/brief-a.md | sed 's/token/TOKEN/' > RD/brief-b.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P2",
+  "src": "inbox 113",
+  "exp": "pass",
+  "cmd": "sed -e s/secret/redacted/ RD/brief-a.md > RD/brief-b.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P3",
+  "src": "inbox 113",
+  "exp": "pass",
+  "cmd": "python3 ~/.claude/scripts/report_issue.py bug \"hook blocks sed on brief.md when it says cat .env; no credential path read\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P4",
+  "src": "inbox 135",
+  "exp": "pass",
+  "cmd": "ls ~/.claude/hooks | grep -i secret",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P5",
+  "src": "inbox 135",
+  "exp": "pass",
+  "cmd": "python3 ~/.claude/scripts/report_issue.py inconvenience \"rule fired on: ls ~/.claude/hooks | grep -i secret\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P6",
+  "src": "inbox 141",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\nopen('RD/brief-ship.md','w').write(\"DO NOT: open .envs/ or print any credential file\\n\")\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P7",
+  "src": "inbox 154",
+  "exp": "pass",
+  "cmd": "jq '.deals | length' out/token-info.json",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P8",
+  "src": "inbox 154",
+  "exp": "pass",
+  "cmd": "head -20 out/token-info.json",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P9",
+  "src": "inbox 155",
+  "exp": "pass",
+  "cmd": "cat >> hooks/guard.sh <<EOF\nlimit=\"\\${HANDOFF_CONTEXT_TOKENS:-300000}\"\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P10",
+  "src": "inbox 155",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('hooks/guard.py')\np.write_text(p.read_text().replace('300000', 'int(os.environ.get(\"HANDOFF_CONTEXT_TOKENS\", 300000))'))\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P11",
+  "src": "STATE scout grep",
+  "exp": "pass",
+  "cmd": "grep -rn HANDOFF_CONTEXT_TOKENS ~/.claude/hooks ~/.claude/scripts",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P12",
+  "src": "STATE scout grep",
+  "exp": "block",
+  "cmd": "grep -rn 'HANDOFF_CONTEXT_TOKENS\\|context tokens' ~/.claude/hooks",
+  "note": "blocks under PR 35 policy (accepted 2026-09-25); rg parser restore planned",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P13",
+  "src": "grep pattern",
+  "exp": "pass",
+  "cmd": "grep -n TOKEN app/settings.py",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P14",
+  "src": "grep pattern",
+  "exp": "block",
+  "cmd": "rg 'api_key' src/",
+  "note": "blocks under PR 35 policy (accepted 2026-09-25); rg parser restore planned",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P15",
+  "src": "grep pattern",
+  "exp": "pass",
+  "cmd": "grep -E 'token|secret' app/auth.py",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P16",
+  "src": "grep pattern",
+  "exp": "block",
+  "cmd": "rg -n -e credentials -g '*.py' src/",
+  "note": "blocks under PR 35 policy (accepted 2026-09-25); rg parser restore planned",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P17",
+  "src": "split",
+  "exp": "pass",
+  "cmd": "python3 -c \"import sys; print('a; cat secrets'); sys.exit(0)\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P18",
+  "src": "STATE scout grep",
+  "exp": "pass",
+  "cmd": "grep -rn '${HANDOFF_CONTEXT_TOKENS' ~/.claude/hooks | head -20",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P19",
+  "src": "inbox 155",
+  "exp": "pass",
+  "cmd": "echo 'limit=${HANDOFF_CONTEXT_TOKENS:-300000}' >> hooks/guard.sh",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P20",
+  "src": "heredoc data",
+  "exp": "pass",
+  "cmd": "cat > notes.md <<'EOF'\nDo not run: cat .env; ls | grep secret\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P21",
+  "src": "live run-c",
+  "exp": "pass",
+  "cmd": "python3 - <<'PY'\nc = [{'cmd': 'cat > notes.md <<X\\nDo not run: cat .env\\nX'}]\nPY",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B25",
+  "exp": "block",
+  "cmd": "sed 'r .env' notes.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B26",
+  "exp": "block",
+  "cmd": "awk '{print}' .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B27",
+  "exp": "block",
+  "cmd": "awk 'BEGIN{while((getline l < \".env\")>0) print l}'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B28",
+  "exp": "block",
+  "cmd": "grep -f .env notes.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B29",
+  "exp": "block",
+  "cmd": "grep token_info .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B30",
+  "exp": "block",
+  "cmd": "head ~/.aws/token-info.json",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B31",
+  "exp": "block",
+  "cmd": "grep -n x notes.txt & cat .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B32",
+  "exp": "block",
+  "cmd": "grep -n x $(cat .env)",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B33",
+  "exp": "block",
+  "cmd": "echo \"$(cat .env)\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B34",
+  "exp": "block",
+  "cmd": "python3 -c \"import sys; print(open('.env').read())\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B35",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\nimport subprocess\nsubprocess.run(\"cat .env\", shell=True)\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B36",
+  "exp": "block",
+  "cmd": "bash -c \"cat .env && ls\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B37",
+  "exp": "block",
+  "cmd": "bash -c 'echo $API_TOKEN'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B38",
+  "exp": "block",
+  "cmd": "grep -rn TOKEN .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B39",
+  "exp": "block",
+  "cmd": "rg --hidden -n TOKEN .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B40",
+  "exp": "block",
+  "cmd": "echo \"unterminated; cat .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B41",
+  "exp": "block",
+  "cmd": "grep \"unterminated TOKEN app.py",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B42",
+  "exp": "block",
+  "cmd": "watch 'echo $GITHUB_TOKEN'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B43",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/tmp/demo/.env"
+  },
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B44",
+  "exp": "block",
+  "cmd": "rg -n host --glob=.env .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B45",
+  "exp": "block",
+  "cmd": "sed -i '' 's/a/b/' .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P22",
+  "exp": "pass",
+  "cmd": "git commit -m \"Stop hook false block on cat .env text\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P23",
+  "exp": "block",
+  "cmd": "grep -rn '$GITHUB_TOKEN' .github/workflows | head -5",
+  "note": "blocks under PR 35 policy (accepted 2026-09-25); rg parser restore planned",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P24",
+  "exp": "pass",
+  "cmd": "grep -rn '\\.env' src/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P25",
+  "exp": "pass",
+  "cmd": "grep -c secret notes.md 2>&1",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P26",
+  "exp": "pass",
+  "cmd": "grep -rln 'token' ~/.claude/hooks",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P27",
+  "exp": "block",
+  "cmd": "rg -n TOKEN src/",
+  "note": "blocks under PR 35 policy (accepted 2026-09-25); rg parser restore planned",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P28",
+  "exp": "pass",
+  "cmd": "grep -rn TOKEN --include='*.py' .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P29",
+  "exp": "pass",
+  "cmd": "sed -i '' 's/token/TOKEN/' notes.txt",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P30",
+  "exp": "pass",
+  "cmd": "echo \"limit $OPENAI_MAX_TOKENS\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P31",
+  "exp": "pass",
+  "cmd": "python3 ~/.claude/scripts/report_issue.py bug \"cat config/credentials.json was blocked\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B46",
+  "exp": "block",
+  "cmd": "echo $ADMIN_TOKEN",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B47",
+  "exp": "block",
+  "cmd": "printenv INPUT_TOKEN",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B48",
+  "exp": "block",
+  "cmd": "grep '>' .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B49",
+  "exp": "block",
+  "cmd": "grep x 2>&1 .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B50",
+  "exp": "block",
+  "cmd": "cat <<EOF\nX='$GITHUB_TOKEN'\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B51",
+  "exp": "block",
+  "cmd": "echo \"cat .env\" | bash",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B52",
+  "exp": "block",
+  "cmd": "grep -n API_KEY config/*",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B53",
+  "exp": "block",
+  "cmd": "grep -rn API_KEY --include='*.yaml' .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B54",
+  "exp": "block",
+  "tool": "Read",
+  "input": {
+   "file_path": "/home/u/.aws/token-info.json"
+  },
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B55",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\n# don't do this\nprint(open(\".env\").read())\nx = 'a b'\nEOF",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B56",
+  "exp": "block",
+  "cmd": "rg --type-add 'x:*.env' -t x host",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B57",
+  "exp": "block",
+  "cmd": "awk 1 service_credentials.json",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B58",
+  "exp": "block",
+  "cmd": "sed -n p gcp_credentials.json",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B59",
+  "exp": "block",
+  "cmd": "grep -h . client_secret.json",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B60",
+  "exp": "block",
+  "cmd": "awk -v f=.env 'BEGIN{while((getline l < f)>0) print l}'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B61",
+  "exp": "block",
+  "cmd": "git submodule foreach 'cat .env'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B62",
+  "exp": "block",
+  "cmd": "git rebase --exec 'cat .env' HEAD~1",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B63",
+  "exp": "block",
+  "cmd": "echo 'cat .env' > >(bash)",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B64",
+  "exp": "block",
+  "cmd": "trap 'echo $API_TOKEN' EXIT",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-B65",
+  "exp": "block",
+  "cmd": "gh alias set --shell x 'cat .env'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-P32",
+  "exp": "pass",
+  "cmd": "gh pr create --title x --body \"fixes the cat .env false block\"",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-X173",
+  "exp": "pass",
+  "cmd": "M=/home/user/.claude/projects/-home-user-src-app-api/memory; cat $M/test-scope-api-and-security-only.md $M/app-api-secrets-config-pipeline.md $M/forge-lane-and-model-preferences.md; echo ----; F=~/.claude/skills/forge; grep -n -i -A3 'evidence' $F/references/build-lane.md | head -60",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-X173b",
+  "exp": "pass",
+  "cmd": "M=/home/user/.claude/projects/-home-user-src-app-api/memory; cat $M/app-api-secrets-config-pipeline.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-X167",
+  "exp": "pass",
+  "cmd": "cd /home/user/Projects/personal/agent-kit && env -u GH_TOKEN -u GITHUB_TOKEN git fetch -q origin && git log --oneline -3 origin/main; git log --oneline -2 main; git diff --stat HEAD | tail -1; env -u GH_TOKEN -u GITHUB_TOKEN gh pr list --head improve-block-secret-reads-hook-parsing --json number,state,url --jq '.[]'; env -u GH_TOKEN -u GITHUB_TOKEN gh pr view 32 --json state,mergedAt,title --jq '[.state,.mergedAt,.title]|@tsv'",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-X167b",
+  "exp": "pass",
+  "cmd": "gh pr list --head fix-secret-hook",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB1",
+  "exp": "block",
+  "cmd": "cat $HOME/.aws/credentials",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB2",
+  "exp": "block",
+  "cmd": "cat $D/secrets.yaml",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB3",
+  "exp": "block",
+  "cmd": "cat $D/.env.md.bak",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB4",
+  "exp": "block",
+  "cmd": "cat $HOME/.ssh/id_rsa.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB5",
+  "exp": "block",
+  "cmd": "head -n 5 .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB6",
+  "exp": "block",
+  "cmd": "git log -1; head config/secrets.yaml",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB7",
+  "exp": "block",
+  "cmd": "xargs -0 cat .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB8",
+  "exp": "block",
+  "cmd": "find . -name x -exec cat .env \\;",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB9",
+  "exp": "block",
+  "cmd": "tail -f ~/.netrc",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-XB10",
+  "exp": "block",
+  "cmd": "gh pr list --head x; cat tokens.txt",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R1",
+  "exp": "block",
+  "cmd": "rg --hidden api_key .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R2",
+  "exp": "block",
+  "cmd": "rg -uu TOKEN .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R3",
+  "exp": "block",
+  "cmd": "rg -u secret .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R4",
+  "exp": "block",
+  "cmd": "rg -. token src/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R5",
+  "exp": "block",
+  "cmd": "rg token -g '*.yml' config/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R6",
+  "exp": "block",
+  "cmd": "rg -n api_key ~/.aws/credentials",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R7",
+  "exp": "block",
+  "cmd": "rg token .env",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R8",
+  "exp": "block",
+  "cmd": "rg --pre cat token x.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R9",
+  "exp": "block",
+  "cmd": "rg --ignore-file .env foo README.md",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R10",
+  "exp": "block",
+  "cmd": "rg --no-ignore secret .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R11",
+  "exp": "block",
+  "cmd": "rg token ~/.config/gh",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R12",
+  "exp": "block",
+  "cmd": "rg -e x -f .env src/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R13",
+  "exp": "block",
+  "cmd": "rg token config/*",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R14",
+  "exp": "block",
+  "cmd": "rg --type-add 'x:*.env' -tx token .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R15",
+  "exp": "block",
+  "cmd": "rg -g '.env*' KEY",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R16",
+  "exp": "block",
+  "cmd": "rg -l token ~/.config/gh | xargs cat",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-R17",
+  "exp": "block",
+  "cmd": "RIPGREP_CONFIG_PATH=/tmp/c rg token .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-RP1",
+  "exp": "block",
+  "cmd": "rg -n TOKEN src/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-RP2",
+  "exp": "block",
+  "cmd": "rg -l secret src/",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-RP3",
+  "exp": "block",
+  "cmd": "rg -i -g '*.py' -uu api_key .",
+  "cwd": "clean"
+ },
+ {
+  "id": "D-RP4",
+  "exp": "pass",
+  "cmd": "rg -n 'def main' src/",
+  "cwd": "clean"
+ },
+ {
+  "exp": "block",
+  "id": "D-RB1",
+  "cmd": "rg token ~",
+  "cwd": "clean"
+ },
+ {
+  "exp": "block",
+  "id": "D-RB2",
+  "cmd": "rg token /",
+  "cwd": "clean"
+ },
+ {
+  "exp": "block",
+  "id": "D-RB3",
+  "cmd": "rg api_key",
+  "cwd": "clean"
+ },
+ {
+  "exp": "block",
+  "id": "D-RB4",
+  "cmd": "rg -L token src/",
+  "cwd": "clean"
+ }
+]

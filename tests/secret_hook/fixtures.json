@@ -1,0 +1,73 @@
+{
+  "_note": "Fake fixture repos for the R5 hook harness. Every value is a dummy. git=true repos are committed with the files in 'track' (force-added when ignored).",
+  "tracked": {
+    "git": true,
+    "files": {
+      ".gitignore": ".envs/*\n",
+      ".envs/.django": "DUMMY_KEY=fixture-not-a-real-value\n",
+      "svc/.env.local": "DUMMY_KEY=fixture-nested-value\n",
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": [".gitignore", ".envs/.django", "svc/.env.local", "app/settings.py"]
+  },
+  "ignored": {
+    "git": true,
+    "files": {
+      ".gitignore": ".envs/\n.env\n",
+      ".envs/.django": "DUMMY_KEY=fixture-not-a-real-value\n",
+      ".env": "DUMMY_KEY=fixture-root-value\n",
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": [".gitignore", "app/settings.py"]
+  },
+  "visible": {
+    "git": true,
+    "files": {
+      ".envs/.django": "DUMMY_KEY=fixture-not-a-real-value\n",
+      ".env": "DUMMY_KEY=fixture-root-value\n",
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": ["app/settings.py"]
+  },
+  "clean": {
+    "git": true,
+    "files": {
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": ["app/settings.py"]
+  },
+  "nogit": {
+    "git": false,
+    "files": {
+      ".envs/.django": "DUMMY_KEY=fixture-not-a-real-value\n",
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": []
+  },
+  "subignored": {
+    "git": true,
+    "files": {
+      ".gitignore": ".env.local\n",
+      "svc/.env.local": "DUMMY_KEY=fixture-subdir-value\n",
+      "svc/app.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": [".gitignore", "svc/app.py"]
+  },
+  "shapes": {
+    "git": true,
+    "files": {
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n",
+      ".envrc": "DUMMY_KEY=fixture-envrc-value\n",
+      "config/prod.env": "DUMMY_KEY=fixture-prod-env-value\n"
+    },
+    "track": ["app/settings.py"]
+  },
+  "othershape": {
+    "git": true,
+    "files": {
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n",
+      "certs/dev.pem": "DUMMY placeholder, not a key\n"
+    },
+    "track": ["app/settings.py", "certs/dev.pem"]
+  }
+}

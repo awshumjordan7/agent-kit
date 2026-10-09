@@ -1,0 +1,9 @@
+{
+ "gate": {
+  "demo": {
+   "worktree": {
+    "lint": "bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run ruff check \"$@\"' -- <paths>"
+   }
+  }
+ }
+}
