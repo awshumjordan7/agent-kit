@@ -7,9 +7,9 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 | Step | Owner | Notes |
 |---|---|---|
 | Investigate | main session and scoped scouts | Diagnose before fixing: read the code path and capture live evidence before naming a cause. Map reusable patterns and affected callers. |
-| Plan | main session | State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. |
+| Plan | main session | State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. A plan that changes instruction files carries `## Changelog`, and its last phase writes those lines to CHANGELOG.md. |
 | Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. |
-| Confirm | user | Plan confirmation is skipped only in explicitly requested auto mode; separate test-table approval is never skipped. |
+| Confirm | user | Plan confirmation is skipped only in explicitly requested auto mode; separate test-table approval is never skipped. On approval of a plan with `## Changelog`, the main session writes `<runDir>/user-ok.md` with the quoted approval and date; ship-pr's changelog check needs it. |
 | Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, optional QA, parallel Codex and Claude review plus lenses, triage, the capped fix loop (at most `MAX_FIX_ROUNDS` (2) rounds, each gate-failure round re-running the full gate and each review-fix round running lint, typecheck and Semgrep when a gate is configured and, when review items changed, re-checked by a scoped Claude verifier; one full gate runs on the final state when review fixes were applied, and a failing final gate runs up to 2 more fix rounds with a full gate each), handoff. |
 
 `quick-impl` is selected only when `fullySpecified` is true and the plan names no more source files than `quickReviewThreshold`; otherwise Forge uses `impl`. Tests and documentation do not count as source files.

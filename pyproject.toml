@@ -21,6 +21,7 @@ ignore = ["RUF012"]
 "aisetup/cli.py" = ["T201"]
 "aisetup/selfcheck.py" = ["T201"]
 "core/hooks/*.py" = ["T201"]
+".github/scripts/*.py" = ["T201"]
 "core/scripts/doctor.py" = ["I001", "RUF005", "RUF021", "T201"]
 "core/skills/forge/scripts/forge-stats.py" = ["I001", "T201"]
 

@@ -1841,7 +1841,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const bodyExtra = PARAMS.prBodyExtra
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the bullets; keep that section whenever you rewrite the body. `
     : ''
-  const tail = `${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const tail = `The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
   const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
