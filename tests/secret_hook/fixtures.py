@@ -6,7 +6,9 @@ must not contain `env` as a separate word, because the hook reads that word in a
 as an environment dump and changes its verdicts.
 
 Get or create: an existing fixture dir is left alone and only checked
-(files present, and for git fixtures `git ls-files` equals `track`).
+(files present, and for git fixtures `git ls-files` equals `track`). A fixture with
+"break": "index" gets an empty .git/index after its commit, and its check is that
+`git ls-files` exits 128 with an error other than "not a git repository".
 """
 import json
 import os
@@ -30,7 +32,12 @@ def git(cwd: pathlib.Path, *args: str) -> str:
 
 def check(name: str, d: pathlib.Path, fx: dict) -> list[str]:
     problems = [f"missing {rel}" for rel in fx["files"] if not (d / rel).is_file()]
-    if fx["git"]:
+    if fx.get("break") == "index":
+        # The hook must see a git error other than "not a git repository".
+        r = subprocess.run(["git", "ls-files"], cwd=d, capture_output=True, text=True, check=False)
+        if r.returncode != 128 or "not a git repository" in r.stderr:
+            problems.append(f"git ls-files exited {r.returncode} ({r.stderr.strip()[:120]}), want 128")
+    elif fx["git"]:
         tracked = sorted(git(d, "ls-files").splitlines())
         if tracked != sorted(fx["track"]):
             problems.append(f"ls-files {tracked} != track {sorted(fx['track'])}")
@@ -50,6 +57,8 @@ def build(d: pathlib.Path, fx: dict) -> None:
             git(d, "add", "-f", "--", *fx["track"])
         git(d, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
             "commit", "-q", "--allow-empty", "-m", "fixture")
+        if fx.get("break") == "index":
+            (d / ".git" / "index").write_bytes(b"")
 
 
 failed = False

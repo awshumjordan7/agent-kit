@@ -1869,5 +1869,130 @@
   "id": "P3b",
   "exp": "block",
   "cmd": "jq '.expires_at' ~/.aws/01-token-info.json"
+ },
+ {
+  "id": "C231a",
+  "exp": "pass",
+  "cmd": "printf '%s\\n' 'cut file - 400 bytes, tokens saved' >> decisions.md"
+ },
+ {
+  "id": "C231b",
+  "exp": "pass",
+  "cmd": "printf '%s\\n' '[s3] cut STATE.md - 2100 to 900 bytes; tokens' >> decisions.md"
+ },
+ {
+  "id": "B03-c231-noredir",
+  "exp": "pass",
+  "cmd": "printf '%s\\n' 'cut file - 400 bytes, tokens saved'"
+ },
+ {
+  "id": "C231g",
+  "exp": "block",
+  "cmd": "cut -f1 tokens.txt"
+ },
+ {
+  "id": "N04a",
+  "exp": "pass",
+  "cmd": "sed -E 's/[A-Za-z0-9]{40}/<long-token-redacted>/g' capture.txt > masked.txt"
+ },
+ {
+  "id": "N04b",
+  "exp": "pass",
+  "cmd": "python3 ~/.claude/scripts/report_issue.py inconvenience 'hook read the placeholder <long-token-redacted> as a redirect'"
+ },
+ {
+  "id": "N05b",
+  "exp": "pass",
+  "cmd": "printf '%s\\n' 'browser gets the pay link from <run>/secrets-11/paylink-q8.txt' >> decisions.md"
+ },
+ {
+  "id": "N05c",
+  "exp": "pass",
+  "cmd": "echo 'pay link handoff: file under <run>/secrets-11/, mode 600' >> STATE.md"
+ },
+ {
+  "id": "N06b",
+  "exp": "pass",
+  "cmd": "sed -E 's/pbkdf2_sha256[^ ]+/<apikey-id-redacted>/g' extract.log > extract-masked.log"
+ },
+ {
+  "id": "N06c",
+  "exp": "pass",
+  "cmd": "python3 ~/.claude/scripts/report_issue.py inconvenience 'redirect rule read <apikey-id-redacted> inside a sed program'"
+ },
+ {
+  "id": "C155d",
+  "exp": "pass",
+  "cmd": "grep -n '<code>.envs' plan.html"
+ },
+ {
+  "id": "N04x",
+  "exp": "block",
+  "cmd": "sed -n '1p' < tokens.txt"
+ },
+ {
+  "id": "N06x",
+  "exp": "block",
+  "cmd": "sed -n '1p' < apikey.txt"
+ },
+ {
+  "id": "N06y",
+  "exp": "block",
+  "cmd": "sed -E 's/a/b/' < /tmp/k9run/api_key.json"
+ },
+ {
+  "id": "N06a",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- sed -E 's/pbkdf2_sha256[^ ]+/<apikey-id-redacted>/g' /tmp/extract.log"
+ },
+ {
+  "id": "B03-redir-shell-ctl",
+  "exp": "block",
+  "cmd": "bash -c 'while read l; do echo $l; done < tokens.txt'"
+ },
+ {
+  "id": "B03-redir-shell-ctl2",
+  "exp": "block",
+  "cmd": "sh -c 'while read l; do echo $l; done < .env'"
+ },
+ {
+  "id": "N10a",
+  "exp": "pass",
+  "cmd": "grep -rn -e \"\\`main\\`\" {clean}/app"
+ },
+ {
+  "id": "N10c",
+  "exp": "pass",
+  "cmd": "grep -rn --exclude-dir=.envs --exclude='.env*' -e \"\\`main\\`\" {tracked}"
+ },
+ {
+  "id": "B03-n10-sq-backtick",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "grep -rn -e '`main`' {nogit}"
+ },
+ {
+  "id": "N10y",
+  "exp": "block",
+  "cmd": "grep -rn -e \"\\`main\\`\" {tracked}"
+ },
+ {
+  "id": "P4a",
+  "exp": "block",
+  "cmd": "echo \"value: $(cat tokens.txt)\""
+ },
+ {
+  "id": "P4b",
+  "exp": "pass",
+  "cmd": "grep -rn --exclude-dir=.envs --exclude='.env*' DUMMY {brokengit}"
+ },
+ {
+  "id": "P4c",
+  "exp": "block",
+  "cmd": "grep -rn DUMMY {brokengit}",
+  "stderr_has": [
+   "Env files it reaches",
+   "`.env`"
+  ]
  }
 ]

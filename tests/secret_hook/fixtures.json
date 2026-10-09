@@ -1,5 +1,5 @@
 {
-  "_note": "Fake fixture repos for the R5 hook harness. Every value is a dummy. git=true repos are committed with the files in 'track' (force-added when ignored).",
+  "_note": "Fake fixture repos for the R5 hook harness. Every value is a dummy. git=true repos are committed with the files in 'track' (force-added when ignored). 'break': 'index' then truncates .git/index, so git ls-files exits 128.",
   "tracked": {
     "git": true,
     "files": {
@@ -76,5 +76,14 @@
       "secrets.json": "{}\n"
     },
     "track": []
+  },
+  "brokengit": {
+    "git": true,
+    "break": "index",
+    "files": {
+      ".env": "DUMMY_KEY=fixture-broken-index-value\n",
+      "app/settings.py": "DUMMY_KEY = 'read from the environment'\n"
+    },
+    "track": [".env", "app/settings.py"]
   }
 }

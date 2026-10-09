@@ -243,9 +243,6 @@ READER_NEAR_SECRET_WORD = re.compile(
     re.IGNORECASE,
 )
 
-# Quoted text with a space in it is prose (a report message, a sed script),
-# not a path. A quoted single word may still be a path: cat "secrets.yaml".
-QUOTED_PROSE = re.compile(r"'[^']*\s[^']*'|\"[^\"]*\s[^\"]*\"")
 QUOTED_ANY = re.compile(r"'[^']*'|\"[^\"]*\"")
 # A .md name only as a whole path token, so `cat {tokens.txt,x.md}` and
 # `cat tokens.txt>x.md` keep their secret-named part.
@@ -264,8 +261,12 @@ QUOTED_EXPANSION = re.compile(r"\"[^\"]*\$[\w{(][^\"]*\"")
 
 
 def word_scan(segment: str) -> str:
-    """Return the segment with prose and .md names blanked for the word check."""
-    scan = MD_TOKEN.sub(" ", QUOTED_PROSE.sub(" ", segment))
+    """Return the segment with prose and .md names blanked for the word check.
+
+    Quoted text with a space in it is prose (a report message, a sed script),
+    not a path.
+    """
+    scan = MD_TOKEN.sub(" ", blank_plain_quotes(segment, prose_only=True))
     pattern_only = PATTERN_ONLY.match(scan) and not QUOTED_EXPANSION.search(scan)
     return QUOTED_ANY.sub(" ", scan) if pattern_only else scan
 
@@ -566,6 +567,77 @@ def blank_quoted(text: str, kinds: str) -> str:
     return "".join(out)
 
 
+def _runs_code(span: str) -> bool:
+    """Return True when double-quoted text holds `$(` or an unescaped backtick, which the shell runs."""
+    i, n = 0, len(span)
+    while i < n:
+        if span[i] == "\\":
+            i += 2
+            continue
+        if span[i] == "`" or span.startswith("$(", i):
+            return True
+        i += 1
+    return False
+
+
+def blank_plain_quotes(text: str, *, prose_only: bool = False) -> str:
+    """Blank closed quoted spans that the shell passes on as plain text.
+
+    Tracks escapes and quote state like blank_quoted. A double-quoted span
+    holding `$(` or an unescaped backtick stays, because the shell runs it
+    (`echo "value: $(cat tokens.txt)"`); so does an input redirect target
+    (`< "tokens.txt"`). With prose_only, only spans holding whitespace are
+    blanked: a quoted single word may still be a path (cat "secrets.yaml").
+    An unclosed quote leaves the rest of the text as it is.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            end = _quote_end(text, i)
+            if end is None:
+                out.append(text[i:])
+                break
+            span = text[i:end]
+            before = "".join(out).rstrip()
+            keep = (
+                (c == '"' and _runs_code(span[1:-1]))
+                or (before.endswith("<") and not before.endswith("<<"))
+                or (prose_only and not re.search(r"\s", span))
+            )
+            out.append(span if keep else " ")
+            i = end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def has_substitution(text: str) -> bool:
+    """Return True when text runs a substitution.
+
+    That is `$(` or an unescaped backtick outside single quotes, or `<(` or
+    `>(` outside quotes.
+    """
+    scan = re.sub(r"\\.", "  ", blank_plain_quotes(text), flags=re.DOTALL)
+    return any(s in scan for s in ("$(", "`", "<(", ">("))
+
+
+# A short option cluster ending in `c` (`sh -c`, `su -c`, `bash -lc`) may hand
+# its quoted argument to a shell.
+DASH_C_OPTION = re.compile(r"(?<!\S)-\w*c(?![^\s;&|)])")
+
+
+def reruns_quotes(command: str) -> bool:
+    """Return True when a command may hand quoted text to a shell: a HEREDOC_SHELL word or a `-c` option."""
+    return bool(HEREDOC_SHELL.search(command) or DASH_C_OPTION.search(command))
+
+
 def _word_end(text: str, i: int) -> int:
     """Return the index just past the shell word that starts at text[i]."""
     quote, n = None, len(text)
@@ -821,7 +893,7 @@ def parse_reader(raw: str) -> ReaderArgs | None:
     included); the caller then applies the text checks instead. Leading
     `NAME=value` assignments are skipped before grep and xargs only.
     """
-    if any(s in raw for s in ("$(", "`", "<(", ">(")):
+    if has_substitution(raw):
         return None
     try:
         tokens = shlex.split(strip_redirections(raw))
@@ -1078,6 +1150,10 @@ class ReachUnknown(Exception):
     """git could not list the files a search reaches."""
 
 
+class GitTimeout(ReachUnknown):
+    """git did not answer before REACH_DEADLINE."""
+
+
 class EnvSearch(NamedTuple):
     """A broad search for the env-reach check."""
 
@@ -1292,7 +1368,7 @@ def _git_output(root: str, *args: str) -> bytes | None:
     """Run git in root and return its output, or None when root is not in a git work tree."""
     remaining = REACH_DEADLINE - time.monotonic()
     if remaining <= 0:
-        raise ReachUnknown(f"git did not answer within {REACH_SECONDS:g} seconds")
+        raise GitTimeout(f"git did not answer within {REACH_SECONDS:g} seconds")
     try:
         result = subprocess.run(
             ["git", "-C", root, *args],
@@ -1303,7 +1379,7 @@ def _git_output(root: str, *args: str) -> bytes | None:
             check=False,
         )
     except subprocess.TimeoutExpired as err:
-        raise ReachUnknown(f"git did not answer within {REACH_SECONDS:g} seconds") from err
+        raise GitTimeout(f"git did not answer within {REACH_SECONDS:g} seconds") from err
     except OSError as err:
         raise ReachUnknown(f"git could not run ({err.strerror or err})") from err
     except ValueError as err:
@@ -1344,6 +1420,30 @@ def _reach_listing(search: EnvSearch, root: str) -> list[str] | None:
         # the files a parent .gitignore hides are read too.
         ignored = _git_output(root, "ls-files", "-z", "--others", "--ignored", GREP_IGNORE, "--directory")
         listed += _nul_split(ignored) or []
+    return listed
+
+
+def _walk_listing(root: str) -> list[str]:
+    """List every file under root, for a search whose git listing failed.
+
+    It lists ignored and untracked files too, so it never misses a file git
+    would list. Like the git listing it does not follow directory links: a
+    directory link, a directory it cannot read, or REACH_DEADLINE raises ReachUnknown.
+    """
+
+    def fail(err: OSError) -> None:
+        raise ReachUnknown(f"the file walk could not read `{err.filename}` ({err.strerror or err})") from err
+
+    listed: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=fail):
+        if time.monotonic() > REACH_DEADLINE:
+            raise ReachUnknown(f"the file walk did not finish within {REACH_SECONDS:g} seconds")
+        dirnames[:] = [name for name in dirnames if name != ".git"]
+        rel = os.path.relpath(dirpath, root)
+        prefix = "" if rel == "." else f"{rel}/"
+        if link := next((name for name in dirnames if os.path.islink(os.path.join(dirpath, name))), None):
+            raise ReachUnknown(f"`{prefix}{link}` is a directory link, which the file walk does not follow")
+        listed += [prefix + name for name in filenames]
     return listed
 
 
@@ -1471,8 +1571,10 @@ def env_reach(search: EnvSearch, context: str) -> Hit | None:
 
     Each root is listed with `git ls-files` and filtered to env-shaped names,
     then the search's own excludes and includes apply. A root that is not a
-    directory, or not in a git work tree, is skipped. Any other git failure,
-    an unresolved directory, or the deadline blocks.
+    directory, or not in a git work tree, is skipped. When git fails for
+    another reason than the deadline (a broken index), a file walk lists the
+    root instead. A git timeout, a walk that cannot finish, or an unresolved
+    directory blocks.
     """
     if search.roots is None:
         return _unchecked_hit(search.tool, context, "a directory is a variable, a command substitution or `cd -`")
@@ -1486,8 +1588,13 @@ def env_reach(search: EnvSearch, context: str) -> Hit | None:
                 continue
         try:
             listed = _reach_listing(search, root)
-        except ReachUnknown as err:
+        except GitTimeout as err:
             return _unchecked_hit(search.tool, context, str(err))
+        except ReachUnknown as err:
+            try:
+                listed = _walk_listing(root)
+            except ReachUnknown as walk_err:
+                return _unchecked_hit(search.tool, context, f"{err}; {walk_err}")
         if reached := [entry for entry in listed or [] if _reaches(search, root, entry)]:
             return _reach_hit(search.tool, context, root, reached)
     return None
@@ -1914,7 +2021,7 @@ def unparsed_search_verdict(raw: str, here: str | None, fed_by_pipe: bool) -> Hi
     words = (blank_quoted(raw[git.end() :], "'\"") if git else unquoted).split()
     if set(words) & NAMES_ONLY_OPTS[tool]:
         return None
-    root = None if any(s in raw for s in ("$(", "`", "<(", ">(")) else here
+    root = None if has_substitution(raw) else here
     for m in GIT_C_VALUE.finditer(git.group("opts") if git else ""):
         try:
             values = shlex.split(m.group(1))
@@ -2045,6 +2152,7 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
     segments = split_segments(command, piped)
     # Any other command may run a messenger's text: `echo "..." | bash`.
     messengers = is_quiet(command)
+    shell_quotes = reruns_quotes(command)
     # A search after `cd ~/.config/gh` reads a dot-directory like a search
     # that names it.
     dot_cd = False
@@ -2106,7 +2214,9 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
         else:
             # A file the command writes or excludes is not read.
             reader_text = blank_jq_projection(blank_excludes(strip_redirections(segment, output_only=True)))
-            scan = QUOTED_PROSE.sub(" ", reader_text) if messengers and is_messenger(raw) else reader_text
+            scan = reader_text
+            if messengers and is_messenger(raw):
+                scan = blank_plain_quotes(reader_text, prose_only=True)
             if m := READER_NEAR_SECRET.search(scan):
                 return Hit(
                     "reads a credential-bearing path",
@@ -2121,9 +2231,11 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             if hit := unparsed_search_verdict(raw, here, fed_by_pipe=i > 0 and piped[i - 1]):
                 return hit
-        if m := REDIRECT_FROM_SECRET.search(segment):
+        # A `<` inside quotes is text (`sed 's/x/<token-redacted>/'`), unless a shell may run the quotes again.
+        redirects = segment if shell_quotes else blank_plain_quotes(segment)
+        if m := REDIRECT_FROM_SECRET.search(redirects):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret", m.group(0), raw)
-        if m := REDIRECT_FROM_SECRET_WORD.search(segment):
+        if m := REDIRECT_FROM_SECRET_WORD.search(redirects):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret-word", m.group(0), raw)
     return None
 
