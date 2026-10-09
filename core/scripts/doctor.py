@@ -24,8 +24,9 @@ except ImportError:
 
 HEADER = """# Code standards
 
-Injected into every forge implementer, reviewer, and fixer prompt. Codex and
-sub-agents never read ~/.claude/CLAUDE.md, so these rules travel with the prompt.
+Injected into every forge implementer, reviewer, and fixer prompt. Sub-agents
+load ~/.claude/CLAUDE.md unless their frontmatter sets `omitClaudeMd`, and Codex
+reads only the generated AGENTS.md, so these rules travel with the prompt.
 Generated verbatim from CLAUDE.md sections "Don't", "Comments", "Tests" —
 do not edit here; edit CLAUDE.md and run `doctor.py --fix`.
 

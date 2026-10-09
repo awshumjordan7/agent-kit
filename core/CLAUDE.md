@@ -37,26 +37,22 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`;
   string lookups go to `locator`, code questions to `scout`.
 - **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.
-- **Cap fan-out.** Run at most 6 background Opus agents at once; queue the rest. Size each scout
-  brief to about 6-7 sources or 40 tool calls. Poll a long-running job from a worker that waits
-  with Monitor, never from a tight status loop.
+- **No cap on sub-agents; batch them.** When more than one sub-agent would run at the same time, run them
+  as one Workflow (each `agent()` sets model and effort) instead of separate Agent spawns. Size each scout
+  brief to about 6-7 sources or 40 tool calls. Poll a long-running job from a worker that waits with
+  Monitor, never from a tight status loop.
 - **External contracts are captured, not assumed.** Never assert an endpoint, verb, payload, or
   response shape without a captured real response saved under the run dir by a worker and cited by
   path. Fixtures derive from captures.
 - **Every sub-agent prompt follows `~/.claude/references/brief-template.md`.** Write the brief before
   the spawn; do not edit it after.
-- **Artifacts are worker-made.** The main session writes a data file; a `worker` renders it with
-  `~/.claude/skills/forge/scripts/render_artifact.py`, following `~/.claude/skills/forge/references/artifacts.md`.
-  The main session never writes artifact HTML.
+- **Artifacts are worker-made**, following `~/.claude/skills/forge/references/artifacts.md`.
 - **Bash output stays small.** A command expected to print more than ~5 KB writes to a file in the
   run dir and returns `tail` or `grep` of it. Never `cat` a file over 200 lines; use ranged `sed -n`.
 - **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'
   <seconds> <command>`; macOS has no `timeout`).
 - **Overlap waits.** When a long step (gate, test run, capture, Codex or Opus turn) works on a committed
   state, start the next independent step instead of waiting for it.
-- **Session handoff.** The context guard hook says when and how to hand off; follow its message. STATE.md
-  follows `~/.claude/references/state-template.md` and lists every live sandbox or fork the run owns. Never
-  hard-stop mid-run.
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
@@ -181,17 +177,7 @@ Use an MCP server when it answers the question more directly than local files or
 
 ## Model Routing (Sub-Agents)
 
-When spawning sub-agents for multi-step workflows:
-
-| Task Type | Model | Why |
-|-----------|-------|-----|
-| Discussion, planning, architecture, judging | Opus 5.5 at xhigh (the main session) | Judgment and trade-off analysis; already holds the context |
-| Research, scouting, file reads | Opus 5.5 at medium (`scout`) | Fan-out reads; only the conclusion comes back |
-| QA, test running, Semgrep, mechanical edits | Opus 5.5 at medium (`worker`) | Mechanical tool execution |
-| Documentation updates | Opus 5.5 at medium (`worker`) | Mechanical writing |
-| Locate files/strings, "where is X", call sites | Haiku (`locator`) | Grep-only work; scout only when the answer needs judgment |
-| Browser QA | Sonnet (`browser`) | Keeps browser output and credentials out of the main session |
-
-Codex CLI (`codex exec`) runs only the forge `review` role. Forge role models and efforts are in `~/.claude/skills/forge/references/cost-controls.md`; configured values come from `~/.claude/skills/forge/forge.config.json`; never hard-code them elsewhere.
-**Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls inherit the
-session model (Opus) when `model` is omitted — never let that happen. Prefer the custom `scout` and `worker` agents (Opus at medium) and `shipper` (Sonnet). The `require_agent_model` PreToolUse hook rejects an Agent call that omits it or that uses `general-purpose`/`claude` outside forge-core.
+Each agent's model and effort live in its frontmatter (`~/.claude/agents/*.md`); the `require_agent_model` hook lists them when it blocks.
+**Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls otherwise inherit the session model.
+Prefer the custom agents over `general-purpose`; the hook rejects it (and `claude`) outside forge-core.
+Codex CLI (`codex exec`) runs only forge's review roles; role models live in `~/.claude/skills/forge/forge.config.json`, per `~/.claude/skills/forge/references/cost-controls.md`; never hard-code them elsewhere.

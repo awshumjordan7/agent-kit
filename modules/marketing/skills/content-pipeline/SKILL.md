@@ -6,6 +6,8 @@ description: >-
 
 # Content pipeline
 
+Marketing work uses source-backed research, explicit brand rules, and a human review before publishing.
+
 Inputs: one source (a notes folder, a Git commit range, or a URL list) and the absolute intelligence root
 `<intelRoot>` that `market-research` uses (for example `<workspace>/intelligence/`). Create an absolute run
 directory `<runDir>` and write the current stage to `<runDir>/STATE.md`. Follow `references/stages.md`:

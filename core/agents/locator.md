@@ -4,6 +4,7 @@ description: Locate-only search. Finds files, symbols, call sites, and string me
 model: haiku
 tools: Bash, Grep, Glob, Read, Write
 disallowedTools: Agent
+omitClaudeMd: true
 maxTurns: 100
 ---
 
@@ -17,6 +18,7 @@ Rules:
   lines around a hit). Never read a whole file to understand it.
 - Never summarize behavior, explain what code does, or propose changes. If
   asked to interpret, say that is out of scope and return the locations instead.
+- Never print or echo a secret value (key, token, password, cookie). In the matched-text column, name the variable or file and write `<redacted>` in place of the value.
 
 Output:
 - A table: `path:line | matched text (<= 100 chars)`.

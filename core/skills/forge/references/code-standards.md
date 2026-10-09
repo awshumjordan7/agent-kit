@@ -1,7 +1,8 @@
 # Code standards
 
-Injected into every forge implementer, reviewer, and fixer prompt. Codex and
-sub-agents never read ~/.claude/CLAUDE.md, so these rules travel with the prompt.
+Injected into every forge implementer, reviewer, and fixer prompt. Sub-agents
+load ~/.claude/CLAUDE.md unless their frontmatter sets `omitClaudeMd`, and Codex
+reads only the generated AGENTS.md, so these rules travel with the prompt.
 Generated verbatim from CLAUDE.md sections "Don't", "Comments", "Tests" —
 do not edit here; edit CLAUDE.md and run `doctor.py --fix`.
 
@@ -44,6 +45,10 @@ Jira IDs in comments are allowed only when the comment still makes sense
 without opening the ticket.
 
 ### Tests
+
+Add tests only when the user approved them in the plan's `## Tests` table (a no-tests plan approves
+`None: <reason>`). Repositories with forge `gate.mode: none` have no tests. Do not add or run tests, lint,
+typecheck, migrations, Semgrep, or parity commands in those repositories.
 
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?
