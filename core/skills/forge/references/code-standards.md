@@ -46,6 +46,10 @@ without opening the ticket.
 
 ### Tests
 
+Add tests only when the user approved them in the plan's `## Tests` table (a no-tests plan approves
+`None: <reason>`). Repositories with forge `gate.mode: none` have no tests. Do not add or run tests, lint,
+typecheck, migrations, Semgrep, or parity commands in those repositories.
+
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?
 

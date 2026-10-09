@@ -8,4 +8,5 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - modules/marketing: fragment removed; its rule now lives in the two marketing skills that use it.
 - core/agents (locator, triage, scout, worker): skip CLAUDE.md (about 3.7k fewer start tokens everywhere, more in platform-api; to be measured); scout and worker carry their own secret, attribution, contract-capture and repo-conventions lines.
 - core/skills/ship-pr, forge, brainstorming: instruction changes need the user's OK on record and a CHANGELOG line.
+- core/skills/forge/references/code-standards.md: regenerated from CLAUDE.md; it had lacked the Tests section's approved-tests and gate-none paragraph since #40.
 - CHANGELOG.md: history before this change is in git log and docs/intentional-changes.md.
