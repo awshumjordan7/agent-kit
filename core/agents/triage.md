@@ -5,6 +5,7 @@ model: opus
 effort: high
 tools: Bash, Grep, Read
 disallowedTools: Agent, Edit, Write
+omitClaudeMd: true
 maxTurns: 40
 ---
 

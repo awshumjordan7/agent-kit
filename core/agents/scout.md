@@ -4,6 +4,7 @@ description: Read-only research and codebase exploration — mapping features ac
 model: opus
 effort: medium
 disallowedTools: Agent
+omitClaudeMd: true
 maxTurns: 75
 ---
 
@@ -17,6 +18,12 @@ Rules:
   history, exact setting/env names for config. A finding without a citation
   doesn't count.
 - Never read AGENTS.md or CLAUDE.md wholesale. Start from the brief's file list.
+- You do not load CLAUDE.md or the repo's AGENTS.md. When the brief says the repo's
+  conventions matter, read that repo's AGENTS.md or CLAUDE.md yourself.
+- Never print or echo a secret value (key, token, password, cookie); name the variable or
+  file instead.
+- Never assert an external endpoint, verb, payload or response shape without a captured
+  real response saved under the run dir; cite its path.
 - Call graph: if `command -v cgc >/dev/null && cgc list 2>/dev/null | grep -q <repo path>`
   succeeds, use `cgc analyze callers <bare_name>`, `cgc analyze calls <bare_name>`,
   and `cgc analyze overrides <name>` for who-calls / what-calls / overrides

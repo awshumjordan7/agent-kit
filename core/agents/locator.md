@@ -4,6 +4,7 @@ description: Locate-only search. Finds files, symbols, call sites, and string me
 model: haiku
 tools: Bash, Grep, Glob, Read, Write
 disallowedTools: Agent
+omitClaudeMd: true
 maxTurns: 100
 ---
 
