@@ -9,6 +9,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/skills/forge (SKILL.md, forge-core.js, run_context.py): forge launches now require base, resolved by the main session with resolve-base-branch.sh, with no silent fallback to main (C-198).
 - core/CLAUDE.md (Plain English): add five rules borrowed from ASD-STE100 Simplified Technical English (one idea per sentence with a 25-word cap, at most three nouns in a row and no semicolons, lists for steps and three or more items, and keep facts and certainty when rewriting a source) to tighten plain-English answers.
 - core/skills/forge (SKILL.md, references/plan-review-prompt.md): a plan that calls or changes another repository's or an external service's interface lists each seam with its provider and the source of its shape, fixtures come from that source, and plan review checks it (SDD idea 1, N-04).
+- modules/codex (data/forge.json, docs/modules/codex.md): with the codex module on, plan review runs on Codex gpt-6.1-sol at xhigh; without it plan review stays on Claude Opus xhigh.
 
 ## 2026-10-08
 - core/CLAUDE.md: cut duplicated and narrow text (routing table to a pointer, artifacts and handoff duplicates); replace the fan-out cap with "no cap; batch parallel sub-agents into one Workflow".
