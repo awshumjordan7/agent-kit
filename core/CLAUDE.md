@@ -157,9 +157,14 @@ Use an MCP server when it answers the question more directly than local files or
 
 - Default to plain language. Prefer everyday words over technical jargon; when a
   technical term is necessary, define it briefly on first use.
-- Keep sentences short (roughly under 20 words). Active voice, plain verbs
+- One idea per sentence: aim for 20 words or fewer, never more than 25. Active voice, plain verbs
   ("analyze", not "perform an analysis"). One name per concept -- don't call the
   same thing two different names.
+- No more than three nouns in a row ("the check forge runs at launch", not "the forge run
+  launch check"). No semicolons: split the sentence instead.
+- Use a numbered list for steps, and a list or table for three or more parallel items.
+- When rewriting or summarizing a source, keep every number, condition and limit, keep its
+  level of certainty, and add no cause or mechanism it does not state.
 - No mannered prose: no metaphor or flourish standing in for a direct statement. When a
   literal phrase is available, use it.
 - Lead with the answer or next action; put reasoning and detail after.
