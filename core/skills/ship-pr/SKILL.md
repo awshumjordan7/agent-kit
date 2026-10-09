@@ -23,7 +23,7 @@ Use this skill only after implementation and validation are complete and the use
 - Stage only the approved files. Review the staged diff before committing.
 - After staging, compare the approved list with `git diff --cached --name-only`. Record every approved path that is not staged (hook or permission refusal, ignored, missing, unchanged) with its reason. Do not work around a block.
 - Changelog check, after staging and before any commit or push, even when nothing is left to commit. You verify; you never write CHANGELOG.md.
-  1. List the branch's changed files, committed and staged: `git diff --cached --name-only "$(git merge-base origin/<base> HEAD)"`.
+  1. List the branch's changed files, committed and staged: `git diff --cached --name-only --no-renames "$(git merge-base origin/<base> HEAD)"`.
   2. Its instruction files are the paths matching `(^|/)CLAUDE(\.fragment)?\.md$`, `(^|/)AGENTS\.md$`, `(^|/)agents/[^/]+\.md$`, `(^|/)skills/.+\.md$` or `(^|/)references/[^/]+\.md$` (the same patterns as `.github/scripts/check_changelog.py`). With none, skip the rest of this check.
   3. With any, both are required: (a) CHANGELOG.md is in that list and `git diff --cached "$(git merge-base origin/<base> HEAD)" -- CHANGELOG.md` adds at least one line starting `- `; (b) the user's OK is on record, as a `USER OK: "<the user's words>"` line in the brief or a `user-ok.md` file in the run dir the brief names.
   4. If either is missing, commit and push nothing and return `NEEDS_CHANGELOG_OK` with the instruction file list and which of (a) and (b) is missing. Leave the staging as it is.

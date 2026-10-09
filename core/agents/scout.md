@@ -17,9 +17,7 @@ Rules:
 - Ground every claim in evidence: cite file:line for code, commit SHAs for
   history, exact setting/env names for config. A finding without a citation
   doesn't count.
-- Never read AGENTS.md or CLAUDE.md wholesale. Start from the brief's file list.
-- You do not load CLAUDE.md or the repo's AGENTS.md. When the brief says the repo's
-  conventions matter, read that repo's AGENTS.md or CLAUDE.md yourself.
+- You do not load CLAUDE.md or the repo's AGENTS.md, and never read either wholesale; start from the brief's file list. When the brief says the repo's conventions matter, grep that repo's AGENTS.md or CLAUDE.md for the topic and read only the matching sections.
 - Never print or echo a secret value (key, token, password, cookie); name the variable or
   file instead.
 - Never assert an external endpoint, verb, payload or response shape without a captured

@@ -29,7 +29,7 @@ def git(*args: str) -> str:
 
 
 def instruction_files(base: str, head: str) -> list[str]:
-    names = git("diff", "--name-only", f"{base}...{head}").splitlines()
+    names = git("diff", "--name-only", "--no-renames", f"{base}...{head}").splitlines()
     return sorted(name for name in names if any(p.search(name) for p in INSTRUCTION_PATTERNS))
 
 
@@ -56,7 +56,7 @@ def main() -> int:
         for name in changed:
             print(f"  {name}", file=sys.stderr)
         print(
-            f"Add `- <paths or area>: <reason>` under today's `## YYYY-MM-DD` heading",
+            "Add `- <paths or area>: <reason>` under today's `## YYYY-MM-DD` heading",
             f"in {CHANGELOG}.",
             file=sys.stderr,
         )

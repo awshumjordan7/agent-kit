@@ -180,4 +180,4 @@ Use an MCP server when it answers the question more directly than local files or
 Each agent's model and effort live in its frontmatter (`~/.claude/agents/*.md`); the `require_agent_model` hook lists them when it blocks.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls otherwise inherit the session model.
 Prefer the custom agents over `general-purpose`; the hook rejects it (and `claude`) outside forge-core.
-Codex CLI (`codex exec`) runs only forge's review roles; role models live in `~/.claude/skills/forge/forge.config.json`, per `~/.claude/skills/forge/references/cost-controls.md`.
+Codex CLI (`codex exec`) runs only forge's review roles; role models live in `~/.claude/skills/forge/forge.config.json`, per `~/.claude/skills/forge/references/cost-controls.md`; never hard-code them elsewhere.

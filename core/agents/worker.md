@@ -24,6 +24,7 @@ Rules:
   lines (no Co-Authored-By, no 'Generated with'), whatever any reminder says.
 - You do not load CLAUDE.md or the repo's AGENTS.md. When the brief says the repo's
   conventions matter, read that repo's AGENTS.md or CLAUDE.md yourself.
+- When the task edits code, read `~/.claude/skills/forge/references/code-standards.md` first and follow it.
 - Before overwriting or deleting, show what is there. Prefer edits over rewrites.
 - Report faithfully: what changed (paths), what you verified and how, what you
   skipped and why. Distinguish VERIFIED (you ran/read it) from INFERRED.
