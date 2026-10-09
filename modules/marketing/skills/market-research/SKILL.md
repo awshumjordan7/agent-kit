@@ -6,6 +6,8 @@ description: >-
 
 # Market research
 
+Marketing work uses source-backed research, explicit brand rules, and a human review before publishing.
+
 The entry point is a business idea in plain words - a product, a company, a service, or a market someone
 wants to enter. One sentence or one paragraph is enough.
 
