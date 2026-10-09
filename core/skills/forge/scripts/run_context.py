@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -64,24 +66,6 @@ def _sha256(path: Path) -> str | None:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def baseline(run_dir: Path, repo: Path, reuse: bool = False) -> dict:
-    # A resumed run must keep its first baseline: phase commits move HEAD, and a fresh baseline
-    # would hide the run's own committed and dirty files from the review diff.
-    if reuse and (run_dir / "baseline.json").is_file():
-        return {"written": False}
-    porcelain, paths = _status(repo)
-    document = {
-        "head": str(_git(repo, "rev-parse", "HEAD")).strip(),
-        "porcelain": porcelain,
-        "files": {path: _sha256(repo / path) for path in paths},
-    }
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "baseline.json").write_text(
-        json.dumps(document, indent=2) + "\n", encoding="utf-8"
-    )
-    return {"written": True}
 
 
 def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.log") -> dict:
@@ -332,61 +316,64 @@ def _ref_exists(repo: Path, ref: str) -> bool:
     )
 
 
-def _advanced_base(repo: Path, head: str, base: str) -> str:
-    # Merging a newer base into the branch mid-run brings in other PRs' files. Start the diff at
-    # the merge-base only when it descends from the baseline head, so the diff never widens.
+def _merge_base(repo: Path, base: str) -> tuple[str, str]:
+    # origin/<base> comes first so a stale local base branch cannot widen the diff. The sha is ""
+    # when the two have no merge-base.
     ref = f"origin/{base}" if _ref_exists(repo, f"origin/{base}") else base
-    merge_base = subprocess.run(
+    completed = subprocess.run(
         ["git", "-C", str(repo), "merge-base", ref, "HEAD"],
         check=False,
         capture_output=True,
         text=True,
     )
-    candidate = merge_base.stdout.strip()
-    if merge_base.returncode or not candidate:
-        return head
-    is_ancestor = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", head, candidate],
-        check=False,
-        capture_output=True,
-    )
-    return candidate if is_ancestor.returncode == 0 else head
+    return ref, completed.stdout.strip() if completed.returncode == 0 else ""
 
 
-def _diff_base(
-    repo: Path, document: dict, base: str | None, advance_only: bool = False
-) -> str:
-    head = document.get("head")
-    if base and advance_only and head:
-        return _advanced_base(repo, str(head).strip(), base)
-    if base and not advance_only:
-        return str(_git(repo, "merge-base", base, "HEAD")).strip()
-    return str(head or _git(repo, "rev-parse", "HEAD")).strip()
+def _diff_start(repo: Path, base: str | None) -> str:
+    if not base:
+        return str(_git(repo, "rev-parse", "HEAD")).strip()
+    ref, sha = _merge_base(repo, base)
+    if not sha:
+        raise ValueError(f"no merge-base between {ref} and HEAD in {repo}")
+    return sha
 
 
-def _changed_since_baseline(
-    repo: Path,
-    document: dict,
-    diff_base: str,
-    all_dirty: bool = False,
+def _excluder(repo: Path, run_dir: Path, patterns: list[str]) -> Callable[[str], bool]:
+    # Patterns are repo-relative fnmatch patterns, so "*" also matches "/". The run dir counts only
+    # when it sits inside the repo, below its root.
+    try:
+        inside = run_dir.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        inside = ""
+    if inside == ".":
+        inside = ""
+
+    def excluded(path: str) -> bool:
+        if inside and (path == inside or path.startswith(inside + "/")):
+            return True
+        return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+    return excluded
+
+
+def _split_excluded(
+    paths: list[str], excludes: Callable[[str], bool]
+) -> tuple[list[str], list[str]]:
+    kept = [path for path in paths if not excludes(path)]
+    excluded = [path for path in paths if excludes(path)]
+    return list(dict.fromkeys(kept)), list(dict.fromkeys(excluded))
+
+
+def _changed_since_base(
+    repo: Path, diff_base: str, excludes: Callable[[str], bool]
 ) -> tuple[list[str], list[str], list[str]]:
     _porcelain, dirty = _status(repo)
     committed = str(
         _git(repo, "diff", "--name-only", "--diff-filter=ACMRD", diff_base, "HEAD")
     ).splitlines()
-    baseline_files = document.get("files", {})
     candidates, dropped = _safe_paths(repo, [*committed, *dirty])
-    committed_set = set(committed)
-    files: list[str] = []
-    preexisting: list[str] = []
-    for path in candidates:
-        current_sha = _sha256(repo / path)
-        unchanged_preexisting = path in baseline_files and current_sha == baseline_files[path]
-        if not all_dirty and path not in committed_set and unchanged_preexisting:
-            preexisting.append(path)
-        else:
-            files.append(path)
-    return files, preexisting, dropped
+    files, excluded = _split_excluded(candidates, excludes)
+    return files, excluded, dropped
 
 
 def _build_diff(repo: Path, diff_base: str, files: list[str]) -> str:
@@ -427,22 +414,18 @@ def write_diff(
     label: str,
     base: str | None = None,
     hints: list[str] | None = None,
-    advance_only: bool = False,
+    patterns: list[str] | None = None,
 ) -> tuple[Path, list[str], list[str], list[str]]:
-    baseline_path = run_dir / "baseline.json"
-    document = (
-        json.loads(baseline_path.read_text(encoding="utf-8"))
-        if baseline_path.is_file()
-        else {}
+    diff_base = _diff_start(repo, base)
+    files, excluded, dropped = _changed_since_base(
+        repo, diff_base, _excluder(repo, run_dir, patterns or [])
     )
-    diff_base = _diff_base(repo, document, base, advance_only)
-    files, preexisting, dropped = _changed_since_baseline(repo, document, diff_base)
     _kept_hints, dropped_hints = _safe_paths(repo, hints or [])
     dropped = list(dict.fromkeys([*dropped, *dropped_hints]))
     run_dir.mkdir(parents=True, exist_ok=True)
     diff_path = run_dir / f"gate-{label}.diff"
     diff_path.write_text(_build_diff(repo, diff_base, files), encoding="utf-8")
-    return diff_path, files, preexisting, dropped
+    return diff_path, files, excluded, dropped
 
 
 def context(
@@ -450,16 +433,16 @@ def context(
     repo: Path,
     plan_file: Path,
     label: str,
-    all_dirty: bool = False,
     base: str | None = None,
     hints: list[str] | None = None,
-    advance_only: bool = False,
+    patterns: list[str] | None = None,
 ) -> dict:
-    baseline_path = run_dir / "baseline.json"
-    document = json.loads(baseline_path.read_text(encoding="utf-8"))
-    diff_base = _diff_base(repo, document, base, advance_only)
-    files, preexisting, dropped = _changed_since_baseline(
-        repo, document, diff_base, all_dirty=all_dirty
+    try:
+        diff_base = _diff_start(repo, base)
+    except ValueError as exc:
+        return _checked({**_CONTEXT_DEFAULTS, "error": str(exc)})
+    files, excluded, dropped = _changed_since_base(
+        repo, diff_base, _excluder(repo, run_dir, patterns or [])
     )
     _kept_hints, dropped_hints = _safe_paths(repo, hints or [])
     dropped = list(dict.fromkeys([*dropped, *dropped_hints]))
@@ -479,7 +462,7 @@ def context(
     _write_atomic(brief_path, _review_brief(plan, references))
     facts = {
         "files": files,
-        "preexisting": preexisting,
+        "excludedPaths": excluded,
         "droppedPaths": dropped,
         "commandSucceeded": True,
         "diffPath": str(diff_path),
@@ -495,9 +478,113 @@ def context(
     return _checked(facts)
 
 
+# A run dir holding any of these belongs to a run that already started, so its own edits may be
+# what makes the tree dirty.
+_RELAUNCH_MARKERS = (
+    "phases.json",
+    "context-gate.json",
+    "checkpoint.json",
+    "impl-progress-*.md",
+    "implementation-summary*.md",
+)
+
+
+def _relaunch_marker(run_dir: Path) -> str:
+    for pattern in _RELAUNCH_MARKERS:
+        found = sorted(path.name for path in run_dir.glob(pattern) if path.is_file())
+        if found:
+            return found[0]
+    return ""
+
+
+def _resolve_base(repo: Path) -> str:
+    script = Path(__file__).resolve().parents[2] / "ship-pr" / "scripts" / "resolve-base-branch.sh"
+    try:
+        completed = subprocess.run(
+            ["bash", str(script)],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "main"
+    lines = completed.stdout.strip().splitlines()
+    return lines[-1].strip() if completed.returncode == 0 and lines else "main"
+
+
+def launch_facts(
+    repo: Path,
+    run_dir: Path,
+    base: str | None = None,
+    patterns: list[str] | None = None,
+    relaunch: bool = False,
+    no_check: bool = False,
+) -> dict:
+    base = base or _resolve_base(repo)
+    base_ref, merge_base = _merge_base(repo, base)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    marker = "" if relaunch else _relaunch_marker(run_dir)
+    _porcelain, paths = _status(repo)
+    dirty, excluded = _split_excluded(paths, _excluder(repo, run_dir, patterns or []))
+    ahead = (
+        int(str(_git(repo, "rev-list", "--count", f"{merge_base}..HEAD")).strip())
+        if merge_base
+        else 0
+    )
+    error = "" if merge_base else f"no merge-base between {base_ref} and HEAD in {repo}"
+    relaunch = relaunch or bool(marker)
+    clean = not dirty and ahead == 0
+    return _checked(
+        {
+            "ok": not error and (no_check or relaunch or clean),
+            "base": base,
+            "baseRef": base_ref,
+            "mergeBase": merge_base,
+            "head": head,
+            "relaunch": relaunch,
+            "marker": marker,
+            "dirty": dirty,
+            "excluded": excluded,
+            "aheadCount": ahead,
+            "error": error,
+        }
+    )
+
+
+def ship_facts(repo: Path, run_dir: Path, patterns: list[str] | None = None) -> dict:
+    _porcelain, paths = _status(repo)
+    dirty, excluded = _split_excluded(paths, _excluder(repo, run_dir, patterns or []))
+    return _checked({"ok": not dirty, "dirty": dirty, "excluded": excluded})
+
+
+def filter_paths(
+    repo: Path, run_dir: Path, files_file: Path, patterns: list[str] | None = None
+) -> dict:
+    # The list is NUL-separated, as gate.sh writes it, and is rewritten in place in the same form.
+    entries = [
+        entry.decode("utf-8", "surrogateescape")
+        for entry in files_file.read_bytes().split(b"\0")
+        if entry
+    ]
+    excludes = _excluder(repo, run_dir, patterns or [])
+    kept = [entry for entry in entries if not excludes(entry)]
+    excluded = list(dict.fromkeys(entry for entry in entries if excludes(entry)))
+    temporary = files_file.with_name(files_file.name + ".tmp")
+    temporary.write_bytes(b"".join(entry.encode("utf-8", "surrogateescape") + b"\0" for entry in kept))
+    os.replace(temporary, files_file)
+    return {"excluded": excluded}
+
+
 _CONTEXT_DEFAULTS: dict = {
     "files": [],
-    "preexisting": [],
+    "excludedPaths": [],
     "droppedPaths": [],
     "commandSucceeded": False,
     "diffPath": "",
@@ -694,26 +781,37 @@ def phases_save(
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
-    baseline_parser = subparsers.add_parser("baseline")
-    baseline_parser.add_argument("--run-dir", type=Path, required=True)
-    baseline_parser.add_argument("--repo", type=Path, required=True)
-    baseline_parser.add_argument("--reuse", action="store_true")
     context_parser = subparsers.add_parser("context")
     context_parser.add_argument("--run-dir", type=Path, required=True)
     context_parser.add_argument("--repo", type=Path, required=True)
     context_parser.add_argument("--plan-file", type=Path, required=True)
     context_parser.add_argument("--label", required=True)
-    context_parser.add_argument("--all-dirty", action="store_true")
     context_parser.add_argument("--base")
-    context_parser.add_argument("--advance-only", action="store_true")
+    context_parser.add_argument("--exclude", action="append")
     context_parser.add_argument("--files", nargs="*")
     diff_parser = subparsers.add_parser("diff")
     diff_parser.add_argument("--run-dir", type=Path, required=True)
     diff_parser.add_argument("--repo", type=Path, required=True)
     diff_parser.add_argument("--label", required=True)
     diff_parser.add_argument("--base")
-    diff_parser.add_argument("--advance-only", action="store_true")
+    diff_parser.add_argument("--exclude", action="append")
     diff_parser.add_argument("--files", nargs="*")
+    launch_facts_parser = subparsers.add_parser("launch-facts")
+    launch_facts_parser.add_argument("--repo", type=Path, required=True)
+    launch_facts_parser.add_argument("--run-dir", type=Path, required=True)
+    launch_facts_parser.add_argument("--base")
+    launch_facts_parser.add_argument("--exclude", action="append")
+    launch_facts_parser.add_argument("--relaunch", action="store_true")
+    launch_facts_parser.add_argument("--no-check", action="store_true")
+    ship_facts_parser = subparsers.add_parser("ship-facts")
+    ship_facts_parser.add_argument("--repo", type=Path, required=True)
+    ship_facts_parser.add_argument("--run-dir", type=Path, required=True)
+    ship_facts_parser.add_argument("--exclude", action="append")
+    filter_paths_parser = subparsers.add_parser("filter-paths")
+    filter_paths_parser.add_argument("--repo", type=Path, required=True)
+    filter_paths_parser.add_argument("--run-dir", type=Path, required=True)
+    filter_paths_parser.add_argument("--exclude", action="append")
+    filter_paths_parser.add_argument("--files-file", type=Path, required=True)
     smoke_run_parser = subparsers.add_parser("smoke-run")
     smoke_run_parser.add_argument("--run-dir", type=Path, required=True)
     smoke_run_parser.add_argument("--repo", type=Path, required=True)
@@ -745,25 +843,33 @@ def main() -> None:
     phases_save_parser.add_argument("--phase", nargs="*", default=[])
     phases_save_parser.add_argument("--pending", nargs="*", default=[])
     args = parser.parse_args()
-    if args.command == "baseline":
-        result = baseline(args.run_dir, args.repo, args.reuse)
-    elif args.command == "context":
+    if args.command == "context":
         result = context(
             args.run_dir,
             args.repo,
             args.plan_file,
             args.label,
-            args.all_dirty,
             args.base,
             args.files,
-            args.advance_only,
+            args.exclude,
         )
     elif args.command == "diff":
-        diff_path, _files, _preexisting, _dropped = write_diff(
-            args.run_dir, args.repo, args.label, args.base, args.files, args.advance_only
-        )
+        try:
+            diff_path, _files, _excluded, _dropped = write_diff(
+                args.run_dir, args.repo, args.label, args.base, args.files, args.exclude
+            )
+        except ValueError as exc:
+            sys.exit(f"run_context.py diff: {exc}")
         sys.stdout.write(str(diff_path) + "\n")
         return
+    elif args.command == "launch-facts":
+        result = launch_facts(
+            args.repo, args.run_dir, args.base, args.exclude, args.relaunch, args.no_check
+        )
+    elif args.command == "ship-facts":
+        result = ship_facts(args.repo, args.run_dir, args.exclude)
+    elif args.command == "filter-paths":
+        result = filter_paths(args.repo, args.run_dir, args.files_file, args.exclude)
     elif args.command == "smoke-run":
         result = smoke_run(args.run_dir, args.repo, args.smoke_command, args.log_name)
     elif args.command == "plan-facts":
