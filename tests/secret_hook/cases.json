@@ -1694,7 +1694,10 @@
  {
   "id": "N03d",
   "exp": "block",
-  "cmd": "cut -d= -f1 /app/env.sh"
+  "cmd": "cut -d= -f1 /app/env.sh",
+  "stderr_has": [
+   "grep -q"
+  ]
  },
  {
   "id": "E06a",
@@ -1735,5 +1738,136 @@
   "id": "N03c",
   "exp": "pass",
   "cmd": "uv run python -m app_api.cli sandbox exec fork-dummy -- sh -c 'for k in DUMMY_A DUMMY_B; do grep -q \"^$k=.\" /app/env.sh && echo \"$k set\" || echo \"$k blank\"; done'"
+ },
+ {
+  "id": "C002a",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "set -a; . .envs/.django; set +a; uv run pytest tests/"
+ },
+ {
+  "id": "C002g",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "set -a; . {tracked}/.envs/.django; set +a; uv run pytest tests/",
+  "stderr_has": [
+   "env-recipe.md",
+   "with-env.sh"
+  ]
+ },
+ {
+  "id": "C155h",
+  "exp": "block",
+  "cmd": "grep -rn -i 'token|secret' scratch/masked/",
+  "stderr_has": [
+   "grep -f <file>"
+  ]
+ },
+ {
+  "id": "C214a",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\nimport os, subprocess\nsubprocess.run(['python3', 'smoke.py'], env={**os.environ, 'GATE_CONFIG': 'c.json'}, check=True)\nEOF"
+ },
+ {
+  "id": "C214b",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\nimport os, subprocess\nsubprocess.run(['python3', 'smoke.py'], env=os.environ, check=True)\nEOF"
+ },
+ {
+  "id": "C214c",
+  "exp": "pass",
+  "cmd": "python3 -c \"for k in ['os.environ', 'handoff']: print(k in open('c.md').read())\""
+ },
+ {
+  "id": "B03-c214-literal-heredoc",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\nfor k in ['os.environ', 'handoff']:\n    print(k)\nEOF"
+ },
+ {
+  "id": "P3a",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('STATE.md')\np.write_text(p.read_text() + \"- gate smoke passes env={**os.environ, 'GATE_CONFIG': 'c.json'} to the child\\n\")\nEOF"
+ },
+ {
+  "id": "C214d",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\nimport os\nprint(dict(os.environ))\nEOF"
+ },
+ {
+  "id": "C214e",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\nimport os\nprint({**os.environ})\nEOF"
+ },
+ {
+  "id": "B03-c214-kw-only",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\nimport os, subprocess\nenv = dict(os.environ)\nsubprocess.run(['true'], env=env)\nEOF"
+ },
+ {
+  "id": "N07a",
+  "exp": "pass",
+  "cwd": "tracked",
+  "cmd": "FORGE_GATE_RUN_ID=ff-1397-26 bash -lc 'export PATH=\"/opt/homebrew/opt/gnu-sed/libexec/gnubin:$PATH\"; set -a; . .envs/.postgres; . .envs/.django; set +a; export POSTGRES_HOST=localhost POSTGRES_DB=\"${POSTGRES_DB}_$(printf %s \"${FORGE_GATE_RUN_ID:-$(basename \"$PWD\")}\" | tr -c \"a-zA-Z0-9\" _ | cut -c1-40)\" DJANGO_REDIS_URL=\"${DJANGO_REDIS_URL//redis:6379/localhost:6379}\"; [ -z \"${CELERY_BROKER_URL:-}\" ] || export CELERY_BROKER_URL=\"${CELERY_BROKER_URL//redis:6379/localhost:6379}\"; uv run --group sandbox pytest \"$@\" --create-db' -- core/tests/test_change_history.py core/tests/test_change_history_admin.py"
+ },
+ {
+  "id": "N02d",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "cd {tracked} && L=/tmp/k9run/gate-tests.log; bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run python manage.py makemigrations --dry-run --no-input --check' > $L 2>&1; grep -c passed $L | cut -c1-20"
+ },
+ {
+  "id": "B03-n02d-neutral-var",
+  "exp": "pass",
+  "cwd": "clean",
+  "cmd": "cd /tmp/b03-wt && L=/tmp/b03-wt/gate-tests.log; bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run python manage.py makemigrations --dry-run --no-input --check' > $L 2>&1; grep -c passed $L | cut -c1-20"
+ },
+ {
+  "id": "N07x",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "FORGE_GATE_RUN_ID=ff-1397-26 bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; printenv'"
+ },
+ {
+  "id": "B03-n07a-other-var",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "SHELLOPTS=xtrace bash -lc 'set -a; . .envs/.postgres; set +a; true'"
+ },
+ {
+  "id": "N02x",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "cat .envs/.postgres"
+ },
+ {
+  "id": "N02y",
+  "exp": "block",
+  "cwd": "tracked",
+  "cmd": "bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; env'"
+ },
+ {
+  "id": "C217a",
+  "exp": "pass",
+  "cmd": "jq '{scopes,hubId,appId}' out/01-vendorx-token-info.json"
+ },
+ {
+  "id": "B03-c217-proj-dot",
+  "exp": "pass",
+  "cmd": "jq '.scopes' out/01-vendorx-token-info.json"
+ },
+ {
+  "id": "C217d",
+  "exp": "block",
+  "cmd": "jq '.token' out/01-vendorx-token-info.json"
+ },
+ {
+  "id": "B03-c217-whole",
+  "exp": "block",
+  "cmd": "jq . out/01-vendorx-token-info.json"
+ },
+ {
+  "id": "P3b",
+  "exp": "block",
+  "cmd": "jq '.expires_at' ~/.aws/01-token-info.json"
  }
 ]
