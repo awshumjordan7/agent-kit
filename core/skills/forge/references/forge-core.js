@@ -285,13 +285,13 @@ const CONTEXT_SCHEMA = {
   properties: {
     files: { type: 'array', items: { type: 'string' } },
     droppedPaths: { type: 'array', items: { type: 'string' } },
-    preexisting: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
+    excludedPaths: { type: 'array', items: { type: 'string' } }, commandSucceeded: { type: 'boolean' },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' }, diffLines: { type: 'integer' },
     diffValid: { type: 'boolean' },
     testPaths: { type: 'array', items: { type: 'string' } }, error: { type: 'string' },
     briefPath: { type: 'string' }, hasContract: { type: 'boolean' },
   },
-  required: ['files', 'droppedPaths', 'preexisting', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'testPaths', 'error', 'briefPath', 'hasContract'],
+  required: ['files', 'droppedPaths', 'excludedPaths', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'testPaths', 'error', 'briefPath', 'hasContract'],
 }
 const CONTEXT_FACTS_SCHEMA = factsSchema(CONTEXT_SCHEMA)
 const GATE_SCHEMA = {
@@ -316,8 +316,9 @@ const GATE_SCHEMA = {
     commands: { type: 'array', items: { type: 'string' } },
     files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
     diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
+    excludedFiles: { type: 'array', items: { type: 'string' } },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' },
-    head: { type: 'string' }, baselineSha256: { type: 'string' }, diffSha256: { type: 'string' },
+    head: { type: 'string' }, baseSha: { type: 'string' }, diffSha256: { type: 'string' },
     configSha256: { type: 'string' }, filesSha256: { type: 'string' }, stageSelection: { type: 'string' },
     reusedFrom: { type: 'string' },
     commit: {
@@ -499,6 +500,24 @@ const PHASES_SAVE_SCHEMA = factsSchema({
   properties: { written: { type: 'boolean' }, phases: { type: 'integer' }, error: { type: 'string' } },
   required: ['written', 'phases', 'error'],
 })
+const LAUNCH_FACTS_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean' }, base: { type: 'string' }, baseRef: { type: 'string' }, mergeBase: { type: 'string' },
+    head: { type: 'string' }, relaunch: { type: 'boolean' }, marker: { type: 'string' },
+    dirty: { type: 'array', items: { type: 'string' } }, excluded: { type: 'array', items: { type: 'string' } },
+    aheadCount: { type: 'integer' }, error: { type: 'string' },
+  },
+  required: ['ok', 'base', 'baseRef', 'mergeBase', 'head', 'relaunch', 'marker', 'dirty', 'excluded', 'aheadCount', 'error'],
+})
+const SHIP_FACTS_SCHEMA = factsSchema({
+  type: 'object', additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean' },
+    dirty: { type: 'array', items: { type: 'string' } }, excluded: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['ok', 'dirty', 'excluded'],
+})
 const HANDOFF_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { handoffPath: { type: 'string' } }, required: ['handoffPath'],
@@ -631,6 +650,10 @@ const STUBS = {
     ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: PARAMS.dryRunFindings ? 'true' : '', files: 1, error: '' })
     : opts.schema === PHASES_SAVE_SCHEMA
     ? dryRunFacts({ written: true, phases: 0, error: '' })
+    : opts.schema === LAUNCH_FACTS_SCHEMA
+    ? dryRunFacts({ ok: true, base: 'main', baseRef: 'origin/main', mergeBase: dryRunSha('base'), head: dryRunSha('base'), relaunch: false, marker: '', dirty: [], excluded: [], aheadCount: 0, error: '' })
+    : opts.schema === SHIP_FACTS_SCHEMA
+    ? dryRunFacts({ ok: true, dirty: [], excluded: [] })
     : opts.schema === PLAN_FACTS_SCHEMA
     ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '' })
     : opts.schema === PLAN_CRITERIA_SCHEMA
@@ -638,7 +661,7 @@ const STUBS = {
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
-    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
+    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -647,7 +670,7 @@ const STUBS = {
     ? { branch: `${PARAMS.ticket}-dry-run` }
     : opts.schema === THREAD_CHECK_SCHEMA
     ? { threadExists: true }
-    : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], preexisting: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }),
+    : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }),
   readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
@@ -954,9 +977,40 @@ function planRef(phase = null) {
     : whole
 }
 
-function baselineContext(reuse = false) {
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/run_context.py baseline --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)}${reuse ? ' --reuse' : ''}`,
-    { label: 'baseline', phase: 'Implement', schema: ACK_SCHEMA })
+// The base branch resolved once at launch; every later diff of this run starts from it.
+let LAUNCH = { base: '', baseRef: '' }
+
+// Gate-entry localOnly patterns: tracked or untracked files that are never run files.
+function localOnlyFlags() {
+  const patterns = configuredGateEntry().localOnly
+  return Array.isArray(patterns) ? patterns.map(pattern => ` --exclude ${shellQuote(String(pattern))}`).join('') : ''
+}
+
+async function decideExcluded(source, paths) {
+  if (paths && paths.length) await decide(`${source} excluded local-only or run-dir paths: ${paths.join(', ').slice(0, 500)}`)
+}
+
+// A fresh build launch must start on a clean tree at the base branch, so every dirty or committed
+// path the run later sees is its own. A relaunch already owns its dirty files and skips the check.
+async function launchCheck(relaunch) {
+  if (!args.base) throw new Error(`forge needs base in the launch args for ${PARAMS.projectDir}: the main session resolves it with ship-pr/scripts/resolve-base-branch.sh, asks the user if that fails, and passes it as base. Forge does not guess the base branch.`)
+  const review = PARAMS.lane === 'review'
+  const base = ` --base ${shellQuote(args.base)}`
+  const mode = review ? ' --no-check' : relaunch ? ' --relaunch' : ''
+  const facts = await factsCommand('launch-facts', `python3 ~/.claude/skills/forge/scripts/run_context.py launch-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${base}${localOnlyFlags()}${mode}`,
+    LAUNCH_FACTS_SCHEMA, review ? 'Review' : 'Implement')
+  if (!facts) throw new Error(`forge launch check returned no result for ${PARAMS.projectDir}`)
+  await decideExcluded('Launch check', facts.excluded)
+  if (facts.marker) await decide(`Launch treated as a relaunch: the run dir holds ${facts.marker}.`)
+  if (facts.error) throw new Error(`forge launch check failed: ${facts.error}`)
+  if (!facts.ok) {
+    const dirty = facts.dirty.length
+      ? `${facts.dirty.length} dirty path(s): ${facts.dirty.slice(0, 20).join(', ')}${facts.dirty.length > 20 ? ', ...' : ''}`
+      : ''
+    const ahead = facts.aheadCount ? `HEAD is ${facts.aheadCount} commit(s) ahead of ${facts.baseRef}` : ''
+    throw new Error(`forge refused the launch in ${PARAMS.projectDir}: ${[dirty, ahead].filter(Boolean).join('; ')}. A fresh build run needs a clean tree at ${facts.baseRef}. Use a fresh worktree from ${facts.baseRef}, pass base=<parent branch> for a stacked branch, or relaunch an earlier run with checkpointDecision. Start a fresh run after fixing this; resumeFromRunId replays this refusal.`)
+  }
+  LAUNCH = { base: facts.base, baseRef: facts.baseRef }
 }
 
 // The configured worktree test commands source env files, which the secret-read hook blocks
@@ -1037,12 +1091,16 @@ function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', log
     { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
+function gateBaseArg() {
+  return LAUNCH.base ? ` --base ${shellQuote(LAUNCH.base)}` : ''
+}
+
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sha = '') {
   const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
   const shaArg = sha ? ` --sha ${quote(sha)}` : ''
-  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()}${shaArg}${onlyArg}${filesArg}\`. Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -1080,13 +1138,12 @@ function stopped(state) {
   return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN' || state.status === 'PRE_SHIP'
 }
 
-function changedFiles(allDirty = false) {
-  const mode = allDirty ? ' --all-dirty' : ''
-  const repo = shellQuote(PARAMS.projectDir)
-  const baseRef = args.base ? shellQuote(args.base) : `"$(cd ${repo} && bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || echo main)"`
-  const base = ` --base ${baseRef}${PARAMS.lane === 'build' ? ' --advance-only' : ''}`
-  return factsCommand('changed-files', `python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${mode}${base}`,
+async function changedFiles() {
+  const base = LAUNCH.base ? ` --base ${shellQuote(LAUNCH.base)}` : ''
+  const facts = await factsCommand('changed-files', `python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${base}${localOnlyFlags()}`,
     CONTEXT_FACTS_SCHEMA, 'Review')
+  if (facts) await decideExcluded('Changed-file collection', facts.excludedPaths)
+  return facts
 }
 
 // Runs as the default agent type, not reviewer, because it writes smoke.py itself and the reviewer
@@ -1572,7 +1629,7 @@ async function converge(panel, context) {
 
 function fixDiffStatCommand() {
   const repo = shellQuote(PARAMS.projectDir)
-  return `git -C ${repo} diff --stat "$(git -C ${repo} merge-base HEAD "$(cd ${repo} && bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || echo main)")"`
+  return `git -C ${repo} diff --stat "$(git -C ${repo} merge-base HEAD ${shellQuote(LAUNCH.baseRef)})"`
 }
 
 function deciderPrompt(round, open, gate, opts, history) {
@@ -1859,6 +1916,26 @@ async function recordUnstaged(state, result, label) {
   await decide(`${label} could not stage ${rows.length} path(s): ${rows.map(row => `${row.path} - ${row.reason || 'no reason given'}`).join('; ').slice(0, 500)}`)
 }
 
+// After a push the tree must hold no run file: a dirty path left here was never committed. Env-like
+// paths stay uncommitted by design, so they are recorded instead of blocking.
+async function shipCheck(state, label) {
+  PARAMS.spawnCap += 1
+  const facts = await factsCommand(`ship-facts-${label === 'Ship' ? 'ship' : 'sync'}`, `python3 ~/.claude/skills/forge/scripts/run_context.py ship-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${localOnlyFlags()}`,
+    SHIP_FACTS_SCHEMA, label === 'Ship' ? 'Ship' : 'Fix')
+  if (!facts) {
+    state.status = 'BLOCKED'
+    await decide(`${label} check for uncommitted run files returned no result; check git status in ${PARAMS.projectDir} by hand.`)
+    return
+  }
+  const envLike = facts.dirty.filter(envLikePath)
+  const left = facts.dirty.filter(path => !envLikePath(path))
+  if (envLike.length) await decide(`${label} left env-like paths uncommitted by design: ${envLike.join(', ').slice(0, 500)}`)
+  if (left.length) {
+    state.status = 'BLOCKED'
+    await decide(`${label} left ${left.length} run file(s) uncommitted: ${left.join(', ').slice(0, 500)}. A human must commit or discard them.`)
+  }
+}
+
 function qaArtifactDraft(shipResult, context) {
   const criteria = acceptanceCriteria()
   return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
@@ -2079,7 +2156,7 @@ function phaseBranch(name) {
   const repo = shellQuote(PARAMS.projectDir)
   const branch = shellQuote(name)
   const report = `python3 -c 'import json, subprocess; print(json.dumps({"branch": subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()}))'`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && base=$(bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh 2>/dev/null || true) && case "$current" in ''|develop|main|master|"$base") git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
+  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && case "$current" in ''|develop|main|master|${shellQuote(LAUNCH.base)}) git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
     { label: 'phase-branch', phase: 'Implement', schema: BRANCH_SCHEMA })
 }
 
@@ -2093,12 +2170,13 @@ async function commitFiles(label, message, files) {
   if (!files.length) return { sha: null, empty: true, error: '' }
   const quote = shellQuote
   const subject = String(message).replace(/`/g, '')
-  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
+  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
     { label, phase: 'Implement', schema: GATE_SCHEMA })
   const commit = result && result.commit
   if (commit && Array.isArray(commit.dropped) && commit.dropped.length) {
     await decide(`${label} dropped --files entries that match no file on disk, in the index, or in HEAD: ${commit.dropped.join(', ')}`)
   }
+  if (result && Array.isArray(result.excludedFiles)) await decideExcluded(label, result.excludedFiles)
   if (commit && commit.sha) return { sha: commit.sha, empty: false, error: '' }
   const error = (commit && commit.error) || (result && (result.failures || [])[0] && result.failures[0].summary) || 'commit agent returned null'
   // Every entry dropped means the reported paths were wrong, so the uncommitted work must block the phase.
@@ -2244,7 +2322,7 @@ async function phasedImplement(state) {
     run.branch = branch.branch
     await decide(`Phase commits go on branch ${run.branch}.`)
   }
-  // Written before Phase 1 so an interrupted first phase resumes with this run's baseline.
+  // Written before Phase 1 so an interrupted first phase counts as a relaunch.
   if (!PHASES_RECORDED && !await writePhases(run)) {
     state.status = 'BLOCKED'
     return state
@@ -2396,7 +2474,9 @@ async function fullLane() {
         await decide('Ship, sandbox, and smoke stages skipped because args.noShip is true.')
         return state
       }
-      state.context = state.context || await changedFiles()
+      // Fresh, not the checkpoint's saved context: that one predates any later localOnly change.
+      PARAMS.spawnCap += 1
+      state.context = await changedFiles()
       if (contextFailed(state.context)) {
         state.status = 'BLOCKED'
         await decide(`Changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`)
@@ -2408,6 +2488,8 @@ async function fullLane() {
       if (!state.ship || state.ship.skipped) {
         state.status = 'BLOCKED'
         if (state.ship && state.ship.reason) await decide(state.ship.reason)
+      } else {
+        await shipCheck(state, 'Ship')
       }
       return state
     },
@@ -2502,11 +2584,13 @@ async function fullLane() {
           ...((state.convergence && state.convergence.touchedFiles) || []),
         ], state.context)
         await recordUnstaged(state, synced, 'Ship sync')
+        if (synced && !synced.skipped) await shipCheck(state, 'Ship sync')
         if (!synced || synced.skipped) {
           state.status = 'BLOCKED'
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
         } else {
           state.ship = synced
+          if (state.status === 'BLOCKED') return state
           if (state.checkpointSmokeCommand) {
             // The checkpoint smoke ran before review; the fix round changed the shipped head.
             PARAMS.spawnCap += 1
@@ -2586,7 +2670,7 @@ async function fullLane() {
 async function reviewLane() {
   await decide('Review lane skipped Implement, standalone Gate, Ship, Sandbox, and Smoke stages.')
   phase('Review')
-  const context = await changedFiles(true)
+  const context = await changedFiles()
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
     return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
@@ -2613,7 +2697,7 @@ if (PHASED) PARAMS.spawnCap += PHASE_SPAWNS * PHASES.length + PHASED_RUN_SPAWNS
 const PHASES_SAVED = (PHASED && !PARAMS.checkpointDecision && await readPhases()) || EMPTY_PHASES_FILE
 // writePhases always records every phase row, so rows mean this run already started the phase loop.
 const PHASES_RECORDED = (PHASES_SAVED.phases || []).length > 0
-await baselineContext(Boolean(PARAMS.checkpointDecision || PHASES_RECORDED))
+await launchCheck(Boolean(PARAMS.checkpointDecision || PHASES_RECORDED))
 let state
 try {
   state = PARAMS.lane === 'review' ? await reviewLane() : await fullLane()
