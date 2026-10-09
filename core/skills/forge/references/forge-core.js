@@ -290,8 +290,9 @@ const CONTEXT_SCHEMA = {
     diffValid: { type: 'boolean' },
     testPaths: { type: 'array', items: { type: 'string' } }, error: { type: 'string' },
     briefPath: { type: 'string' }, hasContract: { type: 'boolean' },
+    noCode: { type: 'boolean' }, instructionFiles: { type: 'array', items: { type: 'string' } },
   },
-  required: ['files', 'droppedPaths', 'excludedPaths', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'testPaths', 'error', 'briefPath', 'hasContract'],
+  required: ['files', 'droppedPaths', 'excludedPaths', 'commandSucceeded', 'diffPath', 'diffBytes', 'diffLines', 'diffValid', 'testPaths', 'error', 'briefPath', 'hasContract', 'noCode', 'instructionFiles'],
 }
 const CONTEXT_FACTS_SCHEMA = factsSchema(CONTEXT_SCHEMA)
 const GATE_SCHEMA = {
@@ -661,7 +662,7 @@ const STUBS = {
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
-    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
+    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FILE_SCHEMA
@@ -670,7 +671,7 @@ const STUBS = {
     ? { branch: `${PARAMS.ticket}-dry-run` }
     : opts.schema === THREAD_CHECK_SCHEMA
     ? { threadExists: true }
-    : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true }),
+    : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }),
   readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   trim: () => ({ written: true }),
@@ -1165,6 +1166,18 @@ ${JSON.stringify(implement || {})}`,
   { label: 'checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_SCHEMA })
 }
 
+// A run that changed only docs, instruction text or config gets a fixed ship recommendation; the
+// attended run still stops at PRE_SHIP so the user reads the diff.
+function noCodeCheckpoint(context) {
+  const files = context.files || []
+  const instructions = (context.instructionFiles || []).length
+  return {
+    recommendation: 'ship', command: '', scriptWritten: false,
+    reason: 'no code files changed; checkpoint review skipped',
+    summary: `${files.length} changed files, none of them code (${instructions} instruction). The checkpoint agent did not run; read the diff before shipping.`,
+  }
+}
+
 function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
   const smoke = checkpoint.recommendation === 'smoke'
   const scriptWritten = smoke && checkpoint.scriptWritten === true
@@ -1508,8 +1521,10 @@ async function reviewPanel(context) {
   if (!context.diffValid) return { status: 'BLOCKED', reason: 'review diff invalid' }
   const selected = configuredLenses().filter(lens => (context.files || []).some(file => lens.paths.test(file)))
   const reviewProvider = (configuredRole('review') || {}).provider || 'codex'
+  const skipCodex = context.noCode === true && (context.instructionFiles || []).length === 0
   const specs = []
-  if (reviewProvider === 'codex') specs.push({ key: 'codex', lens: false, run: () => codexReview(context) })
+  if (reviewProvider === 'codex' && skipCodex) await decide('Review panel: Codex reviewer skipped - no code or instruction files changed')
+  if (reviewProvider === 'codex' && !skipCodex) specs.push({ key: 'codex', lens: false, run: () => codexReview(context) })
   specs.push({ key: 'claude', lens: false, run: () => claudeReview(context) })
   for (const lens of selected) specs.push({ key: lens.key, lens: true, run: () => lensReview(lens, context) })
   // A reviewer that never returns (a hung model call) must not hang the run: after
@@ -1518,6 +1533,7 @@ async function reviewPanel(context) {
   const present = raw.filter(Boolean)
   const rows = specs.map((spec, index) => raw[index] ? { key: spec.key, result: raw[index] } : null).filter(Boolean)
   const failures = specs.flatMap((spec, index) => raw[index] ? [] : [{ key: spec.key, status: 'FAIL', reason: 'agent returned null' }])
+  if (skipCodex && failures.some(failure => failure.key === 'claude')) return { status: 'BLOCKED', reason: 'Review panel: Claude reviewer failed and Codex was skipped, so no general review ran' }
   const findings = uniqueFindings(rows)
   const disputes = detectContradictions(rows)
   const ruled = await applyRulings(findings, disputes)
@@ -1529,11 +1545,16 @@ async function reviewPanel(context) {
     await decide('Triage agent returned no result; retaining the pre-triage confirmed findings.')
     partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
   }
+  const attribution = finding => `[${finding.reviewer || 'unknown'}, ${finding.severity || 'unknown'}]`
   for (const item of partitioned.dropped) {
-    await decide(`Triage dropped ${item.finding.file}:${item.finding.line}: ${item.reason}`)
+    await decide(`Triage dropped ${attribution(item.finding)} ${item.finding.file}:${item.finding.line}: ${item.reason}`)
+  }
+  const confirmed = [...ruled.applied, ...partitioned.fix]
+  for (const finding of confirmed) {
+    await decide(`Review confirmed ${attribution(finding)} ${finding.file}:${finding.line}`)
   }
   const unresolvedDisputes = [...ruled.unresolved, ...partitioned.disputes]
-  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed: [...ruled.applied, ...partitioned.fix], failures, returned: present.length }
+  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed, failures, returned: present.length }
 }
 
 // The applier gets only the decider's fix items, already verified, so it applies them without re-triage.
@@ -2448,7 +2469,9 @@ async function fullLane() {
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      const result = await checkpointReview(state.context, state.gate, state.implement, state.phases || null)
+      const result = state.context.noCode === true
+        ? noCodeCheckpoint(state.context)
+        : await checkpointReview(state.context, state.gate, state.implement, state.phases || null)
       if (!result) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint agent returned null; shipping was stopped.')
@@ -2676,7 +2699,10 @@ async function reviewLane() {
     return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
   }
   const review = await reviewPanel(context)
-  if (review.status === 'BLOCKED') return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+  if (review.status === 'BLOCKED') {
+    await decide(review.reason)
+    return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+  }
   if ((configuredRole('review') || {}).provider !== 'claude' && review.failures.some(failure => failure.key === 'codex')) {
     await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the review lane is BLOCKED instead of continuing Claude-only.')
     return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
