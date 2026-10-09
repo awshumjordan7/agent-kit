@@ -19,6 +19,7 @@ skip_tests=false
 only_stages=''
 only_given=false
 commit_message=''
+base=''
 push=false
 sha=''
 no_stages=false
@@ -28,7 +29,7 @@ files=()
 
 while (($#)); do
   case "$1" in
-    --repo|--run-dir|--label|--commit|--only|--sha)
+    --repo|--run-dir|--label|--commit|--only|--sha|--base)
       (($# >= 2)) || die "gate.sh: $1 requires a value"
       case "$1" in
         --repo) repo=$2 ;;
@@ -37,6 +38,7 @@ while (($#)); do
         --commit) commit_message=$2 ;;
         --only) only_stages=$2; only_given=true ;;
         --sha) sha=$2 ;;
+        --base) base=$2 ;;
       esac
       shift 2
       ;;
@@ -104,6 +106,9 @@ else
   [[ -n $run_dir ]] || die 'gate.sh: --run-dir is required'
   [[ -n $label ]] || die 'gate.sh: --label is required'
   [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die 'gate.sh: --label contains unsupported characters'
+  if [[ -n $base ]]; then
+    [[ $base =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || die 'gate.sh: --base contains unsupported characters'
+  fi
 fi
 if [[ -n $commit_message && $files_given != true ]]; then
   die 'gate.sh: --commit requires --files'
@@ -310,6 +315,10 @@ if not isinstance(env_files, list) or not all(
 ):
     print(f"gate.sh: invalid envFiles config for repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
+local_only = entry.get("localOnly", [])
+if not isinstance(local_only, list) or not all(isinstance(pattern, str) and pattern for pattern in local_only):
+    print(f"gate.sh: invalid localOnly config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
 for rule in entry["testPathRules"]:
     if "command" in rule and not isinstance(rule["command"], str):
         print(f"gate.sh: invalid testPathRules command for repository: {repo}", file=sys.stderr)
@@ -331,6 +340,43 @@ PY
 config_status=$?
 ((config_status == 0)) || exit 2
 $print_mode && exit 0
+
+config_value() {
+  python3 - "$entry_file" "$1" "${2-}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle).get(sys.argv[2], sys.argv[3])
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, list):
+    print(json.dumps(value, separators=(",", ":")))
+elif isinstance(value, dict):
+    print(json.dumps(value, separators=(",", ":")))
+else:
+    print(value)
+PY
+}
+
+# localOnly paths are never run files: they are left out of the diff and of --commit staging.
+local_only=$(config_value localOnly '[]') || die 'gate.sh: cannot read localOnly config'
+exclude_args=()
+while IFS= read -r -d '' pattern; do
+  exclude_args+=(--exclude "$pattern")
+done < <(python3 -c 'import json, sys; sys.stdout.write("".join(p + "\0" for p in json.loads(sys.argv[1])))' "$local_only")
+
+# origin/<base> comes first so a stale local base branch cannot widen the diff, as in run_context.py.
+base_ref=''
+base_sha=''
+if [[ -n $base ]]; then
+  if git -C "$repo" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null 2>&1; then
+    base_ref="origin/$base"
+  else
+    base_ref=$base
+  fi
+  base_sha=$(git -C "$repo" merge-base "$base_ref" HEAD 2>/dev/null) && [[ -n $base_sha ]] \
+    || die "gate.sh: no merge-base between $base_ref and HEAD in $repo"
+fi
 
 if $files_given; then
   if ((${#files[@]})); then
@@ -492,7 +538,26 @@ PY
   done <"$files_file"
 fi
 
+excluded_files_file="$state_prefix-excluded.json"
+printf '{"excluded": []}\n' >"$excluded_files_file" || die "gate.sh: cannot write run directory: $run_dir"
+python3 "$script_dir/run_context.py" filter-paths --repo "$repo" --run-dir "$run_dir" \
+  ${exclude_args[@]+"${exclude_args[@]}"} --files-file "$files_file" >"$excluded_files_file" \
+  || die 'gate.sh: cannot filter --files entries'
+files=()
+while IFS= read -r -d '' file; do
+  files+=("$file")
+done <"$files_file"
+if [[ $files_given == true && -z $commit_message ]] && ((${#files[@]} == 0)); then
+  die 'gate.sh: every --files path was excluded (localOnly patterns or the run dir)'
+fi
+
 diff_command=(python3 "$script_dir/run_context.py" diff --run-dir "$run_dir" --repo "$repo" --label "$label")
+if [[ -n $base ]]; then
+  diff_command+=(--base "$base")
+fi
+if ((${#exclude_args[@]})); then
+  diff_command+=("${exclude_args[@]}")
+fi
 if ((${#files[@]})); then
   diff_command+=(--files "${files[@]}")
 fi
@@ -570,38 +635,14 @@ for relative in env_files:
         raise SystemExit(2)
 PY
   (( $? == 0 )) || exit 2
-  # Semgrep compares against the run's starting commit, since HEAD in the checkout is the SHA itself.
-  semgrep_base_rev=$(python3 - "$run_dir/baseline.json" "$sha" <<'PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        head = json.load(handle).get("head") or ""
-except (OSError, json.JSONDecodeError):
-    head = ""
-print(head or f"{sys.argv[2]}^")
-PY
-  ) || die 'gate.sh: cannot read the run baseline'
+  # Semgrep compares against the merge-base with the base branch, since HEAD in the checkout is the SHA itself.
+  semgrep_base_rev="$sha^"
+  if [[ -n $base_ref ]]; then
+    sha_merge_base=$(git -C "$repo" merge-base "$base_ref" "$sha" 2>/dev/null) && [[ -n $sha_merge_base ]] \
+      && semgrep_base_rev=$sha_merge_base
+  fi
   repo=$gate_checkout
 fi
-
-config_value() {
-  python3 - "$entry_file" "$1" "${2-}" <<'PY'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    value = json.load(handle).get(sys.argv[2], sys.argv[3])
-if isinstance(value, bool):
-    print("true" if value else "false")
-elif isinstance(value, list):
-    print(json.dumps(value, separators=(",", ":")))
-elif isinstance(value, dict):
-    print(json.dumps(value, separators=(",", ":")))
-else:
-    print(value)
-PY
-}
 
 timeout_for() {
   python3 - "$entry_file" "$1" <<'PY'
@@ -826,13 +867,13 @@ if [[ $worktree_mode == true && $no_stages != true ]]; then
   fi
 fi
 
-# A passing result is reused only when HEAD, the baseline, the saved diff, the resolved config, the
+# A passing result is reused only when HEAD, the base, the saved diff, the resolved config, the
 # file list and the stage selection all match; anything missing or unequal runs the stages. --sha
 # runs are left out because their saved diff is not the diff of the gated commit.
 reuse_file=''
 if [[ $no_stages != true && -z $sha ]]; then
   reuse_file="$state_prefix-reuse.json"
-  reused_from=$(python3 - "$repo" "$run_dir" "$label" "$entry_file" "$files_file" "$only_stages" "$skip_tests" "$reuse_file" <<'PY'
+  reused_from=$(python3 - "$repo" "$run_dir" "$label" "$entry_file" "$files_file" "$only_stages" "$skip_tests" "$reuse_file" "$base_sha" <<'PY'
 import glob
 import hashlib
 import json
@@ -840,7 +881,7 @@ import os
 import subprocess
 import sys
 
-repo, run_dir, label, entry_path, files_path, only_raw, skip_tests, output_path = sys.argv[1:]
+repo, run_dir, label, entry_path, files_path, only_raw, skip_tests, output_path, base_sha = sys.argv[1:]
 
 
 def file_sha256(path):
@@ -865,7 +906,7 @@ if skip_tests == "true":
     selection += ",skip-tests"
 key = {
     "head": head.stdout.strip() if head.returncode == 0 else "",
-    "baselineSha256": file_sha256(os.path.join(run_dir, "baseline.json")),
+    "baseSha": base_sha,
     "diffSha256": file_sha256(os.path.join(run_dir, f"gate-{label}.diff")),
     "configSha256": file_sha256(entry_path),
     "filesSha256": hashlib.sha256(b"\0".join(files)).hexdigest(),
@@ -899,7 +940,7 @@ PY
   if [[ -n $reused_from ]]; then
     reused=true
     : >"$commands_file"
-    record_command "stages not run: reused the passing result of gate-$reused_from.json (same HEAD, baseline, diff, config, files and stage selection)"
+    record_command "stages not run: reused the passing result of gate-$reused_from.json (same HEAD, base, diff, config, files and stage selection)"
   fi
 fi
 
@@ -1275,7 +1316,7 @@ fi
 
 result_path="$run_dir/gate-$label.json"
 diff_path="$run_dir/gate-$label.diff"
-python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" "$gate_checkout" "$reuse_file" <<'PY'
+python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" "$gate_checkout" "$reuse_file" "$excluded_files_file" <<'PY'
 import fnmatch
 import json
 import os
@@ -1297,6 +1338,7 @@ import sys
     only_stages_raw,
     gate_checkout,
     reuse_path,
+    excluded_files_path,
 ) = sys.argv[1:]
 files_given = files_given_raw == "true"
 push = push_raw == "true"
@@ -1387,6 +1429,8 @@ if files_given:
         if any(fnmatch.fnmatch(path, pattern) for pattern in diff_exclude):
             excluded.append(path)
     result["diffExcluded"] = excluded
+    with open(excluded_files_path, encoding="utf-8") as handle:
+        result["excludedFiles"] = json.load(handle).get("excluded", [])
 
 with open(diff_path, "rb") as handle:
     diff = handle.read()
