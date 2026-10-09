@@ -60,6 +60,7 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   File first, message second.
 - **Run-dir files stay short.** `decisions.md` entries are at most three lines in the form
   `[step] decision - reason`, with evidence as a file path, never inline dumps.
+- **Name files without credential words.** Name your own run-dir, scratch and capture files without token, secret, credential, api key or passwd; the secret hook treats such names as credential files.
 
 ### Don't
 

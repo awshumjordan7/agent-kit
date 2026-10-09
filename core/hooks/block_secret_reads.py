@@ -133,8 +133,9 @@ SECRET_COMMANDS = re.compile(
 #   - The bare-word patterns need trailing \b or they match inside ordinary
 #     identifiers: "token" hits "tokenize", "secret" hits "secretary".
 # ENV_PATH_SHAPES are the env files on their own. `.envrc` and `.env_*` match
-# the settings deny rules.
-ENV_PATH_SHAPES = r"\.envs?\b|\.env\.|/\.envs?\b|\.envrc\b|\.env_"
+# the settings deny rules. `/app/env.sh` is the env file of a Daytona fork; an
+# `env.sh` anywhere else is usually a script.
+ENV_PATH_SHAPES = r"\.envs?\b|\.env\.|/\.envs?\b|\.envrc\b|\.env_|(?<![\w.~-])/app/env\.sh\b"
 SECRET_PATH_SHAPES = (
     ENV_PATH_SHAPES + "|"
     r"\.ssh/|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|authorized_keys|known_hosts|"
@@ -159,12 +160,23 @@ SECRET_BARE_WORDS = (
 )
 
 # A bare word that is also a file name with a data extension (tokens.txt,
-# credentials.json). Checked for reader commands only, never in interpreter
-# heredoc bodies, where prose such as "writes credentials.json" is common.
+# credentials.json). Checked for path tools and reader commands, never in
+# interpreter heredoc bodies, where prose such as "writes credentials.json" is common.
 SECRET_FILE_SHAPES = (
     r"(?:\b|_)(?:credentials?|secrets?|tokens?|api[_-]?keys?)[\w-]*"
     r"\.(?:json|ya?ml|txt|ini|toml|cfg|conf|key)\b"
 )
+# The system account files, bare or with a data extension: `/etc/shadow`,
+# `passwd.txt`. A base name that only contains the word (`box-shadow.css`) is not one.
+SYSTEM_SECRET_FILE = re.compile(
+    r"(?:^|/)(?:passwd|shadow)(?:\.(?:json|ya?ml|txt|ini|toml|cfg|conf|key))?$", re.IGNORECASE
+)
+# A folder named for credentials holds them whatever its files are called
+# (`/run/secrets/db_password`). `.secrets/` is left out: AUTHORIZED_PATHS opts it out.
+SECRET_FOLDER = re.compile(r"(?:^|/)(?:secrets?|\.secret|credentials?)/", re.IGNORECASE)
+# A forge gate output (`gate-apikey.log`, `gate-commit-phase-1.json`) is named
+# after the gate's label, not after what it holds.
+GATE_OUTPUT = re.compile(r"(?:^|/)gate-[\w-]+\.(?:log|json|diff)$", re.IGNORECASE)
 
 # Explicitly fine: sample/template files that carry no real values.
 ALLOWLIST = re.compile(
@@ -231,9 +243,6 @@ READER_NEAR_SECRET_WORD = re.compile(
     re.IGNORECASE,
 )
 
-# Quoted text with a space in it is prose (a report message, a sed script),
-# not a path. A quoted single word may still be a path: cat "secrets.yaml".
-QUOTED_PROSE = re.compile(r"'[^']*\s[^']*'|\"[^\"]*\s[^\"]*\"")
 QUOTED_ANY = re.compile(r"'[^']*'|\"[^\"]*\"")
 # A .md name only as a whole path token, so `cat {tokens.txt,x.md}` and
 # `cat tokens.txt>x.md` keep their secret-named part.
@@ -252,8 +261,12 @@ QUOTED_EXPANSION = re.compile(r"\"[^\"]*\$[\w{(][^\"]*\"")
 
 
 def word_scan(segment: str) -> str:
-    """Return the segment with prose and .md names blanked for the word check."""
-    scan = MD_TOKEN.sub(" ", QUOTED_PROSE.sub(" ", segment))
+    """Return the segment with prose and .md names blanked for the word check.
+
+    Quoted text with a space in it is prose (a report message, a sed script),
+    not a path.
+    """
+    scan = MD_TOKEN.sub(" ", blank_plain_quotes(segment, prose_only=True))
     pattern_only = PATTERN_ONLY.match(scan) and not QUOTED_EXPANSION.search(scan)
     return QUOTED_ANY.sub(" ", scan) if pattern_only else scan
 
@@ -554,6 +567,77 @@ def blank_quoted(text: str, kinds: str) -> str:
     return "".join(out)
 
 
+def _runs_code(span: str) -> bool:
+    """Return True when double-quoted text holds `$(` or an unescaped backtick, which the shell runs."""
+    i, n = 0, len(span)
+    while i < n:
+        if span[i] == "\\":
+            i += 2
+            continue
+        if span[i] == "`" or span.startswith("$(", i):
+            return True
+        i += 1
+    return False
+
+
+def blank_plain_quotes(text: str, *, prose_only: bool = False) -> str:
+    """Blank closed quoted spans that the shell passes on as plain text.
+
+    Tracks escapes and quote state like blank_quoted. A double-quoted span
+    holding `$(` or an unescaped backtick stays, because the shell runs it
+    (`echo "value: $(cat tokens.txt)"`); so does an input redirect target
+    (`< "tokens.txt"`). With prose_only, only spans holding whitespace are
+    blanked: a quoted single word may still be a path (cat "secrets.yaml").
+    An unclosed quote leaves the rest of the text as it is.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            end = _quote_end(text, i)
+            if end is None:
+                out.append(text[i:])
+                break
+            span = text[i:end]
+            before = "".join(out).rstrip()
+            keep = (
+                (c == '"' and _runs_code(span[1:-1]))
+                or (before.endswith("<") and not before.endswith("<<"))
+                or (prose_only and not re.search(r"\s", span))
+            )
+            out.append(span if keep else " ")
+            i = end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def has_substitution(text: str) -> bool:
+    """Return True when text runs a substitution.
+
+    That is `$(` or an unescaped backtick outside single quotes, or `<(` or
+    `>(` outside quotes.
+    """
+    scan = re.sub(r"\\.", "  ", blank_plain_quotes(text), flags=re.DOTALL)
+    return any(s in scan for s in ("$(", "`", "<(", ">("))
+
+
+# A short option cluster ending in `c` (`sh -c`, `su -c`, `bash -lc`) may hand
+# its quoted argument to a shell.
+DASH_C_OPTION = re.compile(r"(?<!\S)-\w*c(?![^\s;&|)])")
+
+
+def reruns_quotes(command: str) -> bool:
+    """Return True when a command may hand quoted text to a shell: a HEREDOC_SHELL word or a `-c` option."""
+    return bool(HEREDOC_SHELL.search(command) or DASH_C_OPTION.search(command))
+
+
 def _word_end(text: str, i: int) -> int:
     """Return the index just past the shell word that starts at text[i]."""
     quote, n = None, len(text)
@@ -809,7 +893,7 @@ def parse_reader(raw: str) -> ReaderArgs | None:
     included); the caller then applies the text checks instead. Leading
     `NAME=value` assignments are skipped before grep and xargs only.
     """
-    if any(s in raw for s in ("$(", "`", "<(", ">(")):
+    if has_substitution(raw):
         return None
     try:
         tokens = shlex.split(strip_redirections(raw))
@@ -960,10 +1044,16 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, her
     read_paths = read_operands(args) + [value for name, value in options if name in ("-f", "--file")] + includes
     read_paths += [value.partition("=")[2] for name, value in options if family == "awk" and name == "-v"]
     for path in read_paths:
-        # SECRET_BARE_WORDS misses `service_credentials.json`: `_` defeats its \b.
-        file_shape = re.search(SECRET_FILE_SHAPES, ALLOWLIST.sub(" ", path), re.IGNORECASE)
-        if secret_path_hit(path) or (file_shape and not AUTHORIZED_PATHS.search(path)):
-            return Hit("reads a credential-bearing path", "reader-operand", path, raw)
+        # A reader operand still blocks on a bare credential word (`config/token`); a path tool does not.
+        word = (
+            re.search(SECRET_BARE_WORDS, ALLOWLIST.sub(" ", path), re.IGNORECASE)
+            and not path.lower().endswith(".md")
+            and not AUTHORIZED_PATHS.search(path)
+            and not api_key_source(path)
+            and not gate_output(path)
+        )
+        if secret_path_hit(path) or word:
+            return Hit("reads a credential-bearing path", "reader-operand", path, raw, env_read_advice(family, path))
     glob = any(GLOB_CHARS.search(f) for f in args.files)
     all_md = not args.stdin_files and bool(args.files) and all(f.lower().endswith(".md") for f in args.files)
     if family in ("sed", "awk"):
@@ -1058,6 +1148,10 @@ NAMES_ONLY_ROUTES = {
 
 class ReachUnknown(Exception):
     """git could not list the files a search reaches."""
+
+
+class GitTimeout(ReachUnknown):
+    """git did not answer before REACH_DEADLINE."""
 
 
 class EnvSearch(NamedTuple):
@@ -1274,7 +1368,7 @@ def _git_output(root: str, *args: str) -> bytes | None:
     """Run git in root and return its output, or None when root is not in a git work tree."""
     remaining = REACH_DEADLINE - time.monotonic()
     if remaining <= 0:
-        raise ReachUnknown(f"git did not answer within {REACH_SECONDS:g} seconds")
+        raise GitTimeout(f"git did not answer within {REACH_SECONDS:g} seconds")
     try:
         result = subprocess.run(
             ["git", "-C", root, *args],
@@ -1285,7 +1379,7 @@ def _git_output(root: str, *args: str) -> bytes | None:
             check=False,
         )
     except subprocess.TimeoutExpired as err:
-        raise ReachUnknown(f"git did not answer within {REACH_SECONDS:g} seconds") from err
+        raise GitTimeout(f"git did not answer within {REACH_SECONDS:g} seconds") from err
     except OSError as err:
         raise ReachUnknown(f"git could not run ({err.strerror or err})") from err
     except ValueError as err:
@@ -1326,6 +1420,30 @@ def _reach_listing(search: EnvSearch, root: str) -> list[str] | None:
         # the files a parent .gitignore hides are read too.
         ignored = _git_output(root, "ls-files", "-z", "--others", "--ignored", GREP_IGNORE, "--directory")
         listed += _nul_split(ignored) or []
+    return listed
+
+
+def _walk_listing(root: str) -> list[str]:
+    """List every file under root, for a search whose git listing failed.
+
+    It lists ignored and untracked files too, so it never misses a file git
+    would list. Like the git listing it does not follow directory links: a
+    directory link, a directory it cannot read, or REACH_DEADLINE raises ReachUnknown.
+    """
+
+    def fail(err: OSError) -> None:
+        raise ReachUnknown(f"the file walk could not read `{err.filename}` ({err.strerror or err})") from err
+
+    listed: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=fail):
+        if time.monotonic() > REACH_DEADLINE:
+            raise ReachUnknown(f"the file walk did not finish within {REACH_SECONDS:g} seconds")
+        dirnames[:] = [name for name in dirnames if name != ".git"]
+        rel = os.path.relpath(dirpath, root)
+        prefix = "" if rel == "." else f"{rel}/"
+        if link := next((name for name in dirnames if os.path.islink(os.path.join(dirpath, name))), None):
+            raise ReachUnknown(f"`{prefix}{link}` is a directory link, which the file walk does not follow")
+        listed += [prefix + name for name in filenames]
     return listed
 
 
@@ -1453,8 +1571,10 @@ def env_reach(search: EnvSearch, context: str) -> Hit | None:
 
     Each root is listed with `git ls-files` and filtered to env-shaped names,
     then the search's own excludes and includes apply. A root that is not a
-    directory, or not in a git work tree, is skipped. Any other git failure,
-    an unresolved directory, or the deadline blocks.
+    directory, or not in a git work tree, is skipped. When git fails for
+    another reason than the deadline (a broken index), a file walk lists the
+    root instead. A git timeout, a walk that cannot finish, or an unresolved
+    directory blocks.
     """
     if search.roots is None:
         return _unchecked_hit(search.tool, context, "a directory is a variable, a command substitution or `cd -`")
@@ -1468,8 +1588,13 @@ def env_reach(search: EnvSearch, context: str) -> Hit | None:
                 continue
         try:
             listed = _reach_listing(search, root)
-        except ReachUnknown as err:
+        except GitTimeout as err:
             return _unchecked_hit(search.tool, context, str(err))
+        except ReachUnknown as err:
+            try:
+                listed = _walk_listing(root)
+            except ReachUnknown as walk_err:
+                return _unchecked_hit(search.tool, context, f"{err}; {walk_err}")
         if reached := [entry for entry in listed or [] if _reaches(search, root, entry)]:
             return _reach_hit(search.tool, context, root, reached)
     return None
@@ -1705,22 +1830,35 @@ def interpreter_body_scans(body: str, words: set[str]) -> list[str]:
     return [code] + [literal for literal in literals if not re.search(r"\s", literal)]
 
 
-def secret_path_hit(path: str) -> tuple[str, str] | None:
+def secret_path_hit(path: str, new_file: bool = False) -> tuple[str, str] | None:
     """Return (rule, matched text) when a path names credential material, else None.
 
     ALLOWLIST names are blanked, not exempted, so a token-info file under
     ~/.aws/ still blocks. AUTHORIZED_PATHS exempts the whole path: its
-    `/.secrets/` directory form covers every file below it.
+    `/.secrets/` directory form covers every file below it. A bare credential
+    word alone (`sidebar-tokens.css`, `hs-token/x.json`) does not count. A file
+    that does not exist yet (`new_file`) holds nothing, so only
+    SECRET_PATH_SHAPES apply to it.
     """
     if AUTHORIZED_PATHS.search(path):
         return None
     scan = ALLOWLIST.sub(" ", path)
     if m := re.search(SECRET_PATH_SHAPES, scan, re.IGNORECASE):
         return "secret-path", m.group(0)
-    if not path.lower().endswith(".md") and (m := re.search(SECRET_BARE_WORDS, scan, re.IGNORECASE)):
-        if not api_key_source(path):
-            return "secret-word", m.group(0)
+    if new_file:
+        return None
+    if m := SECRET_FOLDER.search(scan):
+        return "secret-folder", m.group(0)
+    if gate_output(path):
+        return None
+    if m := re.search(SECRET_FILE_SHAPES, scan, re.IGNORECASE) or SYSTEM_SECRET_FILE.search(path):
+        return "secret-file", m.group(0)
     return None
+
+
+def gate_output(path: str) -> bool:
+    """Return True when a path's base name is a forge gate output, such as `gate-apikey.log`."""
+    return bool(GATE_OUTPUT.search(path.strip("'\"")))
 
 
 API_KEY_WORD = re.compile(r"api[_-]?keys?", re.IGNORECASE)
@@ -1744,21 +1882,28 @@ def api_key_source(path: str) -> bool:
     )
 
 
-def blank_api_key_sources(text: str) -> str:
-    """Blank the shell words that api_key_source() exempts, before a bare-word check."""
-    return SHELL_WORD.sub(lambda m: " " if api_key_source(m.group(0)) else m.group(0), text)
+def blank_exempt_paths(text: str) -> str:
+    """Blank the shell words that api_key_source() or gate_output() exempts, before a word check."""
+    return SHELL_WORD.sub(
+        lambda m: " " if api_key_source(m.group(0)) or gate_output(m.group(0)) else m.group(0), text
+    )
 
 
 FORGE_CONFIG = "~/.claude/skills/forge/forge.config.json"
 GATE_ARG = r"(?!'?-)(?:'[\w./@+,:~-]+'|[\w./@+,:~-]+)"
-# Forge runs a gate command bare, after `cd <dir> &&`, or under its perl alarm wrapper.
+# Forge runs a gate command bare, after `cd <dir> &&`, or under its perl alarm wrapper,
+# with an optional FORGE_GATE_RUN_ID. No other assignment: `SHELLOPTS=xtrace` traces the
+# values the gate loads.
 GATE_PREFIX = (
     rf"(?:cd[ \t]+(?P<cd>{GATE_ARG})[ \t]*&&[ \t]*)?"
+    rf"(?:FORGE_GATE_RUN_ID={GATE_ARG}[ \t]+)?"
     r"(?:perl[ \t]+-e[ \t]+'alarm shift @ARGV; exec @ARGV'[ \t]+\d+[ \t]+)?"
 )
+# A log path in a variable: `$L`, `${L}`, quoted or not.
+GATE_VAR = r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})"
 # Output handling an agent may append to keep the result short: `> log 2>&1`, `2>&1 | tail -40`.
 GATE_SUFFIX = (
-    rf"(?:[ \t]*>>?[ \t]*(?P<out>{GATE_ARG}))?"
+    rf"(?:[ \t]*>>?[ \t]*(?P<out>{GATE_ARG}|{GATE_VAR}|\"{GATE_VAR}\"))?"
     r"(?:[ \t]*2>&1)?"
     r"(?:[ \t]*\|[ \t]*(?:tail|head)(?:[ \t]+(?:-n[ \t]*\d+|-\d+))?)?"
 )
@@ -1876,7 +2021,7 @@ def unparsed_search_verdict(raw: str, here: str | None, fed_by_pipe: bool) -> Hi
     words = (blank_quoted(raw[git.end() :], "'\"") if git else unquoted).split()
     if set(words) & NAMES_ONLY_OPTS[tool]:
         return None
-    root = None if any(s in raw for s in ("$(", "`", "<(", ">(")) else here
+    root = None if has_substitution(raw) else here
     for m in GIT_C_VALUE.finditer(git.group("opts") if git else ""):
         try:
             values = shlex.split(m.group(1))
@@ -1889,6 +2034,101 @@ def unparsed_search_verdict(raw: str, here: str | None, fed_by_pipe: bool) -> Hi
         return hit
     note = "The hook could not parse this command, so it applied none of its excludes; drop the options it does not know."
     return hit._replace(advice=f"{hit.advice}\n{note}")
+
+
+# A grep call up to the end of its arguments, followed by redirects to
+# /dev/null only and then the end of a command or of a quoted `sh -c` script.
+GREP_CALL = re.compile(
+    r"(?<![\w./-])[ef]?grep(?:[ \t]+(?:'[^']*'|\"[^\"]*\"|[^\s;&|<>()'\"`]+))+"
+    r"(?:[ \t]*(?:[\d&]?>>?[ \t]*/dev/null|\d?>&\d))*"
+    r"(?=[ \t]*(?:$|[;\n'\"]|&&|\|\||&(?![>&])))"
+)
+SAFE_REDIRECT = re.compile(r"[\d&]?>>?[ \t]*/dev/null|\d?>&\d")
+
+
+def blank_names_only_env_greps(segment: str, feeds_pipe: bool) -> str:
+    """Blank the env-file operands of each grep that prints only names, counts or nothing.
+
+    `grep -q`, `-c`, `-l` and `-L` print no line of an env file. `-o` still
+    does, and a pipe, a file redirect or a substitution can hand the names on
+    to another reader (`grep -l X .env | xargs cat`), so those keep the segment whole.
+    """
+    if (
+        feeds_pipe
+        or any(s in segment for s in ("$(", "`", "<(", ">("))
+        or re.search(r"(?<!\|)\|(?!\|)", segment)
+        or ">" in SAFE_REDIRECT.sub(" ", segment)
+    ):
+        return segment
+
+    def blank(m: re.Match[str]) -> str:
+        args = parse_reader(m.group(0))
+        if args is None or args.family != "grep" or args.stdin_files:
+            return m.group(0)
+        names = {name for name, _ in args.options}
+        if not names & NAMES_ONLY_OPTS["grep"] or names & {"-o", "--only-matching"}:
+            return m.group(0)
+        env_files = {f for f in args.files if env_path(f)}
+        return re.sub(r"[^\s'\"]+", lambda t: " " if t.group(0) in env_files else t.group(0), m.group(0))
+
+    return GREP_CALL.sub(blank, segment)
+
+
+# A jq field projection (`.a`, `.a.b`, `{a,b}`, `.a | length`) of one token-info
+# file, such as a vendor's `01-vendorx-token-info.json`.
+_JQ_FIELD = r"[A-Za-z_]\w*"
+JQ_PROJECTION = re.compile(
+    rf"(?:\.{_JQ_FIELD}(?:\.{_JQ_FIELD})*|\{{\s*{_JQ_FIELD}(?:\s*,\s*{_JQ_FIELD})*\s*\}})(?:\s*\|\s*length)?"
+)
+JQ_TOKEN_INFO_CALL = re.compile(
+    r"^\s*jq(?:\s+--?[A-Za-z][\w-]*)*\s+(?P<filter>'[^']*'|\"[^\"]*\"|\.[\w.]+)"
+    r"\s+(?P<file>[^\s'\";&|<>()`]*token[_-]info\.json)\s*$",
+    re.IGNORECASE,
+)
+
+
+def blank_jq_projection(text: str) -> str:
+    """Blank the token-info operand of a jq call that prints only named fields.
+
+    The file holds a token, so `jq .`, a field named like a secret (`.token`,
+    `.access_token`) and a file under a credential path (`~/.aws/`) keep it.
+    """
+    m = JQ_TOKEN_INFO_CALL.match(text)
+    if not m or not JQ_PROJECTION.fullmatch(m.group("filter").strip("'\"").strip()):
+        return text
+    fields = set(re.findall(_JQ_FIELD, m.group("filter"))) - {"length"}
+    if any(
+        re.search(SECRET_BARE_WORDS, field, re.IGNORECASE) or re.fullmatch(SECRET_VAR_NAME, field, re.IGNORECASE)
+        for field in fields
+    ):
+        return text
+    path = m.group("file")
+    if re.search(SECRET_PATH_SHAPES, path, re.IGNORECASE) or SECRET_FOLDER.search(path):
+        return text
+    return text[: m.start("file")] + " " + text[m.end("file") :]
+
+
+ENV_RECIPE = "~/.claude/references/env-recipe.md"
+SOURCE_ENV_ADVICE = (
+    f"To load an env file for a command, follow {ENV_RECIPE}: write a runner script with the Write tool, "
+    "then run `bash <runDir>/with-env.sh <command>`. A relative `set -a; . .envs/<file>; set +a` is "
+    "allowed in a command with no `$` expansion and no env dump."
+)
+ENV_NAMES_ADVICE = (
+    "To check which names an env file sets, use `grep -q '^NAME=.' <file>` or `grep -c '^NAME=' <file>`; "
+    "they print no value. `cut` and `awk` print whole lines, values included."
+)
+
+
+def env_read_advice(command: str | None, path: str) -> str:
+    """Return the route for a blocked env-file read by command (None for the `.` shorthand), or ""."""
+    if not re.search(ENV_PATH_SHAPES, path, re.IGNORECASE):
+        return ""
+    if command is None or command.lower() == "source":
+        return SOURCE_ENV_ADVICE
+    if command.lower() in ("cut", "awk"):
+        return ENV_NAMES_ADVICE
+    return ""
 
 
 # Heredoc bodies are data unless a shell or interpreter on the header line
@@ -1912,6 +2152,7 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
     segments = split_segments(command, piped)
     # Any other command may run a messenger's text: `echo "..." | bash`.
     messengers = is_quiet(command)
+    shell_quotes = reruns_quotes(command)
     # A search after `cd ~/.config/gh` reads a dot-directory like a search
     # that names it.
     dot_cd = False
@@ -1934,18 +2175,19 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             dot_cd = dot_cd or any(has_dot_part(word) for word in cd.group(1).split())
         if cd or BARE_CD.fullmatch(raw):
             here = _cd_dir(here, cd.group(1) if cd else "")
+        read = blank_names_only_env_greps(raw, feeds_pipe)
         # Blank out only the allowlisted paths, never the whole segment:
         # `diff .env .env.example` reads the real file and must still block.
-        segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", raw))
+        segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", read))
         if sources_repo_env:
             segment = SOURCED_REPO_ENV.sub(r"\g<lead> ", segment)
         if not segment.strip():
             continue
         if m := SECRET_COMMANDS.search(segment):
             return Hit("prints a stored credential", "secret-command", m.group(0), raw)
-        # Tokenized from the raw segment: allowlist blanking must not shift
-        # which token is the pattern.
-        if (reader := parse_reader(raw)) is not None:
+        # Tokenized before allowlist blanking: that must not shift which
+        # token is the pattern.
+        if (reader := parse_reader(read)) is not None:
             fed_by_pipe = i > 0 and piped[i - 1]
             if hit := reader_verdict(reader, raw, fed_by_pipe=fed_by_pipe, here=here):
                 return hit
@@ -1953,7 +2195,7 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             # files rather than stdin gets the plain reader word check.
             if reader.family == "rg" and (reader.files or not fed_by_pipe):
                 reader_text = blank_excludes(strip_redirections(segment, output_only=True))
-                if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
+                if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_exempt_paths(reader_text))):
                     return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             # A dot-directory (~/.config/rclone/rclone.conf) or a variable operand
             # may hold credentials, so a secret word in the pattern still blocks.
@@ -1966,24 +2208,34 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
             names_only = {name for name, _ in reader.options} & NAMES_ONLY_OPTS.get(
                 reader.family, set()
             )
-            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(blank_excludes(segment))))
+            word = READER_NEAR_SECRET_WORD.search(word_scan(blank_exempt_paths(blank_excludes(segment))))
             if dotted and (feeds_pipe or not names_only) and (m := word):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
         else:
             # A file the command writes or excludes is not read.
-            reader_text = blank_excludes(strip_redirections(segment, output_only=True))
-            scan = QUOTED_PROSE.sub(" ", reader_text) if messengers and is_messenger(raw) else reader_text
+            reader_text = blank_jq_projection(blank_excludes(strip_redirections(segment, output_only=True)))
+            scan = reader_text
+            if messengers and is_messenger(raw):
+                scan = blank_plain_quotes(reader_text, prose_only=True)
             if m := READER_NEAR_SECRET.search(scan):
-                return Hit("reads a credential-bearing path", "reader-near-secret", m.group(0), raw)
-            if m := READER_NEAR_SECRET_FILE.search(pattern_scan(scan)):
+                return Hit(
+                    "reads a credential-bearing path",
+                    "reader-near-secret",
+                    m.group(0),
+                    raw,
+                    env_read_advice(m.group(1), m.group(2)),
+                )
+            if m := READER_NEAR_SECRET_FILE.search(pattern_scan(blank_exempt_paths(scan))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-file", m.group(0), raw)
-            if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_api_key_sources(reader_text))):
+            if m := READER_NEAR_SECRET_WORD.search(word_scan(blank_exempt_paths(reader_text))):
                 return Hit("reads a credential-bearing path", "reader-near-secret-word", m.group(0), raw)
             if hit := unparsed_search_verdict(raw, here, fed_by_pipe=i > 0 and piped[i - 1]):
                 return hit
-        if m := REDIRECT_FROM_SECRET.search(segment):
+        # A `<` inside quotes is text (`sed 's/x/<token-redacted>/'`), unless a shell may run the quotes again.
+        redirects = segment if shell_quotes else blank_plain_quotes(segment)
+        if m := REDIRECT_FROM_SECRET.search(redirects):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret", m.group(0), raw)
-        if m := REDIRECT_FROM_SECRET_WORD.search(segment):
+        if m := REDIRECT_FROM_SECRET_WORD.search(redirects):
             return Hit("redirects input from a credential-bearing path", "redirect-from-secret-word", m.group(0), raw)
     return None
 
@@ -2112,6 +2364,14 @@ PYNODE_WHOLESALE = re.compile(
     r"os\.environ\b(?!\s*[\[.])|process\.env\b(?!\s*[\[.])",
     re.IGNORECASE,
 )
+# An `env=` keyword argument hands the environment to a child process, which
+# inherits it anyway. The assignment `env = dict(os.environ)` is not one:
+# `print(env)` may follow.
+PY_ENV_KWARG = re.compile(
+    r"(?P<lead>[(,]\s*)env\s*=\s*"
+    r"(?:os\.environ\b(?!\s*[\[.])|\{\s*\*\*\s*os\.environ\b(?!\s*[\[.])|dict\(\s*os\.environ\s*\))"
+)
+PYTHON_C_ARG = re.compile(r"\bpython3?\s+-c\s+(?=['\"])")
 
 # `len(<env ref>)` reports a length, not a value. Stripped as a whole span,
 # per reference, before the secret-ref check runs -- a command can carry a
@@ -2213,6 +2473,37 @@ def _loop_bound_names(command: str) -> set[str]:
     return names - {m.group(1) for m in KEY_ASSIGN.finditer(command)}
 
 
+def _python_code(program: str) -> str:
+    """Return a Python program without its string literals, or whole when it shells out or does not tokenize."""
+    parts = None if shells_out(program, {"python"}) else _python_parts(program)
+    return program if parts is None else parts[0]
+
+
+def _python_c_code(head: str) -> str:
+    """Return head with each quoted `python3 -c` program reduced to its code by _python_code().
+
+    A double-quoted program holding `$(` or a backtick stays whole: the shell
+    runs that before Python sees the text.
+    """
+    out: list[str] = []
+    last = 0
+    for m in PYTHON_C_ARG.finditer(head):
+        start = m.end()
+        if start < last:
+            continue
+        end = _quote_end(head, start)
+        if end is None:
+            break
+        program = head[start + 1 : end - 1]
+        if head[start] == '"':
+            if "$(" in program or "`" in program:
+                continue
+            program = re.sub(r'\\([\\"$`])', r"\1", program)
+        out += [head[last:start], f" {_python_code(program)} "]
+        last = end
+    return "".join(out) + head[last:]
+
+
 def secret_var_verdict(command: str) -> str | None:
     """Return a reason to block a command that would print a secret
     variable's value, or None to allow.
@@ -2254,7 +2545,15 @@ def secret_var_verdict(command: str) -> str | None:
             head, *(body for body, _ in heredocs.interpreter_bodies), *heredocs.rerun_bodies
         ]
         stripped = PYNODE_LEN_STRIP.sub(" ", "\n".join(executed))
-        if m := PYNODE_SECRET_REF.search(stripped) or PYNODE_WHOLESALE.search(stripped):
+        # Indexed references keep their literal names (`os.environ['API_KEY']`); a
+        # wholesale reference counts only in Python code, outside string literals.
+        code = [
+            _python_c_code(head),
+            *(_python_code(body) if words == {"python"} else body for body, words in heredocs.interpreter_bodies),
+            *heredocs.rerun_bodies,
+        ]
+        wholesale = PY_ENV_KWARG.sub(r"\g<lead> ", PYNODE_LEN_STRIP.sub(" ", "\n".join(code)))
+        if m := PYNODE_SECRET_REF.search(stripped) or PYNODE_WHOLESALE.search(wholesale):
             return f"would print a secret-bearing variable {matched('interpreter-env-ref', m.group(0))}"
     return None
 
@@ -2271,9 +2570,9 @@ PATH_FIELDS = {
 }
 
 
-def path_verdict(file_path: str) -> Hit | None:
+def path_verdict(file_path: str, new_file: bool = False) -> Hit | None:
     """Return why to block a direct file read, or None to allow."""
-    if found := secret_path_hit(file_path):
+    if found := secret_path_hit(file_path, new_file):
         rule, fragment = found
         return Hit("reads a credential-bearing path", rule, fragment, file_path)
     return None
@@ -2337,12 +2636,18 @@ def main() -> int:
         if not isinstance(target, str):
             return 0
         if reason := secret_var_verdict(target):
+            quoted_route = (
+                "If the match is quoted text, not code that reads the environment: put the text "
+                "in a file, or write it with the Edit tool.\n"
+                if "(rule interpreter-env-ref," in reason
+                else ""
+            )
             print(
                 f"Blocked by block_secret_reads hook: this command {reason}. "
                 "Pass secrets to programs via their "
                 "own flags/env, never through od/xxd/echo/printf or an "
                 "unfiltered env dump; if you must inspect a value's shape, "
-                f"report only its length.\n{NO_RESHAPE}",
+                f"report only its length.\n{quoted_route}{NO_RESHAPE}",
                 file=sys.stderr,
             )
             return 2
@@ -2359,7 +2664,10 @@ def main() -> int:
         for field in PATH_FIELDS[tool_name]:
             value = tool_input.get(field) or ""
             if isinstance(value, str):
-                hit = hit or path_verdict(value)
+                new_file = tool_name == "Write" and not os.path.lexists(
+                    posixpath.join(cwd or "", posixpath.expanduser(value))
+                )
+                hit = hit or path_verdict(value, new_file)
     else:
         return 0
 
@@ -2400,13 +2708,17 @@ def block_env_reach(noun: str, hit: Hit) -> int:
 def block_secret_read(noun: str, hit: Hit) -> int:
     # The rule sits in parentheses on the first line so a parser can read it.
     context = _block_context(noun, hit)
+    routes = hit.advice or (
+        "If this reads a credential file, ask the user for the value instead of printing it.\n"
+        "If the matched text is a search pattern, not a file: put the pattern in a file and pass "
+        "`grep -f <file>`, or search with the Grep tool. If it is prose, put the text in a file "
+        "and pass the file name."
+    )
     print(
         f"Blocked by block_secret_reads hook (rule {hit.rule}): this {noun} {hit.reason}.\n"
         f"{context}\n"
         f"Matched: `{' '.join(hit.fragment.split())[:80]}`\n"
-        "If this reads a credential file, ask the user for the value instead of printing it.\n"
-        "If the matched text is a search pattern or prose, not a file: search with the Grep "
-        "tool, or put the text in a file and pass the file name.\n"
+        f"{routes}\n"
         f"Files tracked in git already exist in every git worktree; do not copy them.\n{NO_RESHAPE}",
         file=sys.stderr,
     )

@@ -1,0 +1,11 @@
+{
+ "gate": {
+  "demo": {
+   "worktree": {
+    "lint": "bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run ruff check \"$@\"' -- <paths>",
+    "tests": "bash -lc 'export PATH=\"/opt/homebrew/opt/gnu-sed/libexec/gnubin:$PATH\"; set -a; . .envs/.postgres; . .envs/.django; set +a; export POSTGRES_HOST=localhost POSTGRES_DB=\"${POSTGRES_DB}_$(printf %s \"${FORGE_GATE_RUN_ID:-$(basename \"$PWD\")}\" | tr -c \"a-zA-Z0-9\" _ | cut -c1-40)\" DJANGO_REDIS_URL=\"${DJANGO_REDIS_URL//redis:6379/localhost:6379}\"; [ -z \"${CELERY_BROKER_URL:-}\" ] || export CELERY_BROKER_URL=\"${CELERY_BROKER_URL//redis:6379/localhost:6379}\"; uv run --group sandbox pytest \"$@\" --create-db' -- <paths>",
+    "migrations": "bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run python manage.py makemigrations --dry-run --no-input --check'"
+   }
+  }
+ }
+}
