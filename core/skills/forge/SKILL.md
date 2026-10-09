@@ -19,6 +19,8 @@ Forge has two lanes:
 
    A plan that changes instruction files (the patterns in ship-pr's changelog check: CLAUDE.md, CLAUDE.fragment.md, AGENTS.md, `agents/*.md`, `skills/**/*.md`, `references/*.md`) also carries a `## Changelog` section: one `- <paths or area>: <reason in one sentence>` line per change. Its last phase adds those lines to the repository's CHANGELOG.md under today's `## YYYY-MM-DD` heading, creating the heading if missing.
 
+   A plan whose change calls or changes another repository's or an external service's interface lists each such seam in `## Public API contract`. Each seam names its provider and the source of its shape. The source is a captured real response saved in the run directory, or `<provider path>@<SHA>` when the provider change is not yet deployed. Fixtures for the seam come from that source.
+
    Phases live under `## Phases` as `### Phase <id>: <title>` headings, run in plan order. `<id>` matches `[A-Za-z]*[0-9]+` (`0`, `1`, `A1`, `B2`). Any other `###` heading directly under `## Phases` stops the run with an error naming it.
 
    ```markdown
