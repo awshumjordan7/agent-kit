@@ -1,9 +1,11 @@
 # Loading repo env vars without printing them
 
 The cred-read hook (`hooks/block_secret_reads.py`) blocks any Bash command whose text reads or
-sources a credential path (`.envs/`, `.env.*`, `.pgpass`, ...). Do not `source` an env file in a
-Bash command, and do not pipe a heredoc that sources one into `bash`. Heredocs that only mention
-a path in prose are allowed.
+sources a credential path (`.envs/`, `.env.*`, `.pgpass`, ...). One form is allowed: a relative
+`set -a; . .envs/<file>; set +a` in a Bash command with no `$` expansion and no env dump (`env`,
+`printenv`, `export`, `set -x`). An absolute path, or a command that needs a `$` expansion, needs
+the runner script below. Do not pipe a heredoc that sources an env file into `bash`. Heredocs that
+only mention a path in prose are allowed.
 
 Recipe:
 1. Write a runner script into the run dir with the Write tool (it checks the path, not the content),
