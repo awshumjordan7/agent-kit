@@ -2124,5 +2124,15 @@
   "id": "K9S16",
   "exp": "block",
   "cmd": "source /app/env.sh; (DUMMY_A=1); echo $DUMMY_A"
+ },
+ {
+  "id": "K9S17",
+  "exp": "block",
+  "cmd": "source /app/env.sh; echo \"\\$$DUMMY_A\""
+ },
+ {
+  "id": "K9S18",
+  "exp": "block",
+  "cmd": "source /app/env.sh; for DUMMY_A in $(true); do :; done; echo $DUMMY_A"
  }
 ]

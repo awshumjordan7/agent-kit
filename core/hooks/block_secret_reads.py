@@ -237,7 +237,8 @@ SOURCED_FORK_ENV = re.compile(
     re.IGNORECASE,
 )
 FORK_SHELL_STATE = frozenset({"PWD", "OLDPWD", "TMPDIR", "PIPESTATUS", "HOME", "PATH"})
-SPECIAL_PARAMETER = re.compile(r"\$\{(?:[?@*#$!-]|\d+)\}|\$[?@*#$!0-9-]")
+# `$$NAME` and `$${NAME` stay in the text, so ENV_DUMP_WORD still sees a name after the `$$`.
+SPECIAL_PARAMETER = re.compile(r"\$\{(?:[?@*#$!-]|\d+)\}|\$[?@*#!0-9-]|\$\$(?![A-Za-z_{])")
 # `$NAME` or `${NAME`; `${#NAME` and `${!NAME` do not match and stay in the text.
 PARAMETER_NAME = re.compile(r"\$\{?([A-Za-z_]\w*)")
 DOLLAR_EXPANSION = re.compile(r"\$[\w{@*#?!$-]")
@@ -440,7 +441,9 @@ def _outer_bindings(text: str) -> dict[str, list[tuple[int, int, str]]]:
             if command_position and word == "for" and outer and after != "&&" and (m := _FOR_HEADER.match(text, start)):
                 header_end = _FOR_HEADER_END.search(text, m.end())
                 stop = header_end.start() if header_end else n
-                binds.setdefault(m.group(1), []).append((m.start(1), stop, text[m.end() : stop]))
+                words = text[m.end() : stop].strip()
+                if words and not any(c in words for c in "$`*?["):
+                    binds.setdefault(m.group(1), []).append((m.start(1), stop, text[m.end() : stop]))
             if command_position and word in _COMPOUND_CLOSER:
                 closers.append(_COMPOUND_CLOSER[word])
             i, command_position, outer = end, word in _COMMAND_POSITION_WORDS, False
@@ -460,6 +463,8 @@ def _value_is_safe(value: str, safe: set[str]) -> bool:
     while (j := value.find("$", i)) >= 0:
         if value.startswith("$(", j):
             i = j + 2
+        elif value.startswith("$$", j) and (j - len(value[:j].rstrip("\\"))) % 2:
+            i = j + 1
         elif m := SPECIAL_PARAMETER.match(value, j):
             i = m.end()
         elif m := PARAMETER_NAME.match(value, j):
@@ -494,7 +499,11 @@ def fork_env_dump_text(command: str) -> str:
         name for name in candidates - safe if all(_value_is_safe(value, safe) for _, _, value in binds[name])
     }:
         safe |= new
-    text = SPECIAL_PARAMETER.sub(" ", text)
+    # A `$$` whose first `$` is backslash-escaped is a literal `$` and the start of the next expansion.
+    text = SPECIAL_PARAMETER.sub(
+        lambda m: m.group(0) if m.group(0) == "$$" and (m.start() - len(text[: m.start()].rstrip("\\"))) % 2 else " ",
+        text,
+    )
     return PARAMETER_NAME.sub(lambda m: " " if m.group(1) in safe else m.group(0), text)
 
 # The shell "source" shorthand is a dot standing alone after whitespace or an opening quote
@@ -2414,7 +2423,12 @@ def env_read_advice(command: str | None, path: str) -> str:
 def verdict(command: str, cwd: str | None) -> Hit | None:
     """Return why to block a command run in cwd (None when unknown), or None to allow."""
     sources_repo_env = ENV_DUMP_WORD.search(command) is None
-    sources_fork_env = ENV_DUMP_WORD.search(fork_env_dump_text(command)) is None
+    sources_fork_env = False
+    if SOURCED_FORK_ENV.search(command):
+        try:
+            sources_fork_env = ENV_DUMP_WORD.search(fork_env_dump_text(command)) is None
+        except RecursionError:
+            sources_fork_env = False
     heredocs = strip_heredoc_bodies(command)
     command = heredocs.head
     for body, words in heredocs.interpreter_bodies:
