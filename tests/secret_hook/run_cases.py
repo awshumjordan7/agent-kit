@@ -4,7 +4,7 @@ Usage: FIXTURES_ROOT=<dir> HOOK=<hook.py> CASES=<cases.json> python3 run_cases.p
 HOOK defaults to the repo's core/hooks/block_secret_reads.py, FIXTURES_ROOT to fixtures/ here.
 Exits 1 when any case is BAD.
 Cases carry either "cmd" (a Bash command) or "tool" plus "input" (a path-tool payload).
-{tracked} {ignored} {visible} {clean} {nogit} expand to absolute fixture paths. The hook runs
+Each fixture name in fixtures.json, as {name}, expands to its absolute path. The hook runs
 with cwd = the case's "cwd" fixture (default clean), and the payload carries that "cwd" unless
 "payload_cwd" is false. An optional "proc_cwd" (a fixture name, optionally "name/sub") moves only
 the hook process cwd; the payload keeps the case's "cwd". Every "stderr_has" substring must
@@ -70,7 +70,7 @@ for c in cases:
         proc_cwd = str(pathlib.Path(FIXTURES[name], sub)) if sub else FIXTURES[name]
     start = time.perf_counter()
     r = subprocess.run([sys.executable, HOOK], input=payload_for(c, cwd), capture_output=True,
-                       text=True, cwd=proc_cwd)
+                       text=True, cwd=proc_cwd, timeout=30)
     ms = (time.perf_counter() - start) * 1000
     times.append(ms)
     today = {0: "pass", 2: "block"}.get(r.returncode, f"exit{r.returncode}")

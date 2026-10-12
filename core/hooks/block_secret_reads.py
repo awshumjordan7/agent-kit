@@ -133,7 +133,7 @@ SECRET_COMMANDS = re.compile(
 #   - The bare-word patterns need trailing \b or they match inside ordinary
 #     identifiers: "token" hits "tokenize", "secret" hits "secretary".
 # ENV_PATH_SHAPES are the env files on their own. `.envrc` and `.env_*` match
-# the settings deny rules. `/app/env.sh` is the env file of a Daytona fork; an
+# the settings deny rules. `/app/env.sh` is the env file of a sandbox fork; an
 # `env.sh` anywhere else is usually a script.
 ENV_PATH_SHAPES = r"\.envs?\b|\.env\.|/\.envs?\b|\.envrc\b|\.env_|(?<![\w.~-])/app/env\.sh\b"
 SECRET_PATH_SHAPES = (
@@ -163,7 +163,7 @@ SECRET_BARE_WORDS = (
 # credentials.json). Checked for path tools and reader commands, never in
 # interpreter heredoc bodies, where prose such as "writes credentials.json" is common.
 SECRET_FILE_SHAPES = (
-    r"(?:\b|_)(?:credentials?|secrets?|tokens?|api[_-]?keys?)[\w-]*"
+    r"(?:\b|_)(?:credentials?|secrets?|tokens?|api[_-]?keys?)[\w.-]*"
     r"\.(?:json|ya?ml|txt|ini|toml|cfg|conf|key)\b"
 )
 # The system account files, bare or with a data extension: `/etc/shadow`,
@@ -219,6 +219,13 @@ ENV_DUMP_WORD = re.compile(
     r"|\bset\b(?!\s+[-+]a\s*(?:$|[;&|)'\"`\n]))"
     r"|\b(?:ba|z|da|k)?sh(?:\s+-[\w-]+)*\s+-[a-z]*[xv][a-z]*(?![\w-])|\b(?:xtrace|verbose)\b"
     r"|\$[\w{@*#?!$-]|\b(?:environ|getenv)|\bprocess\.env\b|\bENV\[|%ENV\b",
+    re.IGNORECASE,
+)
+# Sourcing a sandbox fork's env file for a run (`source /app/env.sh && pytest`)
+# prints nothing. Only the statement is blanked: as the first word of a command,
+# or opening a quoted script (`bash -c '`, `sandbox_exec <fork> "`).
+SOURCED_FORK_ENV = re.compile(
+    r"(?P<lead>(?:^|[;&|(\n]|\s['\"])\s*)(?:source|\.)\s+/app/env\.sh(?=$|[\s;&|)'\"`])",
     re.IGNORECASE,
 )
 
@@ -631,11 +638,13 @@ def has_substitution(text: str) -> bool:
 # A short option cluster ending in `c` (`sh -c`, `su -c`, `bash -lc`) may hand
 # its quoted argument to a shell.
 DASH_C_OPTION = re.compile(r"(?<!\S)-\w*c(?![^\s;&|)])")
+# `trap '...' EXIT` and `watch '...'` run their quoted argument as a command.
+QUOTE_RUNNER = re.compile(r"(?<![\w-])(?:trap|watch)\b")
 
 
 def reruns_quotes(command: str) -> bool:
-    """Return True when a command may hand quoted text to a shell: a HEREDOC_SHELL word or a `-c` option."""
-    return bool(HEREDOC_SHELL.search(command) or DASH_C_OPTION.search(command))
+    """Return True when a command may hand quoted text to a shell: a HEREDOC_SHELL word, `trap`/`watch`, or a `-c` option."""
+    return bool(HEREDOC_SHELL.search(command) or DASH_C_OPTION.search(command) or QUOTE_RUNNER.search(command))
 
 
 def _word_end(text: str, i: int) -> int:
@@ -1044,7 +1053,7 @@ def reader_verdict(args: ReaderArgs, raw: str, fed_by_pipe: bool = False, *, her
     read_paths = read_operands(args) + [value for name, value in options if name in ("-f", "--file")] + includes
     read_paths += [value.partition("=")[2] for name, value in options if family == "awk" and name == "-v"]
     for path in read_paths:
-        # A reader operand still blocks on a bare credential word (`config/token`); a path tool does not.
+        # A reader operand blocks on a bare credential word (`config/token`). Path tools check file shapes only.
         word = (
             re.search(SECRET_BARE_WORDS, ALLOWLIST.sub(" ", path), re.IGNORECASE)
             and not path.lower().endswith(".md")
@@ -2137,6 +2146,7 @@ def env_read_advice(command: str | None, path: str) -> str:
 def verdict(command: str, cwd: str | None) -> Hit | None:
     """Return why to block a command run in cwd (None when unknown), or None to allow."""
     sources_repo_env = ENV_DUMP_WORD.search(command) is None
+    sources_fork_env = ENV_DUMP_WORD.search(command.replace("/app/env.sh", " ")) is None
     heredocs = strip_heredoc_bodies(command)
     command = heredocs.head
     for body, words in heredocs.interpreter_bodies:
@@ -2181,6 +2191,8 @@ def verdict(command: str, cwd: str | None) -> Hit | None:
         segment = AUTHORIZED_PATHS.sub(" ", ALLOWLIST.sub(" ", read))
         if sources_repo_env:
             segment = SOURCED_REPO_ENV.sub(r"\g<lead> ", segment)
+        if sources_fork_env:
+            segment = SOURCED_FORK_ENV.sub(r"\g<lead> ", segment)
         if not segment.strip():
             continue
         if m := SECRET_COMMANDS.search(segment):
@@ -2364,11 +2376,12 @@ PYNODE_WHOLESALE = re.compile(
     r"os\.environ\b(?!\s*[\[.])|process\.env\b(?!\s*[\[.])",
     re.IGNORECASE,
 )
-# An `env=` keyword argument hands the environment to a child process, which
-# inherits it anyway. The assignment `env = dict(os.environ)` is not one:
-# `print(env)` may follow.
+# An `env=` keyword of a call that starts a child process (`subprocess.run`,
+# `Popen`) hands the environment to the child, which inherits it anyway. In any
+# other call (`print(dict(env=os.environ))`) it may be printed. A nested call
+# before `env=` keeps the reference.
 PY_ENV_KWARG = re.compile(
-    r"(?P<lead>[(,]\s*)env\s*=\s*"
+    r"(?P<lead>\b(?:subprocess\.\w+|Popen|run|call|check_call|check_output|create_subprocess_\w+|spawn\w*)\((?:[^()]*?,)?\s*)env\s*=\s*"
     r"(?:os\.environ\b(?!\s*[\[.])|\{\s*\*\*\s*os\.environ\b(?!\s*[\[.])|dict\(\s*os\.environ\s*\))"
 )
 PYTHON_C_ARG = re.compile(r"\bpython3?\s+-c\s+(?=['\"])")

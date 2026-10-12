@@ -458,7 +458,7 @@
   "cwd": "clean",
   "tool": "Read",
   "input": {
-   "file_path": "/tmp/x/.envs/.django/.fake"
+   "file_path": "{nogit}/missing/.envs/.django/.fake"
   }
  },
  {
@@ -468,7 +468,7 @@
   "tool": "Grep",
   "input": {
    "pattern": "VENDORX",
-   "path": "/tmp/x"
+   "path": "{nogit}/missing"
   }
  },
  {
@@ -478,7 +478,7 @@
   "tool": "Grep",
   "input": {
    "pattern": "token",
-   "path": "/tmp/x"
+   "path": "{nogit}/missing"
   }
  },
  {
@@ -488,7 +488,7 @@
   "tool": "Grep",
   "input": {
    "pattern": "x",
-   "path": "/tmp/x",
+   "path": "{nogit}/missing",
    "glob": "**/.envs/**"
   }
  },
@@ -499,86 +499,86 @@
   "tool": "Glob",
   "input": {
    "pattern": "**/.envs/**",
-   "path": "/tmp/x"
+   "path": "{nogit}/missing"
   }
  },
  {
   "id": "K6",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "git -C /tmp/x grep -n VENDORX"
+  "cmd": "git -C {nogit}/missing grep -n VENDORX"
  },
  {
   "id": "K7",
   "exp": "block",
   "cwd": "clean",
-  "cmd": "git -C /tmp/x grep -n TOKEN"
+  "cmd": "git -C {nogit}/missing grep -n TOKEN"
  },
  {
   "id": "K8",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "cd /tmp/x && git grep -n VENDORX"
+  "cmd": "cd {nogit}/missing && git grep -n VENDORX"
  },
  {
   "id": "K9",
   "exp": "block",
   "cwd": "clean",
-  "cmd": "cd /tmp/x && git grep -n token"
+  "cmd": "cd {nogit}/missing && git grep -n token"
  },
  {
   "id": "K10",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "grep -rn VENDORX /tmp/x"
+  "cmd": "grep -rn VENDORX {nogit}/missing"
  },
  {
   "id": "K11",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "rg -n VENDORX /tmp/x"
+  "cmd": "rg -n VENDORX {nogit}/missing"
  },
  {
   "id": "K12",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "rg -n --hidden VENDORX /tmp/x"
+  "cmd": "rg -n --hidden VENDORX {nogit}/missing"
  },
  {
   "id": "K13",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "git -C /tmp/x ls-files .envs"
+  "cmd": "git -C {nogit}/missing ls-files .envs"
  },
  {
   "id": "K14",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "ls -la /tmp/x/.envs/.django"
+  "cmd": "ls -la {nogit}/missing/.envs/.django"
  },
  {
   "id": "K15",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "git -C /tmp/x grep -n VENDORX -- ':!.envs'"
+  "cmd": "git -C {nogit}/missing grep -n VENDORX -- ':!.envs'"
  },
  {
   "id": "K16",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "grep -rn VENDORX /tmp/x --exclude-dir=.envs --exclude='.env*'"
+  "cmd": "grep -rn VENDORX {nogit}/missing --exclude-dir=.envs --exclude='.env*'"
  },
  {
   "id": "K17",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "rg -n VENDORX /tmp/x -g '!.envs'"
+  "cmd": "rg -n VENDORX {nogit}/missing -g '!.envs'"
  },
  {
   "id": "K18",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "git -C /tmp/x grep -n VENDORX -- . ':(exclude).envs'"
+  "cmd": "git -C {nogit}/missing grep -n VENDORX -- . ':(exclude).envs'"
  },
  {
   "id": "K19",
@@ -587,7 +587,7 @@
   "tool": "Grep",
   "input": {
    "pattern": "VENDORX",
-   "path": "/tmp/x",
+   "path": "{nogit}/missing",
    "glob": "!**/.envs/**"
   }
  },
@@ -595,13 +595,13 @@
   "id": "K20",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "git -C /tmp/x grep -l VENDORX"
+  "cmd": "git -C {nogit}/missing grep -l VENDORX"
  },
  {
   "id": "K21",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "find /tmp/x -path '*/.envs/*' -type f"
+  "cmd": "find {nogit}/missing -path '*/.envs/*' -type f"
  },
  {
   "id": "K22",
@@ -609,7 +609,7 @@
   "cwd": "clean",
   "tool": "Glob",
   "input": {
-   "pattern": "/tmp/x/.envs/**"
+   "pattern": "{nogit}/missing/.envs/**"
   }
  },
  {
@@ -1819,7 +1819,7 @@
   "id": "B03-n02d-neutral-var",
   "exp": "pass",
   "cwd": "clean",
-  "cmd": "cd /tmp/b03-wt && L=/tmp/b03-wt/gate-tests.log; bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run python manage.py makemigrations --dry-run --no-input --check' > $L 2>&1; grep -c passed $L | cut -c1-20"
+  "cmd": "cd {nogit}/b03-wt && L={nogit}/b03-wt/gate-tests.log; bash -lc 'set -a; . .envs/.postgres; . .envs/.django; set +a; POSTGRES_HOST=localhost uv run python manage.py makemigrations --dry-run --no-input --check' > $L 2>&1; grep -c passed $L | cut -c1-20"
  },
  {
   "id": "N07x",
@@ -1994,5 +1994,90 @@
    "Env files it reaches",
    "`.env`"
   ]
+ },
+ {
+  "id": "K9S1",
+  "exp": "pass",
+  "cmd": "sandbox exec fork-dummy -- bash -c 'source /app/env.sh && cd /app/api && python -m pytest -q'"
+ },
+ {
+  "id": "K9S2",
+  "exp": "pass",
+  "cmd": "sandbox exec fork-dummy -- bash -lc '. /app/env.sh && python manage.py migrate'"
+ },
+ {
+  "id": "K9S3",
+  "exp": "pass",
+  "cmd": "uv run python manage.py sandbox_exec fork-dummy \"source /app/env.sh && pytest -q\""
+ },
+ {
+  "id": "K9S4",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- bash -c 'source /app/env.sh && env'"
+ },
+ {
+  "id": "K9S5",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- bash -c 'source /app/env.sh && echo $DUMMY_A'"
+ },
+ {
+  "id": "K9S6",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- bash -c 'source /app/env.sh && printenv DUMMY_A'"
+ },
+ {
+  "id": "K9S7",
+  "exp": "block",
+  "cmd": "sandbox exec fork-dummy -- grep -E 'DUMMY_A|DUMMY_B' /app/env.sh"
+ },
+ {
+  "id": "K9G1",
+  "exp": "block",
+  "cmd": "grep -c DUMMY_A /app/.env | wc -l"
+ },
+ {
+  "id": "K9G2",
+  "exp": "block",
+  "cmd": "bash -c 'cat notes.md | wc -l; grep -q DUMMY_A /app/.env'"
+ },
+ {
+  "id": "K9G3",
+  "exp": "block",
+  "cmd": "bash -c 'cat notes.md |& wc -l; grep -c DUMMY_A /app/.env'"
+ },
+ {
+  "id": "K9G4",
+  "exp": "block",
+  "cmd": "bash -c 'echo hi > out.txt; grep -l DUMMY_A /app/.env'"
+ },
+ {
+  "id": "K9G5",
+  "exp": "block",
+  "cmd": "bash -c 'x=$(date); grep -q DUMMY_A /app/.env'"
+ },
+ {
+  "id": "K9G6",
+  "exp": "pass",
+  "cmd": "grep -q DUMMY_A /app/.env > /dev/null"
+ },
+ {
+  "id": "K9H1",
+  "exp": "pass",
+  "cmd": "python3 - <<'EOF'\np = 'notes.md'\ns = open(p).read()\nhint = 'run it with (cmd, env=os.environ) to inherit settings'\ns = s.replace('TODO', hint)\nopen(p, 'w').write(s)\nEOF"
+ },
+ {
+  "id": "K9P1",
+  "exp": "block",
+  "cmd": "python3 -c \"import os; print(dict(env=os.environ))\""
+ },
+ {
+  "id": "K9P2",
+  "exp": "block",
+  "cmd": "python3 - <<'EOF'\nimport os\nkw = dict(cwd='.', env=os.environ)\nprint(kw)\nEOF"
+ },
+ {
+  "id": "K9T1",
+  "exp": "block",
+  "cmd": "trap 'cat < tokens.log' EXIT"
  }
 ]
