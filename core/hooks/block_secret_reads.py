@@ -228,10 +228,13 @@ ENV_DUMP_WORD = re.compile(
 # hold a value loaded from env.sh: special parameters (`$?`, `$1`), shell state
 # (`$PWD`, `${PIPESTATUS[0]}`), and names the outer shell binds from visible
 # text before any use (`ID=fork-1; sandbox exec $ID ...`). This assumes a name
-# bound that way does not carry a sourced value. Known limits: if env.sh sets a
-# name the command bound earlier, a later `$NAME` expands to the sourced value;
-# and a binding skipped by a failed `&&` (`false && NAME=1; echo $NAME`) leaves
-# NAME's inherited value.
+# bound that way does not carry a sourced value. Known limits: in these shapes
+# a later `$NAME` expands to the sourced or inherited value and still passes:
+# env.sh sets a name the command bound earlier; a failed `&&` skips the binding
+# (`false && NAME=1; echo $NAME`); the binding sits in a function body, a
+# compound command after `time` or `coproc`, a `case` arm inside `(...)` or
+# `$(...)`, or a loop piped to another command; the `for` list is only a
+# comment; or NAME is readonly.
 SOURCED_FORK_ENV = re.compile(
     r"(?P<lead>(?:^|[;&|(\n]|\s['\"])\s*)(?:source|\.)\s+/app/env\.sh(?=$|[\s;&|)'\"`])",
     re.IGNORECASE,
@@ -372,6 +375,8 @@ def _outer_bindings(text: str) -> dict[str, list[tuple[int, int, str]]]:
     after `&&` is dropped when a depth-0 `||` follows it in the same statement,
     since the `||` branch runs when the binding was skipped. A `for NAME in
     words` header that starts a statement (not after `&&`) also binds NAME.
+    Depth tracking is approximate: the comment above SOURCED_FORK_ENV lists the
+    shapes it misreads.
     """
     binds: dict[str, list[tuple[int, int, str]]] = {}
     held: list[tuple[str, tuple[int, int, str]]] = []
