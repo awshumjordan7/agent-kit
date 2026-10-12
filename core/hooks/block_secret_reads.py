@@ -224,10 +224,278 @@ ENV_DUMP_WORD = re.compile(
 # Sourcing a sandbox fork's env file for a run (`source /app/env.sh && pytest`)
 # prints nothing. Only the statement is blanked: as the first word of a command,
 # or opening a quoted script (`bash -c '`, `sandbox_exec <fork> "`).
+# Its ENV_DUMP_WORD test (fork_env_dump_text) ignores `$` expansions that cannot
+# hold a value loaded from env.sh: special parameters (`$?`, `$1`), shell state
+# (`$PWD`, `${PIPESTATUS[0]}`), and names the outer shell binds from visible
+# text before any use (`ID=fork-1; sandbox exec $ID ...`). This assumes a name
+# bound that way does not carry a sourced value. Known limits: if env.sh sets a
+# name the command bound earlier, a later `$NAME` expands to the sourced value;
+# and a binding skipped by a failed `&&` (`false && NAME=1; echo $NAME`) leaves
+# NAME's inherited value.
 SOURCED_FORK_ENV = re.compile(
     r"(?P<lead>(?:^|[;&|(\n]|\s['\"])\s*)(?:source|\.)\s+/app/env\.sh(?=$|[\s;&|)'\"`])",
     re.IGNORECASE,
 )
+FORK_SHELL_STATE = frozenset({"PWD", "OLDPWD", "TMPDIR", "PIPESTATUS", "HOME", "PATH"})
+SPECIAL_PARAMETER = re.compile(r"\$\{(?:[?@*#$!-]|\d+)\}|\$[?@*#$!0-9-]")
+# `$NAME` or `${NAME`; `${#NAME` and `${!NAME` do not match and stay in the text.
+PARAMETER_NAME = re.compile(r"\$\{?([A-Za-z_]\w*)")
+DOLLAR_EXPANSION = re.compile(r"\$[\w{@*#?!$-]")
+_BINDING = re.compile(r"([A-Za-z_]\w*)=")
+_FOR_HEADER = re.compile(r"\bfor\s+([A-Za-z_]\w*)\s+in\b")
+_FOR_HEADER_END = re.compile(r"[;\n]|\bdo\b")
+_SHELL_OPERATOR = re.compile(r";;&?|;&|;|&&|\|\||\|&|\||&")
+_COMPOUND_CLOSER = {"if": "fi", "case": "esac", "while": "done", "until": "done", "select": "done", "for": "done", "{": "}"}
+# After these words the next word is still in command position.
+_COMMAND_POSITION_WORDS = {"then", "do", "else", "elif", "if", "while", "until", "!", "{"}
+
+
+def _backtick_end(text: str, i: int) -> int:
+    """Return the index just past the backtick closing the one at text[i], or len(text)."""
+    j, n = i + 1, len(text)
+    while j < n:
+        if text[j] == "\\":
+            j += 2
+        elif text[j] == "`":
+            return j + 1
+        else:
+            j += 1
+    return n
+
+
+def _double_quote_end(text: str, i: int) -> int:
+    """Return the index just past the `"` closing the one at text[i], or len(text).
+
+    A `$(...)` or backtick span inside may hold its own quotes.
+    """
+    j, n = i + 1, len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+        elif c == '"':
+            return j + 1
+        elif text.startswith("$(", j):
+            j = _paren_end(text, j + 1)
+        elif c == "`":
+            j = _backtick_end(text, j)
+        else:
+            j += 1
+    return n
+
+
+def _paren_end(text: str, i: int) -> int:
+    """Return the index just past the `)` closing the `(` at text[i], or len(text).
+
+    Nested parentheses, quotes, backticks and `$(...)` inside are skipped.
+    """
+    depth, j, n = 0, i + 1, len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+        elif c == "'":
+            j = _quote_end(text, j) or n
+        elif c == '"':
+            j = _double_quote_end(text, j)
+        elif c == "`":
+            j = _backtick_end(text, j)
+        elif text.startswith("$(", j):
+            j = _paren_end(text, j + 1)
+        elif c == ")" and depth == 0:
+            return j + 1
+        else:
+            depth += (c == "(") - (c == ")")
+            j += 1
+    return n
+
+
+def _shell_word_end(text: str, i: int) -> int:
+    """Return the end of the shell word at text[i]: the first unquoted whitespace, `;&|)` or end.
+
+    Quotes, backticks, `$(...)` and backslash escapes stay inside the word.
+    """
+    j, n = i, len(text)
+    while j < n:
+        c = text[j]
+        if c.isspace() or c in ";&|)":
+            return j
+        if c == "\\":
+            j += 2
+        elif c == "'":
+            j = _quote_end(text, j) or n
+        elif c == '"':
+            j = _double_quote_end(text, j)
+        elif c == "`":
+            j = _backtick_end(text, j)
+        elif text.startswith("$(", j):
+            j = _paren_end(text, j + 1)
+        else:
+            j += 1
+    return n
+
+
+def _queue_heredoc(text: str, i: int, pending: list[tuple[str, bool]]) -> int:
+    """Queue the here-doc whose `<<` is at text[i]; return the end of its delimiter word."""
+    j = i + 2
+    strip_tabs = text.startswith("-", j)
+    if strip_tabs:
+        j += 1
+    while j < len(text) and text[j] in " \t":
+        j += 1
+    end = max(_shell_word_end(text, j), j + 1)
+    pending.append((re.sub(r"[\"'\\]", "", text[j:end]), strip_tabs))
+    return end
+
+
+def _skip_heredoc_bodies(text: str, i: int, pending: list[tuple[str, bool]]) -> int:
+    """Return the index past every queued here-doc body, through its delimiter line; i follows a newline."""
+    for delimiter, strip_tabs in pending:
+        while i < len(text):
+            nl = text.find("\n", i)
+            line = text[i:] if nl < 0 else text[i:nl]
+            i = len(text) if nl < 0 else nl + 1
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                break
+    pending.clear()
+    return i
+
+
+def _outer_bindings(text: str) -> dict[str, list[tuple[int, int, str]]]:
+    """Return name -> [(start, end, value)] for each binding the outer shell surely runs.
+
+    A binding is a run of `NAME=word` words that is a whole statement at depth 0
+    (outside quotes, `(...)`, `$(...)`, backticks, `{...}` and compound
+    commands): at the start, after `;` or a newline, or right after `&&`, and
+    followed only by `;`, `&&`, `||`, a newline or the end. A binding right
+    after `&&` is dropped when a depth-0 `||` follows it in the same statement,
+    since the `||` branch runs when the binding was skipped. A `for NAME in
+    words` header that starts a statement (not after `&&`) also binds NAME.
+    """
+    binds: dict[str, list[tuple[int, int, str]]] = {}
+    held: list[tuple[str, tuple[int, int, str]]] = []
+    closers: list[str] = []
+    pending: list[tuple[str, bool]] = []
+
+    def commit_held() -> None:
+        for name, span in held:
+            binds.setdefault(name, []).append(span)
+        held.clear()
+
+    n = len(text)
+    i, command_position, outer, after = 0, True, True, ""
+    while i < n:
+        c = text[i]
+        if c in " \t":
+            i += 1
+        elif c == "\n":
+            i = _skip_heredoc_bodies(text, i + 1, pending) if pending else i + 1
+            command_position, outer, after = True, not closers, "\n"
+            if not closers:
+                commit_held()
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            nl = text.find("\n", i)
+            i = n if nl < 0 else nl
+        elif text.startswith("<<", i) and not text.startswith("<<<", i):
+            i = _queue_heredoc(text, i, pending)
+        elif c == "&" and (text.startswith("&>", i) or (i and text[i - 1] in "<>")):
+            i += 1
+        elif m := _SHELL_OPERATOR.match(text, i):
+            after = m.group()
+            i, command_position, outer = m.end(), True, after in (";", "&&") and not closers
+            if not closers and after == ";":
+                commit_held()
+            elif not closers and after == "||":
+                held.clear()
+        elif c == "(":
+            i, command_position, outer = _paren_end(text, i), False, False
+        elif c == ")":
+            i, command_position, outer, after = i + 1, True, False, ")"
+        else:
+            start = i
+            end = max(_shell_word_end(text, i), i + 1)
+            word = text[start:end]
+            if closers:
+                if command_position and word == closers[-1]:
+                    closers.pop()
+                elif command_position and word in _COMPOUND_CLOSER:
+                    closers.append(_COMPOUND_CLOSER[word])
+                i, command_position = end, word in _COMMAND_POSITION_WORDS
+                continue
+            if outer and _BINDING.match(text, start):
+                run, j = [], start
+                while m := _BINDING.match(text, j):
+                    j = _shell_word_end(text, m.end())
+                    run.append((m.group(1), (m.start(1), j, text[m.end() : j])))
+                    while j < n and text[j] in " \t":
+                        j += 1
+                if j == n or text[j] in ";\n" or text.startswith(("&&", "||"), j):
+                    if after == "&&":
+                        held.extend(run)
+                    else:
+                        for name, span in run:
+                            binds.setdefault(name, []).append(span)
+                i, command_position, outer = run[-1][1][1], True, False
+                continue
+            if command_position and word == "for" and outer and after != "&&" and (m := _FOR_HEADER.match(text, start)):
+                header_end = _FOR_HEADER_END.search(text, m.end())
+                stop = header_end.start() if header_end else n
+                binds.setdefault(m.group(1), []).append((m.start(1), stop, text[m.end() : stop]))
+            if command_position and word in _COMPOUND_CLOSER:
+                closers.append(_COMPOUND_CLOSER[word])
+            i, command_position, outer = end, word in _COMMAND_POSITION_WORDS, False
+    commit_held()
+    return binds
+
+
+def _value_is_safe(value: str, safe: set[str]) -> bool:
+    """Return True when a binding value expands only safe names.
+
+    A backtick, or a `$` form other than `$(`, a special parameter or a safe
+    `$NAME`/`${NAME` (such as `${!X}` or `${#X}`), makes it unsafe.
+    """
+    if "`" in value:
+        return False
+    i = 0
+    while (j := value.find("$", i)) >= 0:
+        if value.startswith("$(", j):
+            i = j + 2
+        elif m := SPECIAL_PARAMETER.match(value, j):
+            i = m.end()
+        elif m := PARAMETER_NAME.match(value, j):
+            if m.group(1) not in safe:
+                return False
+            i = m.end()
+        elif DOLLAR_EXPANSION.match(value, j):
+            return False
+        else:
+            i = j + 1
+    return True
+
+
+def fork_env_dump_text(command: str) -> str:
+    """Return the text the fork-env ENV_DUMP_WORD test searches.
+
+    `/app/env.sh` is blanked, then special parameters and `$NAME`/`${NAME`
+    prefixes of safe names are removed. Shell-state names are safe. A bound
+    name is safe when every use comes after the end of its first binding and
+    every binding value expands only safe names; the safe set grows until no
+    more names qualify.
+    """
+    text = command.replace("/app/env.sh", " ")
+    binds = _outer_bindings(text)
+    first_end = {name: min(spans)[1] for name, spans in binds.items()}
+    candidates = set(binds)
+    for m in PARAMETER_NAME.finditer(text):
+        if m.group(1) in first_end and m.start() < first_end[m.group(1)]:
+            candidates.discard(m.group(1))
+    safe = set(FORK_SHELL_STATE)
+    while new := {
+        name for name in candidates - safe if all(_value_is_safe(value, safe) for _, _, value in binds[name])
+    }:
+        safe |= new
+    text = SPECIAL_PARAMETER.sub(" ", text)
+    return PARAMETER_NAME.sub(lambda m: " " if m.group(1) in safe else m.group(0), text)
 
 # The shell "source" shorthand is a dot standing alone after whitespace or an opening quote
 # (`sh -c '. file'`) and before whitespace; a dot inside a file name (report_issue.py) is not a reader.
@@ -2146,7 +2414,7 @@ def env_read_advice(command: str | None, path: str) -> str:
 def verdict(command: str, cwd: str | None) -> Hit | None:
     """Return why to block a command run in cwd (None when unknown), or None to allow."""
     sources_repo_env = ENV_DUMP_WORD.search(command) is None
-    sources_fork_env = ENV_DUMP_WORD.search(command.replace("/app/env.sh", " ")) is None
+    sources_fork_env = ENV_DUMP_WORD.search(fork_env_dump_text(command)) is None
     heredocs = strip_heredoc_bodies(command)
     command = heredocs.head
     for body, words in heredocs.interpreter_bodies:

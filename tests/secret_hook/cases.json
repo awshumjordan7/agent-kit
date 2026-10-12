@@ -2079,5 +2079,50 @@
   "id": "K9T1",
   "exp": "block",
   "cmd": "trap 'cat < tokens.log' EXIT"
+ },
+ {
+  "id": "K9S8",
+  "exp": "pass",
+  "cmd": "R=dummy; ID=fork-dummy; sandbox exec $ID -- bash -lc \"cd /app && source /app/env.sh && python -m pytest -q 2>&1 | tail -5\"; echo $?"
+ },
+ {
+  "id": "K9S9",
+  "exp": "pass",
+  "cmd": "B64=$(base64 < notes.md | tr -d '\\n'); sandbox exec fork-dummy -- bash -lc \"source /app/env.sh && echo $B64 | base64 -d > /tmp/notes.md\"; echo $?"
+ },
+ {
+  "id": "K9S10",
+  "exp": "pass",
+  "cmd": "for f in api web; do sandbox exec fork-dummy -- bash -lc \"source /app/env.sh && cd /app/$f && pytest -q\"; echo \"${PIPESTATUS[0]} $PWD\"; done"
+ },
+ {
+  "id": "K9S11",
+  "exp": "block",
+  "cmd": "source /app/env.sh; DUMMY_A=$DUMMY_A; echo $DUMMY_A"
+ },
+ {
+  "id": "K9S12",
+  "exp": "block",
+  "cmd": "source /app/env.sh; DUMMY_A=\"$(echo x; echo $DUMMY_A)\"; echo $DUMMY_A"
+ },
+ {
+  "id": "K9S13",
+  "exp": "block",
+  "cmd": "source /app/env.sh; DUMMY_A=x true; echo $DUMMY_A"
+ },
+ {
+  "id": "K9S14",
+  "exp": "block",
+  "cmd": "source /app/env.sh; X=$DUMMY_A; DUMMY_A=1; echo $X"
+ },
+ {
+  "id": "K9S15",
+  "exp": "block",
+  "cmd": "source /app/env.sh; false && DUMMY_A=1 || echo $DUMMY_A"
+ },
+ {
+  "id": "K9S16",
+  "exp": "block",
+  "cmd": "source /app/env.sh; (DUMMY_A=1); echo $DUMMY_A"
  }
 ]
