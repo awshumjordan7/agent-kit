@@ -49,18 +49,6 @@
     "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "8"
   },
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/hooks/ask_register.py",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "",
