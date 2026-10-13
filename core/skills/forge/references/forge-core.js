@@ -38,7 +38,7 @@ const TIERS = {
   },
   opus: {
     implementer: { model: 'opus', effort: 'high' },
-    reviewer: { model: 'opus', effort: 'xhigh' },
+    reviewer: { model: 'fable', effort: 'high' },
     triage: { model: 'opus', effort: 'high' },
     decider: { model: 'opus', effort: 'high' },
     applier: { model: 'opus', effort: 'medium' },
@@ -758,7 +758,7 @@ async function agentT(role, prompt, opts = {}) {
     }
     await decide(`${role} returned null on Fable; retrying once with Opus high.`)
     spawnCount++
-    const fallback = TIERS.opus[role === 'checkpoint' ? 'reviewer' : role]
+    const fallback = role === 'checkpoint' || role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
     result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
   }
   return result
