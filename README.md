@@ -55,8 +55,8 @@ wsl --install -d Ubuntu-24.04
 sudo apt update && sudo apt install -y git jq python3 python3-venv curl
 ```
 
-Run the first command from PowerShell, then open the Ubuntu shell for the rest. Install Node.js LTS (the firecrawl,
-context7, and memory MCP servers run through `npx`) and the Claude Code CLI inside WSL, run `claude` once to sign in,
+Run the first command from PowerShell, then open the Ubuntu shell for the rest. Install Node.js LTS (the firecrawl
+and context7 MCP servers run through `npx`) and the Claude Code CLI inside WSL, run `claude` once to sign in,
 then follow the Install steps above. Install `gh` only for the github module and `codex` only for the codex module.
 Verify with:
 
@@ -71,7 +71,6 @@ claude mcp list
 |---|---:|---|
 | firecrawl | on | web research and crawling |
 | context7 | on | current library documentation |
-| memory | on | persistent local knowledge |
 | codex | off | Codex CLI and forge roles |
 | playwright | off | browser automation |
 | github | off | GitHub CLI and MCP tools |

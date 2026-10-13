@@ -9,7 +9,6 @@
     "modules": {
       "firecrawl": true,
       "context7": true,
-      "memory": true,
       "codex": false,
       "playwright": false,
       "github": false,
@@ -26,7 +25,7 @@
       "roles": {
         "impl": {"provider": "claude", "model": "opus", "effort": "high"},
         "quick-impl": {"provider": "claude", "model": "opus", "effort": "medium"},
-        "review": {"provider": "codex", "model": "gpt-6-sol", "effort": "xhigh"},
+        "review": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"},
         "plan-review": {"provider": "claude", "model": "opus", "effort": "xhigh"}
       },
       "stages": {"sandbox": false, "ff_review": false, "qa_login": false},

@@ -4,6 +4,10 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
 ## 2026-10-13
+- core/agents (reviewer.md), core/skills/forge/references (forge-core.js, cost-controls.md): the forge reviewer and checkpoint run on Fable at high effort, with an Opus xhigh fallback if Fable returns nothing.
+- core/profile.default.json, core/skills/forge/references (cost-controls.md), modules/codex: Codex review runs on gpt-6.1-sol instead of gpt-6-sol.
+- modules/memory, modules/codex (config.toml), core (layer.toml, profile.default.json), README.md: the memory module and the Codex context7 server are removed.
+- core/hooks (context_guard.py): the context guard sends one notice at 280k tokens and no longer blocks Stop, replacing the 225k, 250k and 275k bands.
 - core/hooks (block_secret_reads.py): the Artifact tool now blocks secret files passed through its `file_paths` and `files` arguments, which slipped past the old check (C-003).
 - core/CLAUDE.md: a sub-agent puts the optimizing-workflow entry's path in its final message instead of messaging the session (C-135).
 - core/skills/forge/references (claude-reviewer-contract.md): remove the stale manual-round review policy from the reviewer prompt, which the reviewer cannot act on (C-039).

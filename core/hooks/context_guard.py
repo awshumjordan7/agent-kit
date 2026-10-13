@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit/PostToolUse/Stop hook: warn at 225k, stop new work at 250k, block once at 275k.
+"""UserPromptSubmit/PostToolUse/Stop hook: one non-blocking notice at 280k.
 
-A run whose STATE.md Goal section has a `- Handoff: manual` line gets a one-time
-notice at 275k instead of the block; the user decides when to hand off.
+The main session gets a single notice when usage first passes 280k tokens. It never
+blocks Stop.
 
 As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
 block at 250k, then at 300k every tool call except progress-file edits and
@@ -19,19 +19,8 @@ import re
 import shlex
 import sys
 import time
-from pathlib import Path
 
-# The installer copies hooks/ and scripts/ side by side, as they sit in the repo.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-try:
-    from run_dir import resolve_run_dir
-except ImportError:
-    resolve_run_dir = None
-
-BAND_225K = 225_000
-BAND_250K = 250_000
-BAND_275K = 275_000
-BANDS = (BAND_225K, BAND_250K, BAND_275K)
+BAND_280K = 280_000
 RESET_BELOW = 120_000
 IMPL_SOFT_AT = 250_000
 IMPL_HARD_AT = 300_000
@@ -40,46 +29,12 @@ STATE_DIR = os.environ.get("CONTEXT_GUARD_STATE_DIR") or os.path.expanduser(
     "~/.claude/hooks/state/context-guard"
 )
 
-REPORT_ISSUE_LINE = (
-    "Before handing off, file any issues or suggestions with "
-    "`python3 ~/.claude/scripts/report_issue.py` (skip if none)."
+NOTICE = (
+    "Context guard: ~{n}k tokens. This session is past 280k and a handoff is one command away: "
+    "rewrite STATE.md, then run "
+    "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name> --transcript {transcript}` "
+    "and message the successor. Nothing is blocked; hand off when the run reaches a good stopping point."
 )
-
-MESSAGES = {
-    BAND_225K: (
-        "Context guard: ~{n}k tokens. Plan the handoff: take on no new large scope and keep "
-        "STATE.md current, so the handoff is one command away at 250k."
-    ),
-    BAND_250K: (
-        "Context guard: ~{n}k tokens. Start no new work. Let running agents and Codex "
-        "sessions finish, rewrite STATE.md (list every live sandbox or fork the run owns), then "
-        "in a later tool call run "
-        "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name> --transcript "
-        "{transcript}` and message the "
-        "successor. If handoff.py exits 1, the handoff is not done: fix the cause it names and "
-        "rerun, or give the user the command it printed. Exception: if this run is in its final "
-        "stage (final review, QA, ship), finish it first, then hand off. " + REPORT_ISSUE_LINE
-    ),
-    BAND_275K: (
-        "Context guard: ~{n}k tokens. Before ending this turn: wait for running agents, "
-        "rewrite STATE.md, run handoff.py with `--transcript {transcript}`, message the successor, "
-        "then end. Exception: a "
-        "run in its final stage finishes first. " + REPORT_ISSUE_LINE
-    ),
-}
-
-MANUAL_HANDOFF_MESSAGE = (
-    "Context guard: ~{n}k tokens. Manual handoff set for this run; hand off when the user says. "
-    "Keep STATE.md current; when the user says, run "
-    "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name> --transcript {transcript}`."
-)
-GOAL_HEADING = "## Goal and standing rules"
-MANUAL_HANDOFF_LINE = "- Handoff: manual"
-
-
-HANDOFF_SUFFIX = ".handoff"
-BACKGROUND_LAUNCH_PREFIXES = ("Async agent launched successfully.", "Workflow launched in background")
-NOTIFIED_TOOL_USE_ID = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
 
 IMPLEMENTER_AGENT = "claude-implementer"
 PROGRESS_MARKER = "/impl-progress-"
@@ -149,60 +104,6 @@ def measure_from_transcript(transcript_path):
     )
 
 
-def _tool_result_text(block):
-    content = block.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
-        )
-    return ""
-
-
-def pending_background_tasks(path):
-    """Count background Agent/Workflow launches in the transcript that have no
-    task-notification yet. Reads the whole file, so call it only past 275k."""
-    launched = set()
-    notified = set()
-    try:
-        with open(path, "rb") as f:
-            for raw in f:
-                # Mid-turn completions arrive as attachment or queue-operation
-                # records, so match notifications on the raw line, not the type.
-                line = raw.decode("utf-8", errors="replace")
-                if "<task-notification>" in line:
-                    notified.update(NOTIFIED_TOOL_USE_ID.findall(line))
-                ev = try_parse(raw)
-                if not isinstance(ev, dict) or ev.get("type") != "user":
-                    continue
-                message = ev.get("message")
-                if not isinstance(message, dict):
-                    continue
-                content = message.get("content")
-                origin = ev.get("origin")
-                is_notification = isinstance(origin, dict) and origin.get("kind") == "task-notification"
-                if isinstance(content, str):
-                    if is_notification or "<task-notification>" in content:
-                        notified.update(NOTIFIED_TOOL_USE_ID.findall(content))
-                    continue
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_result":
-                        if _tool_result_text(block).startswith(BACKGROUND_LAUNCH_PREFIXES):
-                            launched.add(block.get("tool_use_id"))
-                    elif is_notification and block.get("type") == "text":
-                        text = block.get("text")
-                        if isinstance(text, str):
-                            notified.update(NOTIFIED_TOOL_USE_ID.findall(text))
-    except OSError:
-        return 0
-    return len(launched - notified)
-
-
 def load_state(state_path):
     try:
         with open(state_path) as f:
@@ -236,14 +137,6 @@ def prune_stale_state(max_age_days=14):
             continue
 
 
-def highest_crossed_band(measure):
-    crossed = 0
-    for band in BANDS:
-        if measure >= band:
-            crossed = band
-    return crossed
-
-
 def emit_hook_context(event_name, message):
     print(
         json.dumps(
@@ -255,59 +148,6 @@ def emit_hook_context(event_name, message):
             }
         )
     )
-
-
-def handoff_successor_running(session_id):
-    """True when handoff.py left a marker for this session and one of the
-    successor pids it recorded is still alive."""
-    try:
-        with open(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}")) as f:
-            pids = json.load(f).get("pids", [])
-    except (OSError, ValueError, AttributeError):
-        return False
-    if not isinstance(pids, list):
-        return False
-    for pid in pids:
-        if not isinstance(pid, int) or pid <= 0:
-            continue
-        try:
-            os.kill(pid, 0)
-        except PermissionError:
-            return True
-        except OSError:
-            continue
-        return True
-    return False
-
-
-def emit_block(reason):
-    print(json.dumps({"decision": "block", "reason": reason}))
-
-
-def emit_system_message(message):
-    # additionalContext on Stop would start a new turn; systemMessage only informs.
-    print(json.dumps({"systemMessage": message}))
-
-
-def manual_handoff_set(cwd, transcript_path):
-    """True when the run's STATE.md has a `- Handoff: manual` line in its Goal section."""
-    if resolve_run_dir is None:
-        return False
-    run_dir = resolve_run_dir(cwd if isinstance(cwd, str) else None, transcript_path)
-    if run_dir is None:
-        return False
-    try:
-        text = (run_dir / "STATE.md").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    in_goal = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if re.match(r"^#{1,2} ", stripped):
-            in_goal = stripped == GOAL_HEADING
-        elif in_goal and stripped.startswith(MANUAL_HANDOFF_LINE):
-            return True
-    return False
 
 
 def find_agent_transcript(transcript_path, session_id, agent_id):
@@ -408,56 +248,20 @@ def main() -> int:
             save_state(state_path, state["band"], state["blocked"])
         except OSError:
             return 0
-        try:
-            os.remove(os.path.join(STATE_DIR, f"{session_id}{HANDOFF_SUFFIX}"))
-        except OSError:
-            pass
 
     if event_name == "Stop":
-        if handoff_successor_running(session_id):
-            return 0
-        if measure >= BAND_275K and not payload.get("stop_hook_active") and not state["blocked"]:
-            if manual_handoff_set(payload.get("cwd"), transcript_path):
-                try:
-                    save_state(state_path, state["band"], True)
-                except OSError:
-                    return 0
-                emit_system_message(
-                    MANUAL_HANDOFF_MESSAGE.format(
-                        n=measure // 1000, transcript=shlex.quote(transcript_path)
-                    )
-                )
-                return 0
-            # Leave blocked unset so a later Stop can still block once the tasks finish.
-            if pending_background_tasks(transcript_path) > 0:
-                return 0
-            try:
-                save_state(state_path, state["band"], True)
-            except OSError:
-                return 0
-            emit_block(
-                MESSAGES[BAND_275K].format(
-                    n=measure // 1000, transcript=shlex.quote(transcript_path)
-                )
-            )
         return 0
 
-    crossed = highest_crossed_band(measure)
-    if crossed > BAND_250K:
-        crossed = BAND_250K  # 275k is announced only via the Stop block
-    if crossed > state["band"]:
+    if measure >= BAND_280K and state["band"] < BAND_280K:
         if not os.path.exists(state_path):
             prune_stale_state()
         try:
-            save_state(state_path, crossed, state["blocked"])
+            save_state(state_path, BAND_280K, state["blocked"])
         except OSError:
             return 0
-        message = MESSAGES[crossed]
-        if manual_handoff_set(payload.get("cwd"), transcript_path):
-            message = MANUAL_HANDOFF_MESSAGE
         emit_hook_context(
             event_name,
-            message.format(n=measure // 1000, transcript=shlex.quote(transcript_path)),
+            NOTICE.format(n=measure // 1000, transcript=shlex.quote(transcript_path)),
         )
 
     return 0

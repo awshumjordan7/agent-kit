@@ -3,14 +3,6 @@ model_reasoning_effort = "xhigh"
 personality = "pragmatic"
 project_doc_max_bytes = 131072
 
-[mcp_servers.context7]
-command = "npx"
-args = ["-y", "@upstash/context7-mcp"]
-
-[mcp_servers.memory]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-memory"]
-
 [mcp_servers.semgrep]
 command = "semgrep"
 args = ["mcp"]
