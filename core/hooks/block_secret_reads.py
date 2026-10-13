@@ -10,6 +10,8 @@ guard, not a security boundary. A command that reaches an env file without namin
 (a variable, a glob such as `.e*`, an interpreter that builds the path) is not seen.
 """
 
+from __future__ import annotations
+
 import json
 import posixpath
 import re
