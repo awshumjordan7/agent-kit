@@ -59,7 +59,7 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   File first, message second. A sub-agent puts the entry's path in its final message instead.
 - **Run-dir files stay short.** `decisions.md` entries are at most three lines in the form
   `[step] decision - reason`, with evidence as a file path, never inline dumps.
-- **Name files without credential words.** Name your own run-dir, scratch and capture files without token, secret, credential, api key or passwd. The secret hook treats such names as credential files.
+- **Files named with "credential" stay unreadable.** A built-in deny rule blocks reading and editing them, so keep that word out of your own run-dir, scratch and capture file names.
 
 ### Don't
 
