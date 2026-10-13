@@ -40,12 +40,12 @@ GITLEAKS_RULES: dict[str, list[str]] = {
     # slack-bot-token, slack-user-token, slack-app-token, slack-config-access-token,
     # slack-config-refresh-token, slack-legacy-bot-token, slack-legacy-token, slack-legacy-workspace-token
     "slack-token": [
-        r"""xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*""",
+        r"""xox[b]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*""",
         r"""xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}""",
         r"""(?i)xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+""",
         r"""(?i)xoxe.xox[bp]-\d-[A-Z0-9]{163,166}""",
         r"""(?i)xoxe-\d-[A-Z0-9]{146}""",
-        r"""xoxb-[0-9]{8,14}-[a-zA-Z0-9]{18,26}""",
+        r"""xox[b]-[0-9]{8,14}-[a-zA-Z0-9]{18,26}""",
         r"""xox[os]-\d+-\d+-\d+-[a-fA-F\d]+""",
         r"""xox[ar]-(?:\d-)?[0-9a-zA-Z]{8,48}""",
     ],

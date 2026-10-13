@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
 ## 2026-10-13
+- core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.
+- core/scripts (exposure_scan.py): a weekly scanner logs where secret-shaped values appeared in transcripts, without the values.
+- core/CLAUDE.md, core/references/env-recipe.md, core/agents/worker.md, modules/marketing/skills/market-research: drop rules that existed only for the old hook's word heuristics and the inline sourcing route.
 - core/skills/forge/references (cost-controls.md): mark the gpt-6-astra note as history so the model-name check, now canonical on 6.1, passes.
 - core/hooks (ask_register.py), core/scripts/handoff.py, core/settings.fragment.json, aisetup/profile.py: the ask register start hook and handoff check are removed; no project on this machine used them, and ask_register_projects is now ignored.
 - core/settings.fragment.json, core/CLAUDE.md, core/agents (shipper.md, worker.md), core/skills/ship-pr (SKILL.md), core/skills/forge/references (forge-core.js): attribution is turned off in settings, so the prose reminders to omit AI attribution are removed.
