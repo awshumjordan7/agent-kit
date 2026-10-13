@@ -28,6 +28,7 @@ TOP_LEVEL_KEYS = {
     "forge",
     "ship_pr",
     "doctor",
+    # Installed profiles still carry this key; it is ignored.
     "ask_register_projects",
     # Installed profiles written before auto-updates were removed still carry this key; it is ignored.
     "auto_update",
@@ -192,13 +193,6 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _unknown(metrics, METRICS_KEYS, "profile.doctor.metrics")
     if not all(value is None or isinstance(value, str) for value in metrics.values()):
         raise ProfileError("profile.doctor.metrics values must be strings or null")
-    ask_register_projects = profile.get("ask_register_projects", [])
-    if not isinstance(ask_register_projects, list) or not all(
-        isinstance(item, str) for item in ask_register_projects
-    ):
-        raise ProfileError("profile.ask_register_projects must be an array of strings")
-    if not all(item.startswith(("/", "~")) for item in ask_register_projects):
-        raise ProfileError("profile.ask_register_projects entries must start with / or ~")
     if "installed_at" in profile and not isinstance(profile["installed_at"], str):
         raise ProfileError("profile.installed_at must be a string")
 
