@@ -18,7 +18,7 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 
 A plan with two or more `### Phase <id>: <title>` headings under `## Phases` runs one phase at a time:
 
-1. Before the first phase, Forge switches to a new branch when the checkout is on the base branch, as ship-pr does, and records the run in `<runDir>/phases.json`, which `run_context.py phases-save` writes with titles taken from the plan file. A failed write stops the run BLOCKED.
+1. Before the first phase, Forge switches to a new branch when the checkout is on the base branch or detached, as ship-pr does, and records the run in `<runDir>/phases.json`, which `run_context.py phases-save` writes with titles taken from the plan file. A failed write stops the run BLOCKED.
 2. Each phase gets its own implementer turn (`implement-phase-<id>`, `implementation-summary-phase-<id>.md`) with the full plan as context and the instruction to implement only that phase.
 3. The phase's files are committed as `Phase <id>: <title>` through `gate.sh --no-stages --commit`, and the SHA is recorded in `<runDir>/phases.json`.
 4. In gate mode `full`, the phase gate (`gate-phase-<id>`) runs on that SHA with `gate.sh --sha` in `<runDir>/gate-checkout` while the next phase is implemented. Gates run one at a time. The last phase gets no gate of its own: after every earlier gate and its fix commits have settled, the final gate runs on HEAD over every run file.

@@ -10,7 +10,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
-from aisetup import __version__
 from aisetup.compose import (
     ACTION_KEEP,
     CODEX_CONFIG_PATH,
@@ -46,6 +45,7 @@ from aisetup.update import (
     check_repositories,
     commit_subjects,
     core_head,
+    kit_version,
     update_profile_commits,
     update_repositories,
 )
@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="install.py", description="Install and maintain agent-kit"
     )
-    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--version", action="version", version=kit_version())
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     install = subparsers.add_parser("install", help="compose and install the configured layers")

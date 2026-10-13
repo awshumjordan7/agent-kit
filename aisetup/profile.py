@@ -31,7 +31,7 @@ TOP_LEVEL_KEYS = {
     "auto_update",
     "ask_register_projects",
 }
-LAYER_KEYS = {"path", "commit", "track"}
+LAYER_KEYS = {"path", "commit", "track", "version"}
 AGENT_KEYS = {"model", "maxTurns", "effort"}
 FORGE_KEYS = {
     "roles",

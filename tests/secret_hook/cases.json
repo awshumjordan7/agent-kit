@@ -2134,5 +2134,26 @@
   "id": "K9S18",
   "exp": "block",
   "cmd": "source /app/env.sh; for DUMMY_A in $(true); do :; done; echo $DUMMY_A"
+ },
+ {
+  "id": "ART1",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Artifact",
+  "input": {"file_path": "/tmp/page.html", "file_paths": ["/tmp/a.png", "{nogit}/missing/.envs/.django/.fake"]}
+ },
+ {
+  "id": "ART2",
+  "exp": "block",
+  "cwd": "clean",
+  "tool": "Artifact",
+  "input": {"file_path": "/tmp/page.html", "files": {"page/data.json": {"from": "{nogit}/missing/.envs/.django/.fake"}}}
+ },
+ {
+  "id": "ART3",
+  "exp": "pass",
+  "cwd": "clean",
+  "tool": "Artifact",
+  "input": {"file_path": "/tmp/page.html", "file_paths": ["/tmp/a.png", "/tmp/b.png"], "files": {"a.css": "/tmp/a.css", "b.png": {"artifact": "https://claude.ai/artifact/x", "path": "b.png"}, "c.js": null}}
  }
 ]
