@@ -38,7 +38,16 @@
       "Read(**/.netrc)",
       "Read(**/.config/gh/hosts.yml)",
       "Read(**/.my.cnf)",
-      "Read(**/.pgpass)"
+      "Read(**/.pgpass)",
+      "Read(**/.env.*)",
+      "Read(!**/.env.example)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Edit(!**/.env.example)",
+      "Edit(**/.envs/**)",
+      "Edit(**/.envrc)",
+      "Edit(**/.env_*)",
+      "Edit(**/*credential*)"
     ],
     "defaultMode": "bypassPermissions"
   },
