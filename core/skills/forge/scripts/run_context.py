@@ -748,6 +748,38 @@ def checkpoint_save(
     return _checked({**facts, "written": True, "sha256": _sha256(path) or ""})
 
 
+_EMPTY_PHASES_FILE = {
+    "branch": "",
+    "phases": [],
+    "lastCommittedPhase": "",
+    "headSha": "",
+    "pendingGates": [],
+}
+
+
+def _no_nulls(value: object) -> object:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return {key: _no_nulls(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_no_nulls(item) for item in value]
+    return value
+
+
+def phases_facts(run_dir: Path) -> dict:
+    # Agents echo JSON nulls unreliably, so every null prints as "" and forge-core.js restores
+    # the fields that mean something as null after it checks the digest.
+    path = run_dir / "phases.json"
+    if not path.is_file():
+        return _checked(_EMPTY_PHASES_FILE)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        sys.exit(f"run_context.py phases-facts: could not read {path}: {exc}")
+    return _checked(_no_nulls(document))
+
+
 def checkpoint_facts(run_dir: Path, plan_file: Path) -> dict:
     document, error = _read_json(run_dir / "checkpoint.json")
     facts = _known(document, _CHECKPOINT_DEFAULTS)
@@ -881,6 +913,8 @@ def main() -> None:
     checkpoint_facts_parser = subparsers.add_parser("checkpoint-facts")
     checkpoint_facts_parser.add_argument("--run-dir", type=Path, required=True)
     checkpoint_facts_parser.add_argument("--plan-file", type=Path, required=True)
+    phases_facts_parser = subparsers.add_parser("phases-facts")
+    phases_facts_parser.add_argument("--run-dir", type=Path, required=True)
     phases_save_parser = subparsers.add_parser("phases-save")
     phases_save_parser.add_argument("--run-dir", type=Path, required=True)
     phases_save_parser.add_argument("--plan-file", type=Path, required=True)
@@ -934,6 +968,8 @@ def main() -> None:
         )
     elif args.command == "checkpoint-facts":
         result = checkpoint_facts(args.run_dir, args.plan_file)
+    elif args.command == "phases-facts":
+        result = phases_facts(args.run_dir)
     elif args.command == "phases-save":
         result = phases_save(
             args.run_dir,

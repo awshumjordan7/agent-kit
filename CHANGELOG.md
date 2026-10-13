@@ -18,6 +18,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/skills/forge/references (claude-reviewer-contract.md): remove the stale manual-round review policy from the reviewer prompt, which the reviewer cannot act on (C-039).
 - core/skills/forge/references (implement-mode.md, triage-template.md): point at `forge build` and the `build` lane verdict instead of the retired `forge dev`, QUICK and ESCALATE_TO_DEV names (C-044).
 - core/skills/forge/references (build-lane.md): the checkout may be on the base branch or detached, as ship-pr does (C-180).
+- core/skills/forge (forge-core.js, run_context.py): read phases.json through the digest-checked facts command, so an echo that changes a value is retried instead of trusted.
 
 ## 2026-10-09
 - core/hooks (block_secret_reads.py): Read/Write/Edit block on credential-shaped files, secret paths and secrets/credentials folders instead of any bare credential word; /app/env.sh counts as an env file, and sourcing it for a run passes; grep -q/-c/-l on env files passes; 15 harmless Bash shapes no longer block; block messages name a working route.
