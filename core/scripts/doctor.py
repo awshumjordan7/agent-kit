@@ -37,7 +37,7 @@ CODEX_HEADER = (
 # Codex reads its global AGENTS.md only from $CODEX_HOME, and install always writes it here.
 CODEX_AGENTS_MD = "~/.codex/AGENTS.md"
 DEFAULT_CONFIG: dict[str, Any] = {
-    "models": {"codex_version": "6", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
+    "models": {"codex_version": "6.1", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
     "ignore": {"globs": ["skills/synced/**"]},
     "thresholds": {"agent_max_lines": 60},
     "repos": {"roots": []},
