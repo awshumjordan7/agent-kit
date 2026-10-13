@@ -72,7 +72,7 @@ GITLEAKS_RULES: dict[str, list[str]] = {
 
 # gitleaks has no AWS secret-key rule, so this one is local.
 CUSTOM_RULES: dict[str, list[str]] = {
-    "aws-secret-assign": [r"""AWS_SECRET_ACCESS_KEY["']?\s*[=:]\s*["']?[A-Za-z0-9/+=]{40}\b"""],
+    "aws-secret-assign": [r"""AWS_SECRET_ACCESS_KEY["']?\s*[=:]\s*["']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"""],
 }
 
 DETECTORS: dict[str, list[re.Pattern[str]]] = {
@@ -84,7 +84,7 @@ AWS_EXAMPLE = re.compile(r".+EXAMPLE$")
 
 # Line-anchored, so it runs on text with the Read tool's line-number prefix removed.
 ENV_ASSIGN = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ACCESS_KEY|_KEY)[ \t]*=[ \t]*["']?([A-Za-z0-9+/_.=-]{16,})""",
+    r"""^[ \t]*(?:export[ \t]+)?(?:[A-Z][A-Z0-9_]*)?(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ACCESS_KEY|_KEY)[ \t]*=[ \t]*["']?([A-Za-z0-9+/_.=-]{16,})""",
     re.MULTILINE,
 )
 ENV_PLACEHOLDER = re.compile(
@@ -136,7 +136,8 @@ def _patterns_in(text: str) -> set[str]:
 def _is_forge_session(session_file: Path, cache: dict[Path, bool]) -> bool:
     if session_file not in cache:
         try:
-            cache[session_file] = '"skill":"forge"' in session_file.read_text(encoding="utf-8", errors="replace")
+            with session_file.open(encoding="utf-8", errors="replace") as handle:
+                cache[session_file] = any('"skill":"forge"' in line for line in handle)
         except OSError:
             cache[session_file] = False
     return cache[session_file]

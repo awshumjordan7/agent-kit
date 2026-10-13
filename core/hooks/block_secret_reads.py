@@ -2,7 +2,7 @@
 """PreToolUse guard: block Bash commands and Artifact uploads that name an env file.
 
 Env files are `.env`, `.env.<suffix>` other than `.env.example`, `.envrc`, `.env_<suffix>`,
-and any path with a `.envs/` folder. The deny rules in settings.json cover the Read, Grep,
+and any path through or naming a `.envs` folder. The deny rules in settings.json cover the Read, Grep,
 Edit, Write and NotebookEdit tools and every other credential file, so this hook does not.
 
 Fail-open: malformed JSON or an unexpected payload shape exits 0. This is an accident
@@ -18,9 +18,9 @@ import re
 import sys
 
 ENV_FILE = re.compile(r"\.env|\.envrc|\.env\.(?!example$).+|\.env_.+|\.env[*?\[].*", re.IGNORECASE)
-# Shell quoting, operators and separators end a word. `=`, `:` and `@` split forms such as
+# Shell quoting, backslash escapes, operators and separators end a word. `=`, `:` and `@` split forms such as
 # `--env-file=.env`, `git show HEAD:.env` and `curl -d @.env`.
-WORD_BREAK = re.compile(r"""[\s'"`;|&<>(){}=,:@]+""")
+WORD_BREAK = re.compile(r"""[\s'"`;|&<>(){}=,:@\\]+""")
 
 BASH_ROUTES = (
     "To run a command with an env file loaded, follow ~/.claude/references/env-recipe.md: "
@@ -37,9 +37,9 @@ ARTIFACT_ROUTES = (
 
 
 def env_path(path: str) -> bool:
-    """Return True when the path's file name is an env file or a folder in it is `.envs`."""
+    """Return True when the path's file name is an env file or any segment of it is `.envs`."""
     parts = path.split("/")
-    return bool(ENV_FILE.fullmatch(parts[-1])) or any(p.lower() == ".envs" for p in parts[:-1])
+    return bool(ENV_FILE.fullmatch(parts[-1])) or any(p.lower() == ".envs" for p in parts)
 
 
 def command_hit(command: str) -> str | None:

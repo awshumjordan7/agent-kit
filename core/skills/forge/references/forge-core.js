@@ -126,6 +126,9 @@ const CODEX_REVIEW_THREAD = `${PARAMS.runDir}/codex-review.thread`
 if (!PARAMS.runDir || !PARAMS.projectDir) {
   throw new Error('forge-core requires args.runDir and args.projectDir')
 }
+if (/credential/i.test(String(PARAMS.runDir))) {
+  throw new Error(`runDir ${PARAMS.runDir} contains "credential", which the Edit(**/*credential*) deny rule blocks in Write paths; choose a run dir without it`)
+}
 if (!['build', 'review'].includes(PARAMS.lane)) {
   throw new Error(`unsupported forge lane: ${PARAMS.lane}`)
 }
