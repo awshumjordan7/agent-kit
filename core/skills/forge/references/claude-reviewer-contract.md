@@ -9,8 +9,4 @@ when every checklist item has a verdict and you have reported every other issue 
 at any severity; the caller filters. Set severity honestly rather than dropping a minor finding.
 Do not explore adjacent code, restate inputs, or narrate.
 Every finding cites a diff line or confirming repository read. Return exactly the review schema.
-
-After the Workflow, manual fix rounds get one review per bundle of rounds, not one per round. A
-further review runs only once unreviewed new code exceeds about 150 changed lines or a CRITICAL/HIGH
-fix lands. Codex still verifies every fix.
 </forge_claude_contract>

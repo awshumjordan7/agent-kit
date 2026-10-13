@@ -56,8 +56,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
-  If ListAgents shows a session named `optimizing-workflow*`, also send it a one-line message pointing at the entry.
-  File first, message second.
+  In the main session, if ListAgents shows a session named `optimizing-workflow*`, also send it a one-line message pointing at the entry.
+  File first, message second. A sub-agent puts the entry's path in its final message instead.
 - **Run-dir files stay short.** `decisions.md` entries are at most three lines in the form
   `[step] decision - reason`, with evidence as a file path, never inline dumps.
 - **Name files without credential words.** Name your own run-dir, scratch and capture files without token, secret, credential, api key or passwd. The secret hook treats such names as credential files.

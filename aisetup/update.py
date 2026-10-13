@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aisetup import __version__
 from aisetup.compose import (
     CODEX_CONFIG_PATH,
     SETTINGS_PATH,
@@ -194,6 +195,22 @@ def check_repositories(profile: dict[str, Any]) -> list[RepoStatus]:
     return statuses
 
 
+def kit_version() -> str:
+    """Return the agent-kit git description, or __version__ when git cannot supply it."""
+    source_root = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source_root), "describe", "--tags", "--always"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return __version__
+    return result.stdout.strip() or __version__
+
+
 def core_head(profile: dict[str, Any]) -> str:
     return _git(Path(profile["layers"]["core"]["path"]), "rev-parse", "HEAD").stdout.strip()
 
@@ -237,3 +254,5 @@ def update_profile_commits(profile: dict[str, Any]) -> None:
     for name, path, _track in _layer_repositories(profile):
         layer_name = "core" if name == "agent-kit" else "overlay"
         profile["layers"][layer_name]["commit"] = _git(path, "rev-parse", "HEAD").stdout.strip()
+        if layer_name == "core":
+            profile["layers"][layer_name]["version"] = kit_version()

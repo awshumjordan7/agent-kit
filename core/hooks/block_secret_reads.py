@@ -2866,8 +2866,32 @@ PATH_FIELDS = {
     "Edit": ("file_path",),
     "Write": ("file_path",),
     "NotebookEdit": ("notebook_path",),
-    "Artifact": ("file_path",),
+    "Artifact": ("file_path", "file_paths", "files"),
 }
+
+
+def field_paths(field: str, value: object, tool_input: dict) -> list[str]:
+    """Return the local paths a path-tool field names, skipping any shape it cannot read.
+
+    `file_paths` is a list of paths. `files` maps published paths to sources: a
+    str, or a dict whose str "from" is the source. A dict source with "artifact"
+    is a server-side copy and a None value is a removal, so neither names a
+    local file. A non-empty str `root` prefixes the `files` sources.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    if field != "files" or not isinstance(value, dict):
+        return []
+    root = tool_input.get("root")
+    sources = []
+    for source in value.values():
+        if isinstance(source, dict):
+            source = None if "artifact" in source else source.get("from")
+        if isinstance(source, str):
+            sources.append(posixpath.join(root, source) if isinstance(root, str) and root else source)
+    return sources
 
 
 def path_verdict(file_path: str, new_file: bool = False) -> Hit | None:
@@ -2962,8 +2986,7 @@ def main() -> int:
                 return block_raw_dump("tool call", reason)
         hit, noun = None, "tool call"
         for field in PATH_FIELDS[tool_name]:
-            value = tool_input.get(field) or ""
-            if isinstance(value, str):
+            for value in field_paths(field, tool_input.get(field) or "", tool_input):
                 new_file = tool_name == "Write" and not os.path.lexists(
                     posixpath.join(cwd or "", posixpath.expanduser(value))
                 )
