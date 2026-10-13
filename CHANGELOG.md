@@ -4,6 +4,7 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
 ## 2026-10-13
+- core/skills/forge/references (cost-controls.md): mark the gpt-6-astra note as history so the model-name check, now canonical on 6.1, passes.
 - core/hooks (ask_register.py), core/scripts/handoff.py, core/settings.fragment.json, aisetup/profile.py: the ask register start hook and handoff check are removed; no project on this machine used them, and ask_register_projects is now ignored.
 - core/settings.fragment.json, core/CLAUDE.md, core/agents (shipper.md, worker.md), core/skills/ship-pr (SKILL.md), core/skills/forge/references (forge-core.js): attribution is turned off in settings, so the prose reminders to omit AI attribution are removed.
 - core/hooks (doctor_daily.py, feedback_inbox.py), core/settings.fragment.json, aisetup/profile.py, core/profile.default.json, docs/profile.md: the doctor_daily and feedback_inbox hooks are removed because updates are manual, and the auto_update profile key is now ignored.
