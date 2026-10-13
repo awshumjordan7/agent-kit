@@ -22,6 +22,8 @@
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
       "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(!**/.env.example)",
       "Read(**/.env.local)",
       "Read(**/.env.*.local)",
       "Read(**/.env.development)",
@@ -38,7 +40,14 @@
       "Read(**/.netrc)",
       "Read(**/.config/gh/hosts.yml)",
       "Read(**/.my.cnf)",
-      "Read(**/.pgpass)"
+      "Read(**/.pgpass)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Edit(!**/.env.example)",
+      "Edit(**/.envs/**)",
+      "Edit(**/.envrc)",
+      "Edit(**/.env_*)",
+      "Edit(**/*credential*)"
     ],
     "defaultMode": "bypassPermissions"
   },

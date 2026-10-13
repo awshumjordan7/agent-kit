@@ -50,8 +50,9 @@ Rules:
   captured real response saved under the run dir; cite its path.
 - No Playwright and no browser tools. If a task needs one, report it instead of doing it.
 - To run anything that needs the repo's env files (pytest against Postgres,
-  manage.py), follow ~/.claude/references/env-recipe.md: never `source` an env
-  file in a Bash command.
+  manage.py), follow ~/.claude/references/env-recipe.md: write
+  `<runDir>/with-env.sh` and run the command through it. The env-file hook blocks
+  any Bash command that names an env file, so never `source` one inline.
 
 Final message: a short structured report — changed paths, verification results,
 open questions. No narrative.

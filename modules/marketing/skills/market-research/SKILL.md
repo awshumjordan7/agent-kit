@@ -25,9 +25,7 @@ Before the first brief, resolve two absolute paths and pass both to every scout:
 - `<runDir>`: a new directory for this run. It holds only `STATE.md` and the briefs.
 
 A `<slug>`, used as the `{competitor}` or `{persona}` segment in every brief path, is lowercase letters,
-digits and hyphens made from the competitor or persona name. It never
-contains token, secret, credential or api-key, because the secret-read hook blocks paths that do; pick
-another word instead (for example `vault-vendor`, not `secrets-mgr`).
+digits and hyphens made from the competitor or persona name.
 
 ## Briefs
 

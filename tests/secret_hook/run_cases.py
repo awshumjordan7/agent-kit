@@ -3,7 +3,8 @@
 Usage: FIXTURES_ROOT=<dir> HOOK=<hook.py> CASES=<cases.json> python3 run_cases.py [--show ID,ID,...]
 HOOK defaults to the repo's core/hooks/block_secret_reads.py, FIXTURES_ROOT to fixtures/ here.
 Exits 1 when any case is BAD.
-Cases carry either "cmd" (a Bash command) or "tool" plus "input" (a path-tool payload).
+Cases carry "cmd" (a Bash command), "tool" plus "input" (another tool's payload), or "raw"
+(text sent to stdin unchanged, for malformed or unexpected payloads).
 Each fixture name in fixtures.json, as {name}, expands to its absolute path. The hook runs
 with cwd = the case's "cwd" fixture (default clean), and the payload carries that "cwd" unless
 "payload_cwd" is false. An optional "proc_cwd" (a fixture name, optionally "name/sub") moves only
@@ -44,6 +45,8 @@ def fill(value):
 
 
 def payload_for(case: dict, cwd: str) -> str:
+    if "raw" in case:
+        return case["raw"]
     if "tool" in case:
         p = {"tool_name": case["tool"], "tool_input": fill(case["input"])}
     else:

@@ -126,12 +126,8 @@ const CODEX_REVIEW_THREAD = `${PARAMS.runDir}/codex-review.thread`
 if (!PARAMS.runDir || !PARAMS.projectDir) {
   throw new Error('forge-core requires args.runDir and args.projectDir')
 }
-// Copy of SECRET_BARE_WORDS in core/hooks/block_secret_reads.py: its Write check blocks any path
-// containing one of these words, so a run dir named with one could never receive Forge's state files.
-const SECRET_PATH_WORDS = /\bcredentials?\b|\bsecrets?\b|\bpasswd\b|\bshadow\b|\btokens?\b|\bapi[_-]?keys?\b/i
-const secretRunDirWord = SECRET_PATH_WORDS.exec(String(PARAMS.runDir))
-if (secretRunDirWord) {
-  throw new Error(`runDir ${PARAMS.runDir} contains the word "${secretRunDirWord[0]}", which the block_secret_reads hook blocks in Write paths; choose a run dir without it`)
+if (/credential/i.test(String(PARAMS.runDir))) {
+  throw new Error(`runDir ${PARAMS.runDir} contains "credential", which the Edit(**/*credential*) deny rule blocks in Write paths; choose a run dir without it`)
 }
 if (!['build', 'review'].includes(PARAMS.lane)) {
   throw new Error(`unsupported forge lane: ${PARAMS.lane}`)
