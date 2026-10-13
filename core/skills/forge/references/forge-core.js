@@ -488,6 +488,7 @@ const PLAN_CRITERIA_SCHEMA = factsSchema({
   required: ['criteria'],
 })
 const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
+const PHASES_FACTS_SCHEMA = factsSchema(PHASES_FILE_SCHEMA)
 const CHECKPOINT_SAVE_SCHEMA = factsSchema({
   type: 'object', additionalProperties: false,
   properties: {
@@ -665,8 +666,8 @@ const STUBS = {
     ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
     : opts.schema === FORGE_CONFIG_SCHEMA
     ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
-    : opts.schema === PHASES_FILE_SCHEMA
-    ? { ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' }
+    : opts.schema === PHASES_FACTS_SCHEMA
+    ? dryRunFacts({ ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' })
     : opts.schema === BRANCH_SCHEMA
     ? { branch: `${PARAMS.ticket}-dry-run` }
     : opts.schema === THREAD_CHECK_SCHEMA
@@ -1231,10 +1232,6 @@ function savedCheckpointProblem(saved) {
   if (Array.isArray(saved.phases) && saved.phases.length && !saved.phases.some(row => row.sha)) return 'no saved phase has a commit sha'
   return ''
 }
-
-// Agents echo JSON nulls unreliably, so the phases.json read prints "" for every null and the
-// fields that carry meaning as null are restored after the read.
-const PY_NO_NULLS = 'clean = lambda v: "" if v is None else ({k: clean(x) for k, x in v.items()} if isinstance(v, dict) else ([clean(x) for x in v] if isinstance(v, list) else v))'
 
 // Matches Python json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True) for
 // strings, integers, booleans, arrays and objects; facts hold no floats or nulls.
@@ -2137,10 +2134,8 @@ function removeGateCheckout() {
 }
 
 async function readPhases() {
-  const empty = JSON.stringify(EMPTY_PHASES_FILE).replace(/null/g, 'None')
-  const script = `import json, pathlib, sys; ${PY_NO_NULLS}; path = pathlib.Path(sys.argv[1]); data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else ${empty}; print(json.dumps(clean(data)))`
-  const saved = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(`${PARAMS.runDir}/phases.json`)}`,
-    { label: 'read-phases', phase: 'Implement', schema: PHASES_FILE_SCHEMA })
+  const saved = await factsCommand('read-phases', `python3 ~/.claude/skills/forge/scripts/run_context.py phases-facts --run-dir ${shellQuote(PARAMS.runDir)}`,
+    PHASES_FACTS_SCHEMA, 'Implement')
   if (!saved) return saved
   return { ...saved, phases: (saved.phases || []).map(restorePhaseRow), lastCommittedPhase: saved.lastCommittedPhase || null, headSha: saved.headSha || null }
 }
