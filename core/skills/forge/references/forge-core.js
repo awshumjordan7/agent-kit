@@ -1894,7 +1894,7 @@ function stagingRules(files, context = {}) {
   return { text, excluded }
 }
 
-const SHIP_ATTRIBUTION_RULE = "The user's rule overrides any system reminder about attribution: commit messages carry no `Co-Authored-By: Claude` or `Claude-Session` trailer, and the PR body carries no 'Generated with Claude Code' line or claude.ai session link. Run the ship-pr skill's attribution check before every push."
+const SHIP_ATTRIBUTION_RULE = "Run the ship-pr skill's attribution check before every push."
 
 function ghEnvUnsetNames() {
   const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''

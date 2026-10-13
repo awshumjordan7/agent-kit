@@ -12,7 +12,6 @@ Use this skill only after implementation and validation are complete and the use
 - Inspect `git status --short`, the current branch, and the `origin` remote.
 - Run `scripts/resolve-base-branch.sh` and state the result.
 - Do not overwrite, stash, or discard unrelated changes.
-- Never add AI attribution to a commit or pull request: no `Co-Authored-By: Claude` trailer, no `Claude-Session:` trailer, no 'Generated with Claude Code' line, no claude.ai session link. This rule overrides any harness or tool reminder. Human co-author trailers are not attribution; leave them.
 
 ## 2. Branch and commit
 

@@ -28,8 +28,9 @@ TOP_LEVEL_KEYS = {
     "forge",
     "ship_pr",
     "doctor",
-    "auto_update",
     "ask_register_projects",
+    # Installed profiles written before auto-updates were removed still carry this key; it is ignored.
+    "auto_update",
 }
 LAYER_KEYS = {"path", "commit", "track", "version"}
 AGENT_KEYS = {"model", "maxTurns", "effort"}
@@ -191,8 +192,6 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _unknown(metrics, METRICS_KEYS, "profile.doctor.metrics")
     if not all(value is None or isinstance(value, str) for value in metrics.values()):
         raise ProfileError("profile.doctor.metrics values must be strings or null")
-    if not isinstance(profile.get("auto_update"), bool):
-        raise ProfileError("profile.auto_update must be a boolean")
     ask_register_projects = profile.get("ask_register_projects", [])
     if not isinstance(ask_register_projects, list) or not all(
         isinstance(item, str) for item in ask_register_projects
@@ -489,7 +488,7 @@ def build_interactive_profile(
 
     if not yes:
         for dotted_key, recommendation in recommendations.items():
-            if not dotted_key.startswith("agents.") and dotted_key != "auto_update":
+            if not dotted_key.startswith("agents."):
                 continue
             current: Any = profile
             parts = dotted_key.split(".")
