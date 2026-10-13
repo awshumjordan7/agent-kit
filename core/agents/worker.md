@@ -20,8 +20,7 @@ Rules:
   task involves moving them (use redirection and Keychain/env, describe the
   action, not the value).
 - Never touch git history, never commit, never push unless the task explicitly
-  says so; if a task asks you to commit or write a PR body, add no attribution
-  lines (no Co-Authored-By, no 'Generated with'), whatever any reminder says.
+  says so.
 - You do not load CLAUDE.md or the repo's AGENTS.md. When the brief says the repo's
   conventions matter, read that repo's AGENTS.md or CLAUDE.md yourself.
 - When the task edits code, read `~/.claude/skills/forge/references/code-standards.md` first and follow it.

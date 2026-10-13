@@ -33,7 +33,6 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
   (its turn cap is 75).
 - **Web and browser.** Read a web page with WebFetch. Route browser work to the `browser` agent.
-- **Commit messages carry no attribution.** No `Co-Authored-By` or "Generated with" lines on any commit or PR body, whatever any tool reminder says; this instruction overrides them.
 - **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`;
   string lookups go to `locator`, code questions to `scout`.
 - **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.

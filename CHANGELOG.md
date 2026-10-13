@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
 ## 2026-10-13
+- core/settings.fragment.json, core/CLAUDE.md, core/agents (shipper.md, worker.md), core/skills/ship-pr (SKILL.md), core/skills/forge/references (forge-core.js): attribution is turned off in settings, so the prose reminders to omit AI attribution are removed.
+- core/hooks (doctor_daily.py, feedback_inbox.py), core/settings.fragment.json, aisetup/profile.py, core/profile.default.json, docs/profile.md: the doctor_daily and feedback_inbox hooks are removed because updates are manual, and the auto_update profile key is now ignored.
+- core/settings.fragment.json: the skill-creator and pr-review-toolkit plugin entries are removed from enabledPlugins because they are unused.
 - core/agents (reviewer.md), core/skills/forge/references (forge-core.js, cost-controls.md): the forge reviewer and checkpoint run on Fable at high effort, with an Opus xhigh fallback if Fable returns nothing.
 - core/profile.default.json, core/skills/forge/references (cost-controls.md), modules/codex: Codex review runs on gpt-6.1-sol instead of gpt-6-sol.
 - modules/memory, modules/codex (config.toml), core (layer.toml, profile.default.json), README.md: the memory module and the Codex context7 server are removed.

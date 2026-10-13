@@ -65,7 +65,6 @@
         "exclude_bullets": []
       }
     },
-    "auto_update": false,
     "ask_register_projects": []
   },
   "recommendations": {
@@ -78,7 +77,6 @@
     "agents.locator.model": {"evidence": "7 of 7 runs used Haiku", "confidence": "high"},
     "agents.worker.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
     "agents.shipper.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
-    "agents.reviewer.model": {"evidence": "13 of 13 runs inherited the session model", "confidence": "high"},
-    "auto_update": {"evidence": "Automatic replacement during a live session is opt-in", "confidence": "n/a"}
+    "agents.reviewer.model": {"evidence": "13 of 13 runs inherited the session model", "confidence": "high"}
   }
 }
