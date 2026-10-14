@@ -147,11 +147,6 @@
   "enabledPlugins": {
     "security-guidance@claude-plugins-official": true
   },
-  "sandbox": {
-    "filesystem": {
-      "allowRead": ["**/.env.example"]
-    }
-  },
   "alwaysThinkingEnabled": true,
   "effortLevel": "xhigh",
   "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},

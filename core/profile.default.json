@@ -13,7 +13,8 @@
       "playwright": false,
       "github": false,
       "marketing": false,
-      "terminal": false
+      "terminal": false,
+      "sandbox": false
     },
     "answers": {},
     "agents": {

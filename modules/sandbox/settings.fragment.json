@@ -1,0 +1,38 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "enableWeakerNetworkIsolation": true,
+    "filesystem": {
+      "allowRead": ["/**/.env.example", "~/.config/gh/config.yml", "~/.config/gh/hosts.yml"],
+      "denyRead": ["/**/.env", "/**/.env.*", "/**/.envs/**", "/**/.envrc", "/**/.env_*"],
+      "allowWrite": ["~/Projects", "~/.claude", "~/.codex", "~/.ai-setup", "~/.cache", "~/.npm"]
+    },
+    "credentials": {
+      "files": [
+        {"path": "~/.ssh", "mode": "deny"},
+        {"path": "~/.aws", "mode": "deny"},
+        {"path": "~/.netrc", "mode": "deny"},
+        {"path": "~/.pgpass", "mode": "deny"},
+        {"path": "~/.config/gh", "mode": "deny"}
+      ]
+    },
+    "network": {
+      "allowUnixSockets": ["~/.docker/run/docker.sock"],
+      "allowedDomains": ["github.com", "*.github.com"],
+      "allowLocalBinding": true
+    },
+    "excludedCommands": [
+      "bash ~/.claude/scripts/git-net.sh *",
+      "bash ~/.claude/scripts/with-env.sh *",
+      "bash ~/.claude/skills/forge/scripts/gate.sh *",
+      "bash ~/.claude/skills/forge/scripts/codex-exec.sh *",
+      "bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh *",
+      "python3 ~/.claude/scripts/handoff.py *",
+      "python3 ~/.claude/scripts/drift_report.py *",
+      "python3 ~/Projects/personal/agent-kit/install.py *",
+      "python3 /Users/jfierro/Projects/personal/agent-kit/install.py *"
+    ]
+  }
+}

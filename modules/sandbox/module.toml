@@ -1,0 +1,8 @@
+name = "sandbox"
+description = "Claude Code sandbox for Bash on macOS"
+default = false
+depends = []
+requires = []
+platforms = ["darwin"]
+claude_md_fragment = "CLAUDE.fragment.md"
+settings_fragment = "settings.fragment.json"
