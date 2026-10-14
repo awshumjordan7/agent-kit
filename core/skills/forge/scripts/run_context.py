@@ -68,9 +68,20 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+def _changed_paths(before: list[str], after: list[str]) -> list[str]:
+    changed = set(before).symmetric_difference(after)
+    return sorted({entry[3:] for entry in changed})
+
+
+# The cap stays below the 600000 ms Bash timeout the calling agent uses, so the command reports
+# its own timeout instead of being killed by the tool.
+SMOKE_TIMEOUT_SECONDS = 570
+
+
 def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.log") -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / Path(log_name).name
+    before, _paths = _status(repo)
     try:
         completed = subprocess.run(
             command,
@@ -80,7 +91,7 @@ def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.lo
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=900,
+            timeout=SMOKE_TIMEOUT_SECONDS,
         )
         output = completed.stdout or ""
         exit_code = completed.returncode
@@ -91,15 +102,24 @@ def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.lo
             output = output.decode("utf-8", "replace")
         exit_code = 124
         timed_out = True
+    after, _paths = _status(repo)
+    changed_paths = _changed_paths(before, after)
     tail = "\n".join(output.splitlines()[-200:])
     log_path.write_text(tail + ("\n" if tail else ""), encoding="utf-8")
+    if changed_paths:
+        summary = f"the smoke changed the working tree: {', '.join(changed_paths)}"
+    elif exit_code == 0:
+        summary = "smoke command passed"
+    else:
+        summary = f"smoke command failed with exit {exit_code}"
     return {
-        "passed": exit_code == 0,
+        "passed": exit_code == 0 and not changed_paths,
         "exitCode": exit_code,
         "timedOut": timed_out,
         "command": command,
         "logPath": str(log_path),
-        "summary": "smoke command passed" if exit_code == 0 else f"smoke command failed with exit {exit_code}",
+        "summary": summary,
+        "changedPaths": changed_paths,
     }
 
 
@@ -643,11 +663,8 @@ _CONTEXT_DEFAULTS: dict = {
     "instructionFiles": [],
 }
 _CHECKPOINT_DEFAULTS: dict = {
-    "recommendation": "",
     "command": "",
-    "decidedBy": "",
     "implementFilesChanged": [],
-    "planSha256": "",
 }
 
 
@@ -688,7 +705,7 @@ def _smoke_script_problem(script_path: Path, context_path: Path) -> str:
     except (OSError, UnicodeDecodeError) as exc:
         return f"could not read {script_path}: {getattr(exc, 'strerror', None) or exc}"
     if stale:
-        return f"{script_path} is older than {context_path}; this run's reviewer did not write it"
+        return f"{script_path} is older than {context_path}; this run's checkpoint writer did not write it"
     try:
         ast.parse(source)
     except (SyntaxError, ValueError) as exc:
@@ -698,13 +715,10 @@ def _smoke_script_problem(script_path: Path, context_path: Path) -> str:
 
 def checkpoint_save(
     run_dir: Path,
-    recommendation: str,
-    decided_by: str,
     files: list[str],
     script: bool = False,
     command: str = "",
     branch: str | None = None,
-    plan_sha256: str = "",
 ) -> dict:
     path = run_dir / "checkpoint.json"
     context_path = run_dir / "context-gate.json"
@@ -731,13 +745,10 @@ def checkpoint_save(
     if error:
         return _checked(facts)
     document = {
-        "recommendation": recommendation,
         "command": command,
-        "decidedBy": decided_by,
         "implementFilesChanged": files,
         "branch": branch or "",
         "phases": phases,
-        "planSha256": plan_sha256,
         "context": _known(context_document, _CONTEXT_DEFAULTS),
     }
     try:
@@ -779,12 +790,10 @@ def phases_facts(run_dir: Path) -> dict:
     return _checked(_no_nulls(document))
 
 
-def checkpoint_facts(run_dir: Path, plan_file: Path) -> dict:
+def checkpoint_facts(run_dir: Path) -> dict:
     document, error = _read_json(run_dir / "checkpoint.json")
     facts = _known(document, _CHECKPOINT_DEFAULTS)
     facts["context"] = _known(document.get("context"), _CONTEXT_DEFAULTS)
-    saved_plan = facts["planSha256"]
-    facts["planChanged"] = bool(saved_plan) and saved_plan != (_sha256(plan_file) or "")
     facts["error"] = error
     # The facts schema requires branch and phases, so both are printed, empty when the file has
     # none; forge-core.js drops the empty ones after it checks the digest.
@@ -899,18 +908,12 @@ def main() -> None:
     plan_facts_parser.add_argument("--plan-file", type=Path, required=True)
     checkpoint_save_parser = subparsers.add_parser("checkpoint-save")
     checkpoint_save_parser.add_argument("--run-dir", type=Path, required=True)
-    checkpoint_save_parser.add_argument(
-        "--recommendation", choices=["ship", "smoke", "qa"], required=True
-    )
-    checkpoint_save_parser.add_argument("--decided-by", choices=["auto", "pending"], required=True)
     checkpoint_save_parser.add_argument("--script", action="store_true")
     checkpoint_save_parser.add_argument("--command", dest="save_command", default="")
     checkpoint_save_parser.add_argument("--branch")
-    checkpoint_save_parser.add_argument("--plan-sha256", default="")
     checkpoint_save_parser.add_argument("--files", nargs="*", default=[])
     checkpoint_facts_parser = subparsers.add_parser("checkpoint-facts")
     checkpoint_facts_parser.add_argument("--run-dir", type=Path, required=True)
-    checkpoint_facts_parser.add_argument("--plan-file", type=Path, required=True)
     phases_facts_parser = subparsers.add_parser("phases-facts")
     phases_facts_parser.add_argument("--run-dir", type=Path, required=True)
     phases_save_parser = subparsers.add_parser("phases-save")
@@ -956,16 +959,13 @@ def main() -> None:
     elif args.command == "checkpoint-save":
         result = checkpoint_save(
             args.run_dir,
-            args.recommendation,
-            args.decided_by,
             args.files,
             args.script,
             args.save_command,
             args.branch,
-            args.plan_sha256,
         )
     elif args.command == "checkpoint-facts":
-        result = checkpoint_facts(args.run_dir, args.plan_file)
+        result = checkpoint_facts(args.run_dir)
     elif args.command == "phases-facts":
         result = phases_facts(args.run_dir)
     elif args.command == "phases-save":

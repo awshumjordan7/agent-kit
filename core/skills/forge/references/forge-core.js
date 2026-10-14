@@ -6,7 +6,7 @@ export const meta = {
   phases: [
     { title: 'Implement', detail: 'Implementation by the configured provider' },
     { title: 'Gate', detail: 'Repository-native tests, lint, Semgrep, and migration checks' },
-    { title: 'Checkpoint', detail: 'Fresh pre-ship recommendation and decision' },
+    { title: 'Checkpoint', detail: 'Fresh pre-ship smoke check, run before the pause' },
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
     { title: 'Fix', detail: 'Capped decide-then-apply fix loop: fast checks (lint, typecheck, Semgrep) and scoped verification per review-fix round, then one full gate on the final state' },
@@ -22,6 +22,7 @@ const TIERS = {
     triage: { model: 'fable', effort: 'high' },
     decider: { model: 'opus', effort: 'high' },
     applier: { model: 'opus', effort: 'medium' },
+    checkpoint: { model: 'opus', effort: 'medium' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     ffReview: { model: 'sonnet', effort: 'low' },
@@ -36,6 +37,7 @@ const TIERS = {
     triage: { model: 'opus', effort: 'high' },
     decider: { model: 'opus', effort: 'high' },
     applier: { model: 'opus', effort: 'medium' },
+    checkpoint: { model: 'opus', effort: 'medium' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     ffReview: { model: 'sonnet', effort: 'low' },
@@ -50,7 +52,6 @@ const ROLE_MAP = {
   implementer: ['impl', 'quick-impl'],
   applier: ['quick-impl'],
   reviewer: ['review'],
-  checkpoint: ['review'],
 }
 
 const requestedLane = args.lane || 'build'
@@ -303,11 +304,8 @@ const GATE_SCHEMA = {
 }
 const CHECKPOINT_SCHEMA = {
   type: 'object', additionalProperties: false,
-  properties: {
-    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, scriptWritten: { type: 'boolean' }, reason: { type: 'string' }, summary: { type: 'string' },
-  },
-  required: ['recommendation', 'command', 'scriptWritten', 'reason', 'summary'],
+  properties: { command: { type: 'string' }, scriptWritten: { type: 'boolean' } },
+  required: ['command', 'scriptWritten'],
 }
 const PHASE_ROW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -338,21 +336,18 @@ const BRANCH_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { branch: { type: 'string' } }, required: ['branch'],
 }
-// The facts checkpoint-facts prints. An unreadable file gives empty values and an error, so the two
-// enums allow an empty string; decidedBy keeps user for a file an older forge wrote.
+// The facts checkpoint-facts prints. An unreadable file gives empty values and an error.
 const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa', ''] },
     command: { type: 'string' },
-    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user', ''] },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
-    planSha256: { type: 'string' }, planChanged: { type: 'boolean' }, error: { type: 'string' },
+    error: { type: 'string' },
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
-  required: ['recommendation', 'command', 'decidedBy', 'implementFilesChanged', 'context', 'planSha256', 'planChanged', 'error', 'branch', 'phases'],
+  required: ['command', 'implementFilesChanged', 'context', 'error', 'branch', 'phases'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -360,8 +355,9 @@ const SMOKE_RUN_SCHEMA = {
     passed: { type: 'boolean' },
     exitCode: { type: 'integer' }, timedOut: { type: 'boolean' },
     command: { type: 'string' }, logPath: { type: 'string' }, summary: { type: 'string' },
+    changedPaths: { type: 'array', items: { type: 'string' } },
   },
-  required: ['passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary'],
+  required: ['passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary', 'changedPaths'],
 }
 const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -527,9 +523,7 @@ const STUBS = {
   reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
     : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
-  checkpoint: () => PARAMS.dryRunFindings
-    ? { recommendation: 'smoke', command: 'true', scriptWritten: false, reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
-    : { recommendation: 'ship', command: '', scriptWritten: false, reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
+  checkpoint: () => ({ command: 'true', scriptWritten: false }),
   triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
@@ -554,7 +548,7 @@ const STUBS = {
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : opts.schema === CHECKPOINT_SAVE_SCHEMA
-    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: PARAMS.dryRunFindings ? 'true' : '', files: 1, error: '' })
+    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: 'true', files: 1, error: '' })
     : opts.schema === PHASES_SAVE_SCHEMA
     ? dryRunFacts({ written: true, phases: 0, error: '' })
     : opts.schema === LAUNCH_FACTS_SCHEMA
@@ -564,9 +558,9 @@ const STUBS = {
     : opts.schema === PLAN_FACTS_SCHEMA
     ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
-    ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
+    ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed', changedPaths: [] }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
-    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
+    ? dryRunFacts({ command: 'true', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, error: '', branch: '', phases: [] })
     : opts.schema === PHASES_FACTS_SCHEMA
     ? dryRunFacts({ ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' })
     : opts.schema === BRANCH_SCHEMA
@@ -620,8 +614,7 @@ function configuredStage(name) {
 }
 
 function tierProfile(tierRole) {
-  const profileRole = tierRole === 'checkpoint' ? 'reviewer' : tierRole
-  const fallback = TIERS[PARAMS.tier][profileRole]
+  const fallback = TIERS[PARAMS.tier][tierRole]
   const override = configuredRole(configRoleForTier(tierRole))
   if (!override || (override.provider && override.provider !== 'claude')) return fallback
   return { ...fallback, model: override.model || fallback.model, effort: override.effort || fallback.effort }
@@ -657,7 +650,7 @@ async function agentT(role, prompt, opts = {}) {
     }
     await decide(`${role} returned null on Fable; retrying once with Opus high.`)
     spawnCount++
-    const fallback = role === 'checkpoint' || role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
+    const fallback = role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
     result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
   }
   return result
@@ -921,7 +914,7 @@ function claudeTestPromptInstruction() {
 }
 
 function runBeforeReturningInstruction() {
-  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint determines whether further verification is useful.'
+  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint writes and runs a smoke check.'
   return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
@@ -981,7 +974,7 @@ function implement(phase = null) {
 }
 
 function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', logName = 'smoke.log') {
-  return agentT('changedFiles', `Start exactly this command with the Bash tool using run_in_background=true and timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Poll the background task with TaskOutput calls using timeout=30000 until it completes. Return its stdout JSON unchanged. The background command has its own 900-second cap and must be allowed to finish; do not rerun it.`,
+  return agentT('changedFiles', `Run exactly this command in the foreground with the Bash tool using timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Return its stdout JSON unchanged. The command has its own 570-second cap and must be allowed to finish; do not rerun it.`,
     { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
@@ -1045,11 +1038,11 @@ async function changedFiles() {
 function checkpointReview(context, gate, implement, phases = null) {
   return agentT('checkpoint', `${planRef()}
 
-You are the fresh pre-ship checkpoint reviewer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present.
+You are the fresh pre-ship smoke writer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present.
 
 RULES. You have a budget of 30 tool calls. Read a repository file only to confirm a file:line the diff touches, at most 120 lines per read, and do not explore adjacent code. Do not run git and do not search the web. Do not use the Agent, Edit or NotebookEdit tools. You may write exactly one file, ${PARAMS.runDir}/smoke.py, and only as described below; write nothing else.
 
-Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Otherwise set scriptWritten to false and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Unless recommendation is smoke, set command to an empty string, set scriptWritten to false and write no file. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+Give the one check that best proves the change works. Forge runs it from ${PARAMS.projectDir} right after you return, and it must finish within 540 seconds. The check may write only to temp folders or ${PARAMS.runDir}; forge fails a smoke that changes the repository working tree. When one command proves the change, set command to that exact command, keep it to one line under 300 characters, and set scriptWritten to false. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\`. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Never name a file that does not exist yet. When no runnable check can prove the change, return an empty command, set scriptWritten to false and write no file; a person then decides.
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
@@ -1059,29 +1052,18 @@ ${JSON.stringify(implement || {})}`,
   { label: 'checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_SCHEMA })
 }
 
-// A run that changed only docs, instruction text or config gets a fixed ship recommendation; the
-// attended run still stops at PRE_SHIP so the user reads the diff.
-function noCodeCheckpoint(context) {
-  const files = context.files || []
-  const instructions = (context.instructionFiles || []).length
-  return {
-    recommendation: 'ship', command: '', scriptWritten: false,
-    reason: 'no code files changed; checkpoint review skipped',
-    summary: `${files.length} changed files, none of them code (${instructions} instruction). The checkpoint agent did not run; read the diff before shipping.`,
-  }
+// A run that changed only docs, instruction text or config skips the smoke writer; an attended run
+// still stops at PRE_SHIP so the user reads the diff.
+function noCodeCheckpoint() {
+  return { command: '', scriptWritten: false }
 }
 
-function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
-  const smoke = checkpoint.recommendation === 'smoke'
-  const scriptWritten = smoke && checkpoint.scriptWritten === true
+function checkpointDocument(checkpoint, implement, context, state = {}) {
+  const scriptWritten = checkpoint.scriptWritten === true
   return {
-    recommendation: checkpoint.recommendation,
-    // checkpoint-save fills the command in when the reviewer wrote smoke.py.
-    command: smoke && !scriptWritten ? checkpoint.command : '',
+    // checkpoint-save fills the command in when the writer wrote smoke.py.
+    command: scriptWritten ? '' : checkpoint.command,
     scriptWritten,
-    reason: checkpoint.reason,
-    summary: checkpoint.summary,
-    decidedBy,
     implementFilesChanged: (implement && implement.filesChanged) || [],
     context,
     ...(state.phases ? { branch: state.branch || '', phases: state.phases } : {}),
@@ -1089,16 +1071,13 @@ function checkpointDocument(checkpoint, implement, context, decidedBy, state = {
 }
 
 // checkpoint.json is written by a command from small arguments and the context file the context
-// command saved. summary and reason stay out of it: they reach the user through the return value
-// and handoff.md.
+// command saved.
 async function writeCheckpoint(checkpoint) {
-  const smoke = checkpoint.recommendation === 'smoke'
-  const proof = !smoke ? '' : checkpoint.scriptWritten ? ' --script' : ` --command=${shellQuote(checkpoint.command)}`
+  const proof = checkpoint.scriptWritten ? ' --script' : checkpoint.command ? ` --command=${shellQuote(checkpoint.command)}` : ''
   const files = checkpoint.implementFilesChanged
   // --branch makes the command read phases.json, so it is passed only for a phased run.
   const branch = checkpoint.phases ? ` --branch ${shellQuote(checkpoint.branch || '')}` : ''
-  const planSha = PLAN_FACTS.sha256 ? ` --plan-sha256 ${shellQuote(PLAN_FACTS.sha256)}` : ''
-  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)} --recommendation ${checkpoint.recommendation} --decided-by ${checkpoint.decidedBy}${proof}${branch}${planSha} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
+  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)}${proof}${branch} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
     CHECKPOINT_SAVE_SCHEMA, 'Checkpoint')
   if (!saved) return false
   if (!saved.written) {
@@ -1117,7 +1096,6 @@ async function writeCheckpoint(checkpoint) {
 function savedCheckpointProblem(saved) {
   if (!saved) return 'the file could not be read'
   if (saved.error) return saved.error
-  if (!saved.recommendation) return 'recommendation is empty'
   if (contextFailed(saved.context)) return 'context.commandSucceeded is not true'
   if (!String(saved.context.diffPath || '').endsWith('.diff')) return `context.diffPath does not end in .diff (${saved.context.diffPath || 'empty'})`
   if (!Array.isArray(saved.implementFilesChanged)) return 'implementFilesChanged is not an array'
@@ -1148,16 +1126,30 @@ function dropEmptyOptionalKeys(checkpoint) {
   return kept
 }
 
-// checkpoint-facts fills a key the file lacks with an empty value, so a file an older forge wrote
-// still reads, and it hashes the plan file itself to report a plan edited since the checkpoint.
+// checkpoint-facts fills a key the file lacks with an empty value and drops keys it does not know,
+// so a file an older forge wrote still reads.
 async function readCheckpoint() {
   PARAMS.spawnCap += 1
-  const facts = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)}`,
+  const facts = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)}`,
     CHECKPOINT_FACTS_SCHEMA, 'Checkpoint')
   if (!facts) return null
   const saved = dropEmptyOptionalKeys(facts)
   if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
   return saved
+}
+
+// Returns true when the smoke passed. A failed smoke is recorded but does not set the status, so
+// an attended run can still pause at PRE_SHIP with the result.
+async function runCheckpointSmoke(state, command) {
+  state.checkpointSmokeCommand = command
+  state.checkpointSmoke = await smokeRun(command)
+  const smoke = state.checkpointSmoke
+  if (smoke && smoke.passed) {
+    await decide(`Pre-ship smoke passed: ${command}`)
+    return true
+  }
+  await decide(`Pre-ship smoke failed or timed out${smoke && smoke.summary ? ` (${smoke.summary})` : ''}; see ${(smoke && smoke.logPath) || `${PARAMS.runDir}/smoke.log`}.`)
+  return false
 }
 
 async function followCheckpoint(state, decision, command) {
@@ -1168,16 +1160,11 @@ async function followCheckpoint(state, decision, command) {
       await decide('Pre-ship checkpoint smoke command was empty; shipping was stopped.')
       return state
     }
-    state.checkpointSmokeCommand = command
-    state.checkpointSmoke = await smokeRun(command)
-    if (!state.checkpointSmoke || !state.checkpointSmoke.passed) {
-      state.status = 'BLOCKED'
-      await decide(`Pre-ship smoke failed or timed out; see ${(state.checkpointSmoke && state.checkpointSmoke.logPath) || `${PARAMS.runDir}/smoke.log`}.`)
-    }
+    if (!await runCheckpointSmoke(state, command)) state.status = 'BLOCKED'
     return state
   }
   state.status = 'PRE_SHIP'
-  await decide('Pre-ship checkpoint chose QA. Forge has no QA stage: the main session runs QA by hand with the overlay stage docs (references/stages/sandbox.md and qa_login.md), then relaunches with checkpointDecision ship or smoke.')
+  await decide('QA was requested. Forge has no QA stage: the main session runs QA by hand with the overlay stage docs (references/stages/sandbox.md and qa_login.md), then relaunches with checkpointDecision ship or smoke.')
   return state
 }
 
@@ -1843,7 +1830,7 @@ async function shipCheck(state, label) {
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
   const gateNotice = noGates
-    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint recommendation and command from ${PARAMS.runDir}/checkpoint.json.`
+    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint smoke command from ${PARAMS.runDir}/checkpoint.json (an empty command means no runnable check was written).`
     : ''
   const cleanup = usesGateCheckout()
     ? `Before anything else, run exactly this command once and continue regardless of its output: \`${gateCheckoutCleanupCommand()}\`. `
@@ -1855,13 +1842,13 @@ async function handoff(state, context) {
     },
   }
   if (state.status === 'PRE_SHIP') {
-    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
+    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the implementer's summary from this data: ${JSON.stringify((state.implement && state.implement.summary) || '')}. Include the checkpoint smoke command (empty means no runnable check was written; a command naming smoke.py means the writer wrote ${PARAMS.runDir}/smoke.py): ${JSON.stringify((state.checkpoint && state.checkpoint.command) || '')}. Include the smoke result (passed, exit code, log path; null means no smoke ran): ${JSON.stringify(smokeResult(state))}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
   return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
-When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and neither the run data nor checkpoint.json holds the checkpoint summary and reason after a relaunch. Carry its checkpoint summary and reason into What changed and why.
+When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and after a relaunch neither the run data nor checkpoint.json holds the implementer's summary. Carry its implementer summary and smoke result into What changed and why.
 ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Render the Manual QA checklist from the acceptance criteria below, one unchecked item per criterion.
@@ -1870,6 +1857,11 @@ Run data: ${JSON.stringify(handoffState)}
 End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
 Return the handoff path.`,
   { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
+}
+
+function smokeResult(state) {
+  const smoke = state.checkpointSmoke
+  return smoke ? { passed: smoke.passed === true, exitCode: smoke.exitCode, logPath: smoke.logPath } : null
 }
 
 function usesGateCheckout() {
@@ -2166,7 +2158,6 @@ async function fullLane() {
     const problem = savedCheckpointProblem(saved)
     if (problem) throw new Error(`checkpointDecision requires a valid ${PARAMS.runDir}/checkpoint.json: ${problem}`)
     initial.implement = { filesChanged: saved.implementFilesChanged }
-    if (saved.planChanged) await decide(`plan.md changed since the checkpoint (${PLAN}); the run continues on the saved checkpoint.`)
     // A checkpoint an older forge saved has a context without a brief file; later stages take a fresh one.
     initial.context = saved.context.briefPath ? saved.context : null
     if (saved.phases) {
@@ -2218,26 +2209,35 @@ async function fullLane() {
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      const result = state.context.noCode === true
-        ? noCodeCheckpoint(state.context)
+      const noCode = state.context.noCode === true
+      const result = noCode
+        ? noCodeCheckpoint()
         : await checkpointReview(state.context, state.gate, state.implement, state.phases || null)
       if (!result) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint agent returned null; shipping was stopped.')
         return state
       }
-      state.checkpoint = checkpointDocument(result, state.implement, state.context, PARAMS.auto ? 'auto' : 'pending', state)
+      state.checkpoint = checkpointDocument(result, state.implement, state.context, state)
       if (!await writeCheckpoint(state.checkpoint)) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint result could not be written; shipping was stopped.')
         return state
       }
-      await decide(`Pre-ship checkpoint: recommends ${state.checkpoint.recommendation} - ${state.checkpoint.reason}`)
-      if (!PARAMS.auto) {
+      if (noCode) {
+        await decide(`Pre-ship checkpoint: ${(state.context.files || []).length} changed files, none of them code; the smoke writer did not run.`)
+        if (!PARAMS.auto) state.status = 'PRE_SHIP'
+        return state
+      }
+      if (!state.checkpoint.command) {
+        await decide('Pre-ship checkpoint: the smoke writer found no runnable check; a person decides.')
         state.status = 'PRE_SHIP'
         return state
       }
-      return followCheckpoint(state, state.checkpoint.recommendation, state.checkpoint.command)
+      const passed = await runCheckpointSmoke(state, state.checkpoint.command)
+      if (!PARAMS.auto) state.status = 'PRE_SHIP'
+      else if (!passed) state.status = 'BLOCKED'
+      return state
     },
     async state => {
       phase('Ship')
@@ -2438,12 +2438,10 @@ return {
   handoffPath: (ho && ho.handoffPath) || '',
   prUrl: (state.ship && state.ship.prUrl) || '',
   unstaged: state.unstaged || [],
-  recommendation: (state.checkpoint && state.checkpoint.recommendation) || '',
   command: (state.checkpoint && state.checkpoint.command) || '',
-  reason: (state.checkpoint && state.checkpoint.reason) || '',
-  summary: (state.checkpoint && state.checkpoint.summary) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
   planSha256: PLAN_FACTS.sha256,
+  ...(state.checkpointSmoke ? { smoke: smokeResult(state) } : {}),
   ffReview: state.ffReview || null,
   phases: PHASED ? (state.phases || []) : undefined,
   decisions,
