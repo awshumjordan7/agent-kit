@@ -29,7 +29,6 @@ const TIERS = {
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
     changedFiles: { model: 'haiku', effort: 'low' },
-    readConfig: { model: 'haiku', effort: 'low' },
   },
   opus: {
     implementer: { model: 'opus', effort: 'high' },
@@ -44,7 +43,6 @@ const TIERS = {
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
     changedFiles: { model: 'haiku', effort: 'low' },
-    readConfig: { model: 'haiku', effort: 'low' },
   },
 }
 
@@ -122,6 +120,9 @@ if (!['build', 'review'].includes(PARAMS.lane)) {
 if (PARAMS.checkpointDecision && !['ship', 'smoke', 'qa'].includes(PARAMS.checkpointDecision)) {
   throw new Error(`unsupported checkpointDecision: ${PARAMS.checkpointDecision}; allowed values are ship, smoke, qa`)
 }
+if (!PARAMS.forgeConfig) {
+  throw new Error('forge requires the forgeConfig launch arg: read ~/.claude/skills/forge/forge.config.json and pass its contents as forgeConfig')
+}
 
 // Spawns one phase adds: implement, commit, phases.json write, gate.
 const PHASE_SPAWNS = 4
@@ -166,20 +167,6 @@ const IMPL_RESULT = {
     progressFile: { type: ['string', 'null'] },
   },
   required: ['filesChanged', 'testsWritten', 'summary', 'unverified', 'error', 'status'],
-}
-const FORGE_CONFIG_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    roles: { type: 'object' },
-    stages: { type: 'object' },
-    thresholds: { type: 'object' },
-    lenses: { type: 'object' },
-    ticketUrl: { type: 'string' },
-    repos: { type: 'object' },
-    ghEnvUnset: { type: 'object' },
-    gate: { type: 'object' },
-  },
-  required: ['roles', 'stages', 'thresholds', 'lenses', 'ticketUrl', 'repos'],
 }
 const CODEX_REVIEW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -429,13 +416,9 @@ const PLAN_FACTS_SCHEMA = factsSchema({
     },
     plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
     bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
+    criteria: { type: 'array', items: { type: 'string' } },
   },
-  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error'],
-})
-const PLAN_CRITERIA_SCHEMA = factsSchema({
-  type: 'object', additionalProperties: false,
-  properties: { criteria: { type: 'array', items: { type: 'string' } } },
-  required: ['criteria'],
+  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria'],
 })
 const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
 const PHASES_FACTS_SCHEMA = factsSchema(PHASES_FILE_SCHEMA)
@@ -579,15 +562,11 @@ const STUBS = {
     : opts.schema === SHIP_FACTS_SCHEMA
     ? dryRunFacts({ ok: true, dirty: [], excluded: [] })
     : opts.schema === PLAN_FACTS_SCHEMA
-    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '' })
-    : opts.schema === PLAN_CRITERIA_SCHEMA
-    ? dryRunFacts({ criteria: [] })
+    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
     ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
-    : opts.schema === FORGE_CONFIG_SCHEMA
-    ? { roles: {}, stages: { ff_review: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
     : opts.schema === PHASES_FACTS_SCHEMA
     ? dryRunFacts({ ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' })
     : opts.schema === BRANCH_SCHEMA
@@ -595,7 +574,6 @@ const STUBS = {
     : opts.schema === THREAD_CHECK_SCHEMA
     ? { threadExists: true }
     : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }),
-  readConfig: () => ({ roles: {}, stages: { ff_review: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   codexWrap: opts => {
     if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
@@ -818,17 +796,11 @@ async function loadPlanFacts() {
     await decide(`Plan facts could not be read from ${PARAMS.planPath} (${(facts && facts.error) || 'no checked result'}); the review lane continues without them.`)
     return
   }
-  PLAN_FACTS = { ...facts, criteria: [] }
-  if (PARAMS.criteria.length) return
-  PARAMS.spawnCap += 1
-  const read = await factsCommand('read-plan-criteria', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile} --criteria-only`, PLAN_CRITERIA_SCHEMA, 'Implement')
-  if (read) PLAN_FACTS.criteria = read.criteria
-  else await decide(`Acceptance criteria could not be read from ${PARAMS.planPath}; the run continues without them.`)
+  PLAN_FACTS = facts
 }
 
 async function loadForgeConfig() {
-  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, repos, ghEnvUnset, and gate. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
-    { label: 'read-config', phase: 'Implement', schema: FORGE_CONFIG_SCHEMA })
+  const result = FORGE_CONFIG
   const defaults = {
     roles: {}, stages: { ff_review: false },
     thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES,

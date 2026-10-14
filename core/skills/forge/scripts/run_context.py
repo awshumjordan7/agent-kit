@@ -289,10 +289,8 @@ def _read_plan(plan_file: Path) -> tuple[bytes, str, str]:
         return raw, "", f"could not read the plan at {plan_file}: {exc}"
 
 
-def plan_facts(plan_file: Path, criteria_only: bool = False) -> dict:
+def plan_facts(plan_file: Path) -> dict:
     raw, plan, error = _read_plan(plan_file)
-    if criteria_only:
-        return _checked({"criteria": _criteria(_section(plan, "Acceptance Criteria"))})
     phases: list[dict] = []
     if not error:
         phases, error = _plan_phases(plan)
@@ -306,6 +304,7 @@ def plan_facts(plan_file: Path, criteria_only: bool = False) -> dict:
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest() if raw else "",
             "error": error,
+            "criteria": _criteria(_section(plan, "Acceptance Criteria")),
         }
     )
 
@@ -898,7 +897,6 @@ def main() -> None:
     smoke_run_parser.add_argument("--log-name", default="smoke.log")
     plan_facts_parser = subparsers.add_parser("plan-facts")
     plan_facts_parser.add_argument("--plan-file", type=Path, required=True)
-    plan_facts_parser.add_argument("--criteria-only", action="store_true")
     checkpoint_save_parser = subparsers.add_parser("checkpoint-save")
     checkpoint_save_parser.add_argument("--run-dir", type=Path, required=True)
     checkpoint_save_parser.add_argument(
@@ -954,7 +952,7 @@ def main() -> None:
     elif args.command == "smoke-run":
         result = smoke_run(args.run_dir, args.repo, args.smoke_command, args.log_name)
     elif args.command == "plan-facts":
-        result = plan_facts(args.plan_file, args.criteria_only)
+        result = plan_facts(args.plan_file)
     elif args.command == "checkpoint-save":
         result = checkpoint_save(
             args.run_dir,
