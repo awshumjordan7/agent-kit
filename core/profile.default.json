@@ -28,7 +28,7 @@
         "review": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"},
         "plan-review": {"provider": "claude", "model": "opus", "effort": "xhigh"}
       },
-      "stages": {"sandbox": false, "ff_review": false, "qa_login": false},
+      "stages": {"ff_review": false},
       "thresholds": {"quickReviewThreshold": 8},
       "lenses": {
         "security": "(auth|permission|identity|rbac|token|session)",

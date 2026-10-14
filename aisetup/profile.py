@@ -48,6 +48,7 @@ FORGE_KEYS = {
     "ghEnvUnset",
 }
 ROLE_KEYS = {"provider", "model", "effort"}
+# Forge ignores sandbox and qa_login; they stay valid so older profiles still load.
 STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}
 DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
 CODEX_DOCTOR_KEYS = {"agents_md", "include_sections", "exclude_sections", "exclude_bullets"}

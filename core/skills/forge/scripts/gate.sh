@@ -20,7 +20,6 @@ only_stages=''
 only_given=false
 commit_message=''
 base=''
-push=false
 sha=''
 no_stages=false
 print_mode=false
@@ -61,10 +60,6 @@ while (($#)); do
       skip_tests=true
       shift
       ;;
-    --push)
-      push=true
-      shift
-      ;;
     --no-stages)
       no_stages=true
       shift
@@ -77,7 +72,7 @@ while (($#)); do
   esac
 done
 
-all_stages='lint,typecheck,migrations,tests,semgrep,parity'
+all_stages='lint,typecheck,migrations,tests,semgrep'
 if $only_given; then
   [[ -n $only_stages ]] || die 'gate.sh: --only requires at least one stage'
   IFS=',' read -r -a requested_stages <<<"$only_stages"
@@ -112,9 +107,6 @@ else
 fi
 if [[ -n $commit_message && $files_given != true ]]; then
   die 'gate.sh: --commit requires --files'
-fi
-if [[ $push == true && -z $commit_message ]]; then
-  die 'gate.sh: --push requires --commit'
 fi
 if [[ -n $sha ]]; then
   [[ $sha =~ ^[0-9a-fA-F]{7,64}$ ]] || die 'gate.sh: --sha must be a commit id'
@@ -291,12 +283,7 @@ if mode == "none":
         "migrations": "",
         "testPathRules": [],
         "semgrep": False,
-        "parity": [],
     }
-parity = entry.get("parity", [])
-if not isinstance(parity, list) or not all(isinstance(command, str) for command in parity):
-    print(f"gate.sh: invalid parity config for repository: {repo}", file=sys.stderr)
-    raise SystemExit(2)
 env = entry.get("env", {})
 if not isinstance(env, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
     print(f"gate.sh: invalid env config for repository: {repo}", file=sys.stderr)
@@ -698,38 +685,6 @@ run_tool() {
   printf '%s\t%s\t%s\t%s\n' "$tool" "$result" "$timeout_seconds" "$log" >>"$results_file"
 }
 
-run_parity() {
-  local index=$1
-  local command=$2
-  local timeout_seconds
-  local log="$run_dir/gate-$label-parity-$index.log"
-  local result
-  local summary_log="$state_prefix-parity-$index-summary.log"
-  timeout_seconds=$(timeout_for parity) || die 'gate.sh: cannot read parity timeout'
-  record_command "$command"
-  local wrapped
-  wrapped=$(wrap_repo_command "$command")
-  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped") >"$log" 2>&1
-  result=$?
-  if ((result == 0)); then
-    printf '%s\t%s\t%s\t%s\n' parity 0 "$timeout_seconds" "$log" >>"$results_file"
-    return
-  fi
-  python3 - "$command" "$result" "$log" "$summary_log" <<'PY'
-import sys
-
-command, status, log_path, summary_path = sys.argv[1:]
-last = ""
-with open(log_path, encoding="utf-8", errors="replace") as handle:
-    for line in handle:
-        if line.strip():
-            last = line.strip()
-with open(summary_path, "w", encoding="utf-8") as handle:
-    handle.write(f"{command} (exit {status}): {last[:160]}\n")
-PY
-  printf '%s\t%s\t%s\t%s\n' parity "$result" "$timeout_seconds" "$summary_log" >>"$results_file"
-}
-
 attempt_tool() {
   local tool=$1
   local command=$2
@@ -834,22 +789,6 @@ if ((${#files[@]})); then
   done
 fi
 tests_command=${tests_command//<create-db>/$create_db_arg}
-parity_commands_file="$state_prefix-parity-commands.nul"
-python3 - "$entry_file" "$parity_commands_file" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    commands = json.load(handle).get("parity", [])
-with open(sys.argv[2], "wb") as handle:
-    for command in commands:
-        handle.write(command.encode("utf-8") + b"\0")
-PY
-(( $? == 0 )) || die 'gate.sh: cannot read parity config'
-parity_commands=()
-while IFS= read -r -d '' command; do
-  parity_commands+=("$command")
-done <"$parity_commands_file"
 semgrep_enabled=$(config_value semgrep) || die 'gate.sh: cannot read semgrep config'
 semgrep_config=$(config_value semgrepConfig auto) || die 'gate.sh: cannot read Semgrep config'
 diff_exclude=$(config_value diffExclude '[]') || die 'gate.sh: cannot read diff exclude config'
@@ -1306,17 +1245,9 @@ PY
   fi
 fi
 
-parity_index=0
-if stage_enabled parity && ((${#parity_commands[@]})); then
-  for parity_command in "${parity_commands[@]}"; do
-    ((parity_index += 1))
-    run_parity "$parity_index" "$parity_command"
-  done
-fi
-
 result_path="$run_dir/gate-$label.json"
 diff_path="$run_dir/gate-$label.diff"
-python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$push" "$only_stages" "$gate_checkout" "$reuse_file" "$excluded_files_file" <<'PY'
+python3 - "$repo" "$files_given" "$files_file" "$commands_file" "$results_file" "$result_path" "$diff_path" "$diff_exclude" "$commit_message" "$only_stages" "$gate_checkout" "$reuse_file" "$excluded_files_file" <<'PY'
 import fnmatch
 import json
 import os
@@ -1334,18 +1265,15 @@ import sys
     diff_path,
     diff_exclude_raw,
     commit_message,
-    push_raw,
     only_stages_raw,
     gate_checkout,
     reuse_path,
     excluded_files_path,
 ) = sys.argv[1:]
 files_given = files_given_raw == "true"
-push = push_raw == "true"
 diff_exclude = json.loads(diff_exclude_raw)
 if not isinstance(diff_exclude, list):
     diff_exclude = []
-DIFF_INLINE_CAP = 40000
 with open(files_path, "rb") as handle:
     files = [item.decode("utf-8", "surrogateescape") for item in handle.read().split(b"\0") if item]
 with open(commands_path, "rb") as handle:
@@ -1411,7 +1339,7 @@ with open(results_path, encoding="utf-8") as handle:
         file, line = failure_location(tool, log_text)
         failures.append({"tool": tool, "summary": summary, "file": file, "line": line})
 
-all_stages = ["lint", "typecheck", "migrations", "tests", "semgrep", "parity"]
+all_stages = ["lint", "typecheck", "migrations", "tests", "semgrep"]
 requested_stages = set(filter(None, only_stages_raw.split(",")))
 skipped = [stage for stage in all_stages if requested_stages and stage not in requested_stages]
 result = {
@@ -1436,9 +1364,6 @@ with open(diff_path, "rb") as handle:
     diff = handle.read()
 result["diffPath"] = diff_path
 result["diffBytes"] = len(diff)
-diff_text = diff.decode("utf-8", errors="replace")
-result["diff"] = diff_text[:DIFF_INLINE_CAP]
-result["diffTruncated"] = len(diff_text) > DIFF_INLINE_CAP
 if reuse_path:
     with open(reuse_path, encoding="utf-8") as handle:
         result.update(json.load(handle))
@@ -1446,7 +1371,7 @@ if reuse_path:
 commit_error = ""
 if not failures and commit_message:
     dropped = []
-    result["commit"] = {"sha": None, "pushed": False, "error": "", "dropped": dropped}
+    result["commit"] = {"sha": None, "error": "", "dropped": dropped}
 
     def command_error(prefix, completed):
         detail = " ".join((completed.stderr or completed.stdout or "").split())
@@ -1602,20 +1527,8 @@ if not failures and commit_message:
         else:
             sha = resolved.stdout.strip()
 
-    if not commit_error and push:
-        pushed = subprocess.run(
-            ["git", "-C", repo, "push", "-u", "origin", "HEAD"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        if pushed.returncode != 0:
-            commit_error = command_error("push failed", pushed)
-
     result["commit"] = {
         "sha": None if commit_error else sha,
-        "pushed": push and not commit_error,
         "error": commit_error,
         "dropped": dropped,
     }

@@ -2,13 +2,12 @@
 
 export const meta = {
   name: 'forge-core',
-  description: 'Forge orchestration: implement, gate, ship, sandbox, independent review, bounded fixes, and handoff',
+  description: 'Forge orchestration: implement, gate, ship, independent review, bounded fixes, and handoff',
   phases: [
     { title: 'Implement', detail: 'Implementation by the configured provider' },
     { title: 'Gate', detail: 'Repository-native tests, lint, Semgrep, and migration checks' },
-    { title: 'Checkpoint', detail: 'Fresh pre-ship recommendation and decision' },
+    { title: 'Checkpoint', detail: 'Fresh pre-ship smoke check, run before the pause' },
     { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
-    { title: 'Sandbox', detail: 'Platform sandbox tests, signed-out and sign-in check, and criterion-driven smoke checks' },
     { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
     { title: 'Fix', detail: 'Capped decide-then-apply fix loop: fast checks (lint, typecheck, Semgrep) and scoped verification per review-fix round, then one full gate on the final state' },
     { title: 'Bot Review', detail: 'Optional review-bot pass on the final PR head, triaged for the handoff only' },
@@ -23,18 +22,14 @@ const TIERS = {
     triage: { model: 'fable', effort: 'high' },
     decider: { model: 'opus', effort: 'high' },
     applier: { model: 'opus', effort: 'medium' },
+    checkpoint: { model: 'opus', effort: 'medium' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
-    sandboxQA: { model: 'sonnet', effort: 'medium' },
     ffReview: { model: 'sonnet', effort: 'low' },
-    qaDraft: { model: 'sonnet', effort: 'low' },
-    smoke: { model: 'sonnet', effort: 'medium' },
-    trim: { model: 'haiku', effort: 'low' },
     lens: { model: 'sonnet', effort: 'high' },
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
     changedFiles: { model: 'haiku', effort: 'low' },
-    readConfig: { model: 'haiku', effort: 'low' },
   },
   opus: {
     implementer: { model: 'opus', effort: 'high' },
@@ -42,18 +37,14 @@ const TIERS = {
     triage: { model: 'opus', effort: 'high' },
     decider: { model: 'opus', effort: 'high' },
     applier: { model: 'opus', effort: 'medium' },
+    checkpoint: { model: 'opus', effort: 'medium' },
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
-    sandboxQA: { model: 'sonnet', effort: 'medium' },
     ffReview: { model: 'sonnet', effort: 'low' },
-    qaDraft: { model: 'sonnet', effort: 'low' },
-    smoke: { model: 'sonnet', effort: 'medium' },
-    trim: { model: 'haiku', effort: 'low' },
     lens: { model: 'sonnet', effort: 'high' },
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
     changedFiles: { model: 'haiku', effort: 'low' },
-    readConfig: { model: 'haiku', effort: 'low' },
   },
 }
 
@@ -61,7 +52,6 @@ const ROLE_MAP = {
   implementer: ['impl', 'quick-impl'],
   applier: ['quick-impl'],
   reviewer: ['review'],
-  checkpoint: ['review'],
 }
 
 const requestedLane = args.lane || 'build'
@@ -78,10 +68,6 @@ const PARAMS = {
     ? args.criteria
     : typeof args.criteria === 'string' ? args.criteria.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : [],
   tier: TIERS[args.tier] ? args.tier : 'opus',
-  tierSandbox: args.tier_sandbox || 'sandbox',
-  // Reuse a fork another run built (companion repo run): {sandboxId, loginUrl, previewUrl, credentialsFile?}.
-  // Changed files are uploaded into it instead of creating a second sandbox.
-  existingSandbox: args.existingSandbox && typeof args.existingSandbox.sandboxId === 'string' ? args.existingSandbox : null,
   noShip: args.noShip === true,
   spawnCap: Number.isInteger(args.spawnCap) && args.spawnCap >= 1 ? args.spawnCap : 32,
   rulings: Array.isArray(args.rulings) ? args.rulings : null,
@@ -135,6 +121,9 @@ if (!['build', 'review'].includes(PARAMS.lane)) {
 if (PARAMS.checkpointDecision && !['ship', 'smoke', 'qa'].includes(PARAMS.checkpointDecision)) {
   throw new Error(`unsupported checkpointDecision: ${PARAMS.checkpointDecision}; allowed values are ship, smoke, qa`)
 }
+if (!PARAMS.forgeConfig) {
+  throw new Error('forge requires the forgeConfig launch arg: read ~/.claude/skills/forge/forge.config.json and pass its contents as forgeConfig')
+}
 
 // Spawns one phase adds: implement, commit, phases.json write, gate.
 const PHASE_SPAWNS = 4
@@ -158,13 +147,6 @@ const REVIEW_SCHEMA = {
     verdict: { type: 'string', enum: ['approve', 'request_changes'] },
     score: { type: 'integer', minimum: 1, maximum: 5 },
     findings: { type: 'array', items: FINDING },
-    disputes: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        properties: { file: { type: 'string' }, line: { type: 'integer' }, reason: { type: 'string' } },
-        required: ['file', 'line', 'reason'],
-      },
-    },
   },
   required: ['verdict', 'score', 'findings'],
 }
@@ -179,20 +161,6 @@ const IMPL_RESULT = {
     progressFile: { type: ['string', 'null'] },
   },
   required: ['filesChanged', 'testsWritten', 'summary', 'unverified', 'error', 'status'],
-}
-const FORGE_CONFIG_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    roles: { type: 'object' },
-    stages: { type: 'object' },
-    thresholds: { type: 'object' },
-    lenses: { type: 'object' },
-    ticketUrl: { type: 'string' },
-    repos: { type: 'object' },
-    ghEnvUnset: { type: 'object' },
-    gate: { type: 'object' },
-  },
-  required: ['roles', 'stages', 'thresholds', 'lenses', 'ticketUrl', 'repos'],
 }
 const CODEX_REVIEW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -311,8 +279,7 @@ const GATE_SCHEMA = {
     },
     skipped: { type: 'array', items: { type: 'string' } },
     commands: { type: 'array', items: { type: 'string' } },
-    files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
-    diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
+    files: { type: 'array', items: { type: 'string' } }, diffExcluded: { type: 'array', items: { type: 'string' } },
     excludedFiles: { type: 'array', items: { type: 'string' } },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' },
     head: { type: 'string' }, baseSha: { type: 'string' }, diffSha256: { type: 'string' },
@@ -321,7 +288,7 @@ const GATE_SCHEMA = {
     commit: {
       anyOf: [
         { type: 'null' },
-        { type: 'object', additionalProperties: false, properties: { sha: { anyOf: [{ type: 'string' }, { type: 'null' }] }, pushed: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'array', items: { type: 'string' } } }, required: ['sha', 'pushed', 'error', 'dropped'] },
+        { type: 'object', additionalProperties: false, properties: { sha: { anyOf: [{ type: 'string' }, { type: 'null' }] }, error: { type: 'string' }, dropped: { type: 'array', items: { type: 'string' } } }, required: ['sha', 'error', 'dropped'] },
       ],
     },
   },
@@ -329,11 +296,8 @@ const GATE_SCHEMA = {
 }
 const CHECKPOINT_SCHEMA = {
   type: 'object', additionalProperties: false,
-  properties: {
-    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa'] },
-    command: { type: 'string' }, scriptWritten: { type: 'boolean' }, reason: { type: 'string' }, summary: { type: 'string' },
-  },
-  required: ['recommendation', 'command', 'scriptWritten', 'reason', 'summary'],
+  properties: { command: { type: 'string' }, scriptWritten: { type: 'boolean' } },
+  required: ['command', 'scriptWritten'],
 }
 const PHASE_ROW_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -364,21 +328,18 @@ const BRANCH_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { branch: { type: 'string' } }, required: ['branch'],
 }
-// The facts checkpoint-facts prints. An unreadable file gives empty values and an error, so the two
-// enums allow an empty string; decidedBy keeps user for a file an older forge wrote.
+// The facts checkpoint-facts prints. An unreadable file gives empty values and an error.
 const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    recommendation: { type: 'string', enum: ['ship', 'smoke', 'qa', ''] },
     command: { type: 'string' },
-    decidedBy: { type: 'string', enum: ['pending', 'auto', 'user', ''] },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
-    planSha256: { type: 'string' }, planChanged: { type: 'boolean' }, error: { type: 'string' },
+    error: { type: 'string' },
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
-  required: ['recommendation', 'command', 'decidedBy', 'implementFilesChanged', 'context', 'planSha256', 'planChanged', 'error', 'branch', 'phases'],
+  required: ['command', 'implementFilesChanged', 'context', 'error', 'branch', 'phases'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -386,8 +347,9 @@ const SMOKE_RUN_SCHEMA = {
     passed: { type: 'boolean' },
     exitCode: { type: 'integer' }, timedOut: { type: 'boolean' },
     command: { type: 'string' }, logPath: { type: 'string' }, summary: { type: 'string' },
+    changedPaths: { type: 'array', items: { type: 'string' } },
   },
-  required: ['passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary'],
+  required: ['passed', 'exitCode', 'timedOut', 'command', 'logPath', 'summary', 'changedPaths'],
 }
 const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -404,23 +366,6 @@ const SHIP_SCHEMA = {
   },
   required: ['branch', 'prUrl', 'prNumber', 'repo'],
 }
-const QA_DRAFT_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    path: { type: 'string' }, items: { type: 'integer' }, opened: { type: 'boolean' }, error: { type: 'string' },
-  },
-  required: ['path', 'items', 'opened', 'error'],
-}
-const SANDBOX_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    skipped: { type: 'boolean' }, reason: { type: 'string' }, sandboxId: { type: 'string' },
-    loginUrl: { type: 'string' }, previewUrl: { type: 'string' }, testsPassed: { type: 'boolean' }, summary: { type: 'string' },
-    seedRecipe: { type: 'string' },
-    mode: { type: 'string', enum: ['skip', 'git-fetch', 'hot-patch', 're-fork'] },
-  },
-  required: ['skipped', 'reason', 'sandboxId', 'loginUrl', 'previewUrl', 'testsPassed', 'summary', 'seedRecipe'],
-}
 const FF_REVIEW_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
@@ -429,22 +374,6 @@ const FF_REVIEW_SCHEMA = {
     commentsPath: { type: 'string' }, summary: { type: 'string' },
   },
   required: ['skipped', 'reason', 'prNumber', 'repo', 'headSha', 'exitCode', 'commentCount', 'commentsPath', 'summary'],
-}
-const SIGN_IN_CRITERION = 'Signed-out check: in a fresh browser context with no stored session, open the preview URL and confirm the login page renders with no authenticated content. Fresh sign-in: open the login URL in that same context and confirm the authenticated landing page loads.'
-const SMOKE_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    results: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        properties: {
-          criterion: { type: 'string' }, passed: { type: 'boolean' }, note: { type: 'string' }, screenshot: { type: 'string' },
-        },
-        required: ['criterion', 'passed', 'note', 'screenshot'],
-      },
-    },
-  },
-  required: ['results'],
 }
 const ACK_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -475,13 +404,9 @@ const PLAN_FACTS_SCHEMA = factsSchema({
     },
     plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
     bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
+    criteria: { type: 'array', items: { type: 'string' } },
   },
-  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error'],
-})
-const PLAN_CRITERIA_SCHEMA = factsSchema({
-  type: 'object', additionalProperties: false,
-  properties: { criteria: { type: 'array', items: { type: 'string' } } },
-  required: ['criteria'],
+  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria'],
 })
 const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
 const PHASES_FACTS_SCHEMA = factsSchema(PHASES_FILE_SCHEMA)
@@ -548,25 +473,6 @@ function sandboxAllowed(stageOn, repo, repos) {
   return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(basename)
 }
 
-function sandboxRoots() {
-  const repos = (FORGE_CONFIG && FORGE_CONFIG.repos) || {}
-  return {
-    frontend: `/app/${repos.frontend || 'frontend'}`,
-    backend: `/app/${repos.backend || 'backend'}`,
-  }
-}
-
-function backendPrefix(root) {
-  return `cd ${root} && { [ -f /app/env.sh ] && . /app/env.sh || true; }`
-}
-
-function sandboxCheck(isUi, testPaths = ['tests/unit']) {
-  const roots = sandboxRoots()
-  return isUi
-    ? `cd ${roots.frontend} && yarn tsc --noEmit`
-    : `${backendPrefix(roots.backend)} && uv run pytest ${testPaths.join(' ')} -x -q`
-}
-
 function configuredLenses() {
   const configured = (FORGE_CONFIG && FORGE_CONFIG.lenses) || DEFAULT_LENSES
   return LENSES.map(lens => lens.paths
@@ -608,10 +514,8 @@ const STUBS = {
     : { filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null, status: 'DONE', progressFile: null },
   reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
-    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
-  checkpoint: () => PARAMS.dryRunFindings
-    ? { recommendation: 'smoke', command: 'true', scriptWritten: false, reason: 'A focused smoke command would verify the dry-run change.', summary: '- Changed the dry-run fixture\n- Gate evidence was recorded\n- A focused smoke remains' }
-    : { recommendation: 'ship', command: '', scriptWritten: false, reason: 'The passing gate already covers the change.', summary: '- Implemented the planned change\n- Gate verification passed\n- No further pre-ship check is needed' },
+    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings() },
+  checkpoint: () => ({ command: 'true', scriptWritten: false }),
   triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
@@ -619,33 +523,24 @@ const STUBS = {
     return { items: items.map(item => ({ id: findingKey(item), source: item.source, action: 'fix', reason: 'dry-run decision', files: [item.file].filter(Boolean), change: item.fix_hint, check: 'dry-run check' })), cannotDecide: [], notes: 'dry-run spec', diffStat: ' 1 file changed', applied: false, apply: null }
   },
   applier: opts => STUBS.implementer(opts),
-  lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
+  lens: () => ({ verdict: 'approve', score: 5, findings: [] }),
   gate: opts => {
     if (String(opts.label).startsWith('commit-')) {
-      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep', 'parity'], commit: { sha: dryRunSha(opts.label), pushed: false, error: '', dropped: [] } }
+      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep'], commit: { sha: dryRunSha(opts.label), error: '', dropped: [] } }
     }
     const forcedFailure = PARAMS.dryRunFailGate === opts.label
     return forcedFailure
-      ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
-      : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
+      ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
+      : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
   },
   shipper: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : { branch: `${PARAMS.ticket}-dry-run`, prUrl: 'https://example.invalid/pr/1', prNumber: 1, repo: PARAMS.repo || 'owner/repo' },
-  qaDraft: () => ({ path: `${PARAMS.runDir}/qa-artifact.html`, items: 1, opened: false, error: '' }),
-  sandboxQA: opts => opts.schema === ACK_SCHEMA
-    ? { written: true }
-    : { skipped: false, reason: '', sandboxId: 'dry-run-sandbox', loginUrl: 'https://example.invalid/login', previewUrl: 'https://example.invalid/preview', testsPassed: true, summary: 'dry-run sandbox passed', seedRecipe: '', mode: 'hot-patch' },
   ffReview: () => ({ skipped: false, reason: '', prNumber: 1, repo: PARAMS.repo || 'owner/repo', headSha: dryRunSha('bot-review'), exitCode: 0, commentCount: 1, commentsPath: `${PARAMS.runDir}/bot-review.json`, summary: 'dry-run bot review' }),
-  smoke: opts => {
-    const number = opts.label === 'smoke' ? 1 : Number(String(opts.label).split('-')[1] || 1)
-    const criteria = smokeCriteria().slice((number - 1) * 6, number * 6)
-    return { results: criteria.map(criterion => ({ criterion, passed: true, note: 'dry run', screenshot: `${PARAMS.runDir}/smoke/dry-run.png` })) }
-  },
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : opts.schema === CHECKPOINT_SAVE_SCHEMA
-    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: PARAMS.dryRunFindings ? 'true' : '', files: 1, error: '' })
+    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: 'true', files: 1, error: '' })
     : opts.schema === PHASES_SAVE_SCHEMA
     ? dryRunFacts({ written: true, phases: 0, error: '' })
     : opts.schema === LAUNCH_FACTS_SCHEMA
@@ -653,15 +548,11 @@ const STUBS = {
     : opts.schema === SHIP_FACTS_SCHEMA
     ? dryRunFacts({ ok: true, dirty: [], excluded: [] })
     : opts.schema === PLAN_FACTS_SCHEMA
-    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '' })
-    : opts.schema === PLAN_CRITERIA_SCHEMA
-    ? dryRunFacts({ criteria: [] })
+    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
-    ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed' }
+    ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed', changedPaths: [] }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
-    ? dryRunFacts({ recommendation: PARAMS.dryRunFindings ? 'smoke' : 'ship', command: PARAMS.dryRunFindings ? 'true' : '', decidedBy: 'pending', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, planSha256: dryRunSha('plan'), planChanged: false, error: '', branch: '', phases: [] })
-    : opts.schema === FORGE_CONFIG_SCHEMA
-    ? { roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }
+    ? dryRunFacts({ command: 'true', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, error: '', branch: '', phases: [] })
     : opts.schema === PHASES_FACTS_SCHEMA
     ? dryRunFacts({ ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' })
     : opts.schema === BRANCH_SCHEMA
@@ -669,11 +560,9 @@ const STUBS = {
     : opts.schema === THREAD_CHECK_SCHEMA
     ? { threadExists: true }
     : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }),
-  readConfig: () => ({ roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
-  trim: () => ({ written: true }),
   codexWrap: opts => {
-    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
+    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings() }, error: '', handoffs: 0 }
     return { written: true }
   },
 }
@@ -687,7 +576,6 @@ const __test = {
   pickImplRole,
   savedCheckpointProblem,
   sandboxAllowed,
-  sandboxCheck,
   dryRunJournal,
   codexAgent,
 }
@@ -718,8 +606,7 @@ function configuredStage(name) {
 }
 
 function tierProfile(tierRole) {
-  const profileRole = tierRole === 'checkpoint' ? 'reviewer' : tierRole
-  const fallback = TIERS[PARAMS.tier][profileRole]
+  const fallback = TIERS[PARAMS.tier][tierRole]
   const override = configuredRole(configRoleForTier(tierRole))
   if (!override || (override.provider && override.provider !== 'claude')) return fallback
   return { ...fallback, model: override.model || fallback.model, effort: override.effort || fallback.effort }
@@ -755,7 +642,7 @@ async function agentT(role, prompt, opts = {}) {
     }
     await decide(`${role} returned null on Fable; retrying once with Opus high.`)
     spawnCount++
-    const fallback = role === 'checkpoint' || role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
+    const fallback = role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
     result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
   }
   return result
@@ -894,19 +781,13 @@ async function loadPlanFacts() {
     await decide(`Plan facts could not be read from ${PARAMS.planPath} (${(facts && facts.error) || 'no checked result'}); the review lane continues without them.`)
     return
   }
-  PLAN_FACTS = { ...facts, criteria: [] }
-  if (PARAMS.criteria.length) return
-  PARAMS.spawnCap += 1
-  const read = await factsCommand('read-plan-criteria', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile} --criteria-only`, PLAN_CRITERIA_SCHEMA, 'Implement')
-  if (read) PLAN_FACTS.criteria = read.criteria
-  else await decide(`Acceptance criteria could not be read from ${PARAMS.planPath}; the run continues without them.`)
+  PLAN_FACTS = facts
 }
 
 async function loadForgeConfig() {
-  const result = FORGE_CONFIG || await agentT('readConfig', `Read ~/.claude/skills/forge/forge.config.json with a ranged sed read. Return its roles, stages, thresholds, lenses, ticketUrl, repos, ghEnvUnset, and gate. If it is missing or invalid, use the documented defaults. Do not read repository files.`,
-    { label: 'read-config', phase: 'Implement', schema: FORGE_CONFIG_SCHEMA })
+  const result = FORGE_CONFIG
   const defaults = {
-    roles: {}, stages: { sandbox: false, ff_review: false, qa_login: false },
+    roles: {}, stages: { ff_review: false },
     thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES,
     ticketUrl: '', repos: { frontend: '', backend: '' }, ghEnvUnset: {}, gate: {},
   }
@@ -1020,12 +901,12 @@ function gateScriptInstruction() {
 }
 
 function claudeTestPromptInstruction() {
-  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, Semgrep, or parity commands.'
+  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, or Semgrep commands.'
   return `${gateScriptInstruction()} The gate re-runs it; copy the final pytest summary line from the last lines of each tests log into summary (or state that commands shows tests skipped), and never report tests as intentionally skipped.`
 }
 
 function runBeforeReturningInstruction() {
-  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint determines whether further verification is useful.'
+  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, or Semgrep commands; the pre-ship checkpoint writes and runs a smoke check.'
   return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
@@ -1077,15 +958,14 @@ Continue from the progress file; do not redo work it marks done; do not re-read 
 function implement(phase = null) {
   const suffix = phase ? `-phase-${phase.id}` : ''
   const label = `implement${suffix}`
-  const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
   const scope = phaseScope(phase)
   const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
+  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
     { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
 }
 
 function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', logName = 'smoke.log') {
-  return agentT('changedFiles', `Start exactly this command with the Bash tool using run_in_background=true and timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Poll the background task with TaskOutput calls using timeout=30000 until it completes. Return its stdout JSON unchanged. The background command has its own 900-second cap and must be allowed to finish; do not rerun it.`,
+  return agentT('changedFiles', `Run exactly this command in the foreground with the Bash tool using timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Return its stdout JSON unchanged. The command has its own 570-second cap and must be allowed to finish; do not rerun it.`,
     { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
@@ -1149,11 +1029,11 @@ async function changedFiles() {
 function checkpointReview(context, gate, implement, phases = null) {
   return agentT('checkpoint', `${planRef()}
 
-You are the fresh pre-ship checkpoint reviewer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present.
+You are the fresh pre-ship smoke writer. After the plan file, read the diff file ${context.diffPath} with the Read tool in ranges of at most 2,000 lines. Also consider the gate result below when present.
 
 RULES. You have a budget of 30 tool calls. Read a repository file only to confirm a file:line the diff touches, at most 120 lines per read, and do not explore adjacent code. Do not run git and do not search the web. Do not use the Agent, Edit or NotebookEdit tools. You may write exactly one file, ${PARAMS.runDir}/smoke.py, and only as described below; write nothing else.
 
-Recommend ship when the change is prose or configuration, or when the passing gate already covers it. Recommend smoke when one command would prove the change works; command must be that exact command, runnable from ${PARAMS.projectDir}, and complete in under 600 seconds. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\` from ${PARAMS.projectDir}. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Otherwise set scriptWritten to false and keep command to one line under 300 characters. Never name a file that does not exist yet. Recommend qa when only a human or sandbox exercise would prove it. Unless recommendation is smoke, set command to an empty string, set scriptWritten to false and write no file. Keep reason to at most two sentences. Write summary as 3-6 short Markdown bullets covering what changed and what the gate or implementer already verified.
+Give the one check that best proves the change works. Forge runs it from ${PARAMS.projectDir} right after you return, and it must finish within 540 seconds. The check may write only to temp folders or ${PARAMS.runDir}; forge fails a smoke that changes the repository working tree. When one command proves the change, set command to that exact command, keep it to one line under 300 characters, and set scriptWritten to false. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\`. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Never name a file that does not exist yet. When no runnable check can prove the change, return an empty command, set scriptWritten to false and write no file; a person then decides.
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
@@ -1163,29 +1043,18 @@ ${JSON.stringify(implement || {})}`,
   { label: 'checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_SCHEMA })
 }
 
-// A run that changed only docs, instruction text or config gets a fixed ship recommendation; the
-// attended run still stops at PRE_SHIP so the user reads the diff.
-function noCodeCheckpoint(context) {
-  const files = context.files || []
-  const instructions = (context.instructionFiles || []).length
-  return {
-    recommendation: 'ship', command: '', scriptWritten: false,
-    reason: 'no code files changed; checkpoint review skipped',
-    summary: `${files.length} changed files, none of them code (${instructions} instruction). The checkpoint agent did not run; read the diff before shipping.`,
-  }
+// A run that changed only docs, instruction text or config skips the smoke writer; an attended run
+// still stops at PRE_SHIP so the user reads the diff.
+function noCodeCheckpoint() {
+  return { command: '', scriptWritten: false }
 }
 
-function checkpointDocument(checkpoint, implement, context, decidedBy, state = {}) {
-  const smoke = checkpoint.recommendation === 'smoke'
-  const scriptWritten = smoke && checkpoint.scriptWritten === true
+function checkpointDocument(checkpoint, implement, context, state = {}) {
+  const scriptWritten = checkpoint.scriptWritten === true
   return {
-    recommendation: checkpoint.recommendation,
-    // checkpoint-save fills the command in when the reviewer wrote smoke.py.
-    command: smoke && !scriptWritten ? checkpoint.command : '',
+    // checkpoint-save fills the command in when the writer wrote smoke.py.
+    command: scriptWritten ? '' : checkpoint.command,
     scriptWritten,
-    reason: checkpoint.reason,
-    summary: checkpoint.summary,
-    decidedBy,
     implementFilesChanged: (implement && implement.filesChanged) || [],
     context,
     ...(state.phases ? { branch: state.branch || '', phases: state.phases } : {}),
@@ -1193,16 +1062,13 @@ function checkpointDocument(checkpoint, implement, context, decidedBy, state = {
 }
 
 // checkpoint.json is written by a command from small arguments and the context file the context
-// command saved. summary and reason stay out of it: they reach the user through the return value
-// and handoff.md.
+// command saved.
 async function writeCheckpoint(checkpoint) {
-  const smoke = checkpoint.recommendation === 'smoke'
-  const proof = !smoke ? '' : checkpoint.scriptWritten ? ' --script' : ` --command=${shellQuote(checkpoint.command)}`
+  const proof = checkpoint.scriptWritten ? ' --script' : checkpoint.command ? ` --command=${shellQuote(checkpoint.command)}` : ''
   const files = checkpoint.implementFilesChanged
   // --branch makes the command read phases.json, so it is passed only for a phased run.
   const branch = checkpoint.phases ? ` --branch ${shellQuote(checkpoint.branch || '')}` : ''
-  const planSha = PLAN_FACTS.sha256 ? ` --plan-sha256 ${shellQuote(PLAN_FACTS.sha256)}` : ''
-  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)} --recommendation ${checkpoint.recommendation} --decided-by ${checkpoint.decidedBy}${proof}${branch}${planSha} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
+  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)}${proof}${branch} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
     CHECKPOINT_SAVE_SCHEMA, 'Checkpoint')
   if (!saved) return false
   if (!saved.written) {
@@ -1221,7 +1087,6 @@ async function writeCheckpoint(checkpoint) {
 function savedCheckpointProblem(saved) {
   if (!saved) return 'the file could not be read'
   if (saved.error) return saved.error
-  if (!saved.recommendation) return 'recommendation is empty'
   if (contextFailed(saved.context)) return 'context.commandSucceeded is not true'
   if (!String(saved.context.diffPath || '').endsWith('.diff')) return `context.diffPath does not end in .diff (${saved.context.diffPath || 'empty'})`
   if (!Array.isArray(saved.implementFilesChanged)) return 'implementFilesChanged is not an array'
@@ -1252,16 +1117,30 @@ function dropEmptyOptionalKeys(checkpoint) {
   return kept
 }
 
-// checkpoint-facts fills a key the file lacks with an empty value, so a file an older forge wrote
-// still reads, and it hashes the plan file itself to report a plan edited since the checkpoint.
+// checkpoint-facts fills a key the file lacks with an empty value and drops keys it does not know,
+// so a file an older forge wrote still reads.
 async function readCheckpoint() {
   PARAMS.spawnCap += 1
-  const facts = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)} --plan-file ${shellQuote(PLAN)}`,
+  const facts = await factsCommand('load-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-facts --run-dir ${shellQuote(PARAMS.runDir)}`,
     CHECKPOINT_FACTS_SCHEMA, 'Checkpoint')
   if (!facts) return null
   const saved = dropEmptyOptionalKeys(facts)
   if (Array.isArray(saved.phases)) saved.phases = saved.phases.map(restorePhaseRow)
   return saved
+}
+
+// Returns true when the smoke passed. A failed smoke is recorded but does not set the status, so
+// an attended run can still pause at PRE_SHIP with the result.
+async function runCheckpointSmoke(state, command) {
+  state.checkpointSmokeCommand = command
+  state.checkpointSmoke = await smokeRun(command)
+  const smoke = state.checkpointSmoke
+  if (smoke && smoke.passed) {
+    await decide(`Pre-ship smoke passed: ${command}`)
+    return true
+  }
+  await decide(`Pre-ship smoke failed or timed out${smoke && smoke.summary ? ` (${smoke.summary})` : ''}; see ${(smoke && smoke.logPath) || `${PARAMS.runDir}/smoke.log`}.`)
+  return false
 }
 
 async function followCheckpoint(state, decision, command) {
@@ -1272,27 +1151,16 @@ async function followCheckpoint(state, decision, command) {
       await decide('Pre-ship checkpoint smoke command was empty; shipping was stopped.')
       return state
     }
-    state.checkpointSmokeCommand = command
-    state.checkpointSmoke = await smokeRun(command)
-    if (!state.checkpointSmoke || !state.checkpointSmoke.passed) {
-      state.status = 'BLOCKED'
-      await decide(`Pre-ship smoke failed or timed out; see ${(state.checkpointSmoke && state.checkpointSmoke.logPath) || `${PARAMS.runDir}/smoke.log`}.`)
-    }
+    if (!await runCheckpointSmoke(state, command)) state.status = 'BLOCKED'
     return state
   }
-  if (sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos)) return state
   state.status = 'PRE_SHIP'
-  await decide('Pre-ship checkpoint recommends a QA round and no sandbox stage is configured; human decision needed before shipping')
+  await decide('QA was requested. Forge has no QA stage: the main session runs QA by hand with the overlay stage docs (references/stages/sandbox.md and qa_login.md), then relaunches with checkpointDecision ship or smoke.')
   return state
 }
 
 function acceptanceCriteria() {
   return PARAMS.criteria.length ? PARAMS.criteria : PLAN_FACTS.criteria
-}
-function smokeCriteria() {
-  return configuredStage('qa_login')
-    ? [SIGN_IN_CRITERION, ...acceptanceCriteria()]
-    : acceptanceCriteria()
 }
 
 function contextFailed(context) {
@@ -1325,8 +1193,8 @@ function reviewerPrompt(identity, focus, context, codex = false) {
   const readFirst = codex
     ? ''
     : `Read ${REVIEWER_CONTRACT} in full first; it binds you. Read ${context.briefPath} in full with the Read tool first: it holds ${BRIEF_PARTS}.\n\n`
-  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
-Use disputes only for a concrete concern at a file:line that you examined and explicitly reject, with the evidence in reason. Return exactly the review schema.
+  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if harness output files (selfcheck*.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
+Return exactly the review schema.
 
 PROJECT DIR
 ${PARAMS.projectDir}
@@ -1390,21 +1258,6 @@ function lensReview(lens, context) {
     : lens.prompt
   return agentT('lens', reviewerPrompt(`${lens.key} lens`, `${skill} Report only ${lens.key} concerns.`, context),
     { label: `lens-${lens.key}`, phase: 'Review', schema: REVIEW_SCHEMA })
-}
-
-function detectContradictions(rows) {
-  const contradictions = []
-  for (const source of rows) {
-    for (const finding of source.result.findings || []) {
-      if (!['HIGH', 'CRITICAL'].includes(finding.severity)) continue
-      for (const other of rows) {
-        if (other.key === source.key) continue
-        const dispute = (other.result.disputes || []).find(item => item.file === finding.file && item.line === finding.line)
-        if (dispute) contradictions.push({ finding, raisedBy: source.key, dispute, disputedBy: other.key })
-      }
-    }
-  }
-  return contradictions
 }
 
 function uniqueFindings(rows) {
@@ -1480,31 +1333,16 @@ function ruledItem(item, ruling) {
   return { ...item, ruling: rescoped ? 'rescope' : 'apply', ...(rescoped ? { fix_hint: String(ruling.instruction) } : {}) }
 }
 
-async function applyRulings(findings, contradictions) {
+function applyRulings(findings) {
   const dropped = new Set()
   const applied = new Map()
-  const unresolved = []
-  const record = (finding, ruling) => {
+  for (const finding of findings) {
+    const ruling = rulingFor(finding)
+    if (!ruling) continue
     if (ruling.decision === 'drop') dropped.add(findingKey(finding))
     else applied.set(findingKey(finding), ruledItem(finding, ruling))
   }
-  for (const contradiction of contradictions) {
-    const finding = contradiction.finding
-    const ruling = rulingFor(finding)
-    if (ruling) {
-      record(finding, ruling)
-    } else if (PARAMS.auto) {
-      await decide(`Auto ruling applied ${finding.file}:${finding.line} conservatively: ${finding.claim}`)
-    } else {
-      unresolved.push(contradiction)
-    }
-  }
-  for (const finding of findings) {
-    const ruling = rulingFor(finding)
-    if (ruling) record(finding, ruling)
-  }
   return {
-    unresolved,
     applied: findings.flatMap(finding => applied.has(findingKey(finding)) ? [applied.get(findingKey(finding))] : []),
     confirmed: findings.filter(finding => !dropped.has(findingKey(finding)) && !applied.has(findingKey(finding))),
   }
@@ -1528,8 +1366,7 @@ async function reviewPanel(context) {
   const failures = specs.flatMap((spec, index) => raw[index] ? [] : [{ key: spec.key, status: 'FAIL', reason: 'agent returned null' }])
   if (skipCodex && failures.some(failure => failure.key === 'claude')) return { status: 'BLOCKED', reason: 'Review panel: Claude reviewer failed and Codex was skipped, so no general review ran' }
   const findings = uniqueFindings(rows)
-  const disputes = detectContradictions(rows)
-  const ruled = await applyRulings(findings, disputes)
+  const ruled = applyRulings(findings)
   const triage = await triageFindings(ruled.confirmed, context)
   let partitioned
   if (triage) {
@@ -1546,8 +1383,8 @@ async function reviewPanel(context) {
   for (const finding of confirmed) {
     await decide(`Review confirmed ${attribution(finding)} ${finding.file}:${finding.line}`)
   }
-  const unresolvedDisputes = [...ruled.unresolved, ...partitioned.disputes]
-  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed, failures, returned: present.length }
+  const unresolvedDisputes = partitioned.disputes
+  return { reviews: rows, findings, unresolvedDisputes, confirmed, failures, returned: present.length }
 }
 
 // The applier gets only the decider's fix items, already verified, so it applies them without re-triage.
@@ -1950,47 +1787,6 @@ async function shipCheck(state, label) {
   }
 }
 
-function qaArtifactDraft(shipResult, context) {
-  const criteria = acceptanceCriteria()
-  return agentT('qaDraft', `You draft and open the QA artifact immediately after the pull request is pushed. Never fail the run: on any error return the attempted path, items=0, opened=false, and the error text.
-1. Read the full header comment of ~/.claude/skills/forge/references/qa-artifact.html, from its first line up to its closing -->, for its complete data and placeholder contract. Read ${sandboxFile()} with ranged reads if it exists.
-2. Write ${PARAMS.runDir}/qa-data.json. Set ticket=${JSON.stringify(PARAMS.ticket)}; derive shortTitle as 2-4 words from the section headed ## Summary of the plan file ${PLAN}, which you read with the Read tool; set date to today; tier=${JSON.stringify(PARAMS.tierSandbox)}; branch=${JSON.stringify(shipResult.branch)}. Set sandboxId, previewUrl, rootLoginEmail, rootLoginPassword, and adminCreds from ${sandboxFile()} when present, otherwise "" so handoff can fill them. Set links=[{label:"Pull request",url:${JSON.stringify(shipResult.prUrl)}}]. Set contextItems to 2-4 concise lines from that Summary section, plus the Backend-verified lines described below. Set summary to 1-3 plain sentences saying what changed and what this QA pass must confirm. Set round="1".
-Build qaItems with at least one item per affected code area by grouping these files by top-level app directory: ${JSON.stringify(context.files || [])}. Set jiraTickets from this exact configured list: ${JSON.stringify(ticketLinks())}, adding title="" and role="" to each row. Add one item per acceptance criterion not already covered that a person can check through the product UI: ${JSON.stringify(criteria)}. A criterion with no click path through the product UI is not a qaItem: add it to contextItems as "Backend-verified: <criterion>" with its evidence. Every item has title, ticketKey, ticketUrl, whatChanged, steps with 2-6 concrete entries, expected, evidence=[], pr=${JSON.stringify(String(shipResult.prNumber))}, a screenGroup naming its feature, and clickPass={status:"PENDING",note:"steward click pass pending",screenshot:""}; never set before. Build groups with one entry per screenGroup, riskiest group first, each {name, why, setup:{preconditions, testData?, commands?, cleanup?}, spotCheck}: why is stated once for the group (set an item's why only when it differs), setup holds everything the group's items share, and spotCheck is one quick check that the group works. Each steps entry is a string with one action a person takes in the UI, location first (for example "On the Customers page, click Add"), ending on the screen that shows the expected result; cite a click-path reference entry by id when the overlay provides one. Never put shell, test or container commands in steps: put them in evidence as a list of strings or command blocks {command, cwd, note?}. Each command block is self-contained and copy-pasteable in zsh: write the full command every time and never use shell variables, export, or aliases defined in another step. Items that test how a verdict or note is saved take their test input from a separate item or from the note field, never from that item's own Pass/Fail/Blocked buttons, because the saved verdict must record whether the check passed. expected describes what is visible on screen or in a response, in plain sentences. Do not wrap file names, keys or status words in backticks in prose. Add an example only when its capturedFrom points at a real capture file in ${PARAMS.runDir}; mask credentials and tokens in it, and never use a login screen. Add explore={minutes, focus} only when free exploration would find more than the listed items. Build users from ${sandboxFile()} testUsers and team entries as objects containing role and email only; never copy a password or token into users. Set every handoff key named by the template contract to "".
-3. Run python3 ~/.claude/skills/forge/scripts/render_artifact.py qa --data ${PARAMS.runDir}/qa-data.json --out ${PARAMS.runDir}/qa-artifact.html; never write your own renderer. A nonzero exit is an error: return its stderr as the error text. Then run open ${PARAMS.runDir}/qa-artifact.html on macOS. If the Artifact tool is available, load the artifact-capabilities skill, then publish the rendered file titled "${PARAMS.ticket} <shortTitle> QA" with capabilities {"db": {}} on the first publish, and run one ArtifactData list on collection qa-results with that artifact's url to confirm the capability. Omit capabilities on every later republish of the same page.
-4. Return path=${PARAMS.runDir}/qa-artifact.html, the qaItems count as items, whether open succeeded as opened, and error="". On any error return that path, items=0, opened=false, and the error text.`,
-  { label: 'qa-draft', phase: 'Ship', agentType: 'worker', schema: QA_DRAFT_SCHEMA })
-}
-
-function qaDraftSummary(draft) {
-  return {
-    path: (draft && draft.path) || '',
-    items: draft && Number.isInteger(draft.items) ? draft.items : 0,
-    opened: Boolean(draft && draft.opened),
-  }
-}
-
-// A reused fork's sandbox.json (logins, test users) lives in the run that built it.
-function sandboxFile() {
-  const file = PARAMS.existingSandbox && PARAMS.existingSandbox.credentialsFile
-  return typeof file === 'string' && file ? file : `${PARAMS.runDir}/sandbox.json`
-}
-
-const sandboxToolFallback = `If the sandbox MCP tools are missing or fail with a connection error, follow the overlay's references/stages/sandbox.md fallback. Only when both configured methods fail return skipped=true and name both errors.`
-
-function sandboxQA(shipResult, context) {
-  const repoBase = String(PARAMS.repo).split('/').filter(Boolean).pop() || ''
-  const isUi = repoBase === FORGE_CONFIG.repos.frontend
-  const branchField = isUi ? 'ui_branch' : 'api_branch'
-  const check = sandboxCheck(isUi, context.testPaths || ['tests/unit'])
-  if (PARAMS.existingSandbox) {
-    return agentT('sandboxQA', `You run SANDBOX QA for Forge against an existing sandbox. ${syncInstructions(PARAMS.existingSandbox, shipResult, context.files || [], isUi, false, check, sandboxToolFallback)}`,
-    { label: 'sandbox-qa', phase: 'Sandbox', schema: SANDBOX_SCHEMA })
-  }
-  return agentT('sandboxQA', `You run SANDBOX QA for Forge. Read and follow references/stages/sandbox.md supplied by the overlay. ${sandboxToolFallback}
-Create one sandbox with ${branchField}=${shipResult.branch}, tier=${PARAMS.tierSandbox}, and ide=True. Write its metadata to ${PARAMS.runDir}/sandbox.json. Record ide_url and ide_password only in that file; treat them as credentials and never return them in a message, summary, or structured output. Then run with timeout 900: ${check}. Return sandbox id, login URL, preview URL, test result, summary, and seedRecipe="". On any skip, return skipped=true, the reason, empty strings for sandboxId/loginUrl/previewUrl/summary/seedRecipe, and testsPassed=false.`,
-  { label: 'sandbox-qa', phase: 'Sandbox', schema: SANDBOX_SCHEMA })
-}
-
 function ffReview(shipResult) {
   const names = ghEnvUnsetNames()
   const envPrefix = names.length ? `env ${names.map(name => `-u ${name}`).join(' ')} ` : ''
@@ -2014,104 +1810,41 @@ function ffTriage(shipResult, run) {
   { label: 'bot-triage', phase: 'Bot Review', agentType: 'triage', schema: TRIAGE_SCHEMA })
 }
 
-function syncInstructions(sandbox, shipResult, files, isUi, allowSkip, check, toolFallback) {
-  const roots = sandboxRoots()
-  const root = isUi ? roots.frontend : roots.backend
-  const commandPrefix = isUi ? `cd ${root}` : backendPrefix(root)
-  const branchField = isUi ? 'ui_branch' : 'api_branch'
-  const branch = shipResult.branch
-  const fileHint = files.length ? `${files.length} files changed: ${JSON.stringify(files)}` : '0 files supplied; the changed set is unknown'
-  const migrate = `${backendPrefix(roots.backend)} && uv run python manage.py migrate --no-input`
-  const skipAction = allowSkip
-    ? 'Set mode="skip", skipped=false, testsPassed=false, and summary="fork already at <sha>; sync skipped" with the sync seconds. Return the same sandbox metadata immediately and DO NOT run the check command. The workflow may carry forward a prior passing result for this same fork.'
-    : 'Set mode="skip" and summary="fork already at <sha>; sync skipped", but continue to the check command. This QA stage has no prior result to carry forward, so only the upload is skipped.'
-  return `Existing sandbox metadata: ${JSON.stringify(sandbox)}. The branch is ${branch}; the file-count hint is ${fileHint}. Use the sandbox tools named by the overlay stage reference. ${toolFallback}
-Perform these steps IN ORDER and measure elapsed seconds for the whole sync step:
-1. Skip check. Locally in ${PARAMS.projectDir}, run git fetch origin ${branch} --quiet && git rev-parse origin/${branch} to get TIP. In sandbox ${sandbox.sandboxId}, use exec_command for ${commandPrefix} && git rev-parse HEAD to get FORK_HEAD, then ${commandPrefix} && git status --porcelain | wc -l to get DIRTY. If TIP equals FORK_HEAD and DIRTY is 0: ${skipAction} Otherwise continue.
-2. Determine the changed set locally in ${PARAMS.projectDir} with git diff --name-only <FORK_HEAD> origin/${branch}, substituting the FORK_HEAD sha from step 1. Treat ${JSON.stringify(files)} only as a cross-check hint. If the derived set and hint disagree, report that in summary and use the derived set. If FORK_HEAD is not present locally or git diff errors, fall back to the hint when it is non-empty; otherwise use re-fork. Measure total bytes with wc -c against the corresponding files under ${PARAMS.projectDir}; deleted files count as zero bytes. The measured set and byte count control the choice.
-3. Git-fetch first. In sandbox ${sandbox.sandboxId}, run: ${commandPrefix} && GIT_TERMINAL_PROMPT=0 git fetch origin ${branch} && git checkout -B ${branch} FETCH_HEAD. On success set mode="git-fetch". If the changed set contains a migrations/ path, run with timeout 600: ${migrate}; a non-zero migration is a blocker with the last 20 output lines in summary. Then ${isUi ? 'let vite reload itself' : 'restart the API process with the fork start script'}. Skip steps 4 and 5 and continue to step 6. If fetch or checkout fails, say so in summary and continue to the hot-patch fallback.
-4. Hot-patch after a failed git-fetch only when the known changed set has at most 3 entries and totals at most 40000 bytes. Set mode="hot-patch". For each repo-relative path, use upload_file to upload inline text from ${PARAMS.projectDir}/<path> to ${root}/<path> in sandbox ${sandbox.sandboxId}; remove a deleted file with exec_command rm at ${root}/<path>. ${isUi ? 'The vite dev server hot-reloads.' : `If any path is under a migrations/ directory, first use exec_command with timeout 600 for: ${migrate}. A non-zero exit is a blocker: return skipped=true, put the last 20 output lines in summary, preserve the current sandbox metadata, and set testsPassed=false. Then restart the API process with the fork start script.`} Skip step 5 and continue to step 6.
-5. Re-fork after a failed git-fetch when hot-patch is not allowed. Set mode="re-fork". Read ${PARAMS.runDir}/sandbox.json when present and retain its cohort and team values. Call create_sandbox with ${branchField}=${branch}, tier=${PARAMS.tierSandbox}, login_email="" for token injection, and ide=True; leave other arguments at their defaults. Treat ide_url and ide_password as credentials: write them only to ${PARAMS.runDir}/sandbox.json and never return them in a message, summary, or structured output. Wait until the tool reports the new sandbox healthy. If the changed set touches a migrations/ path, run in the NEW sandbox with timeout 600: ${migrate}. If migration exits non-zero, call teardown_sandbox on the NEW sandbox id without force and never retry with force; keep and return the OLD sandbox metadata, set skipped=true and testsPassed=false, and name the torn-down new id plus the migration's last 20 output lines in summary. Only after the new sandbox is healthy${isUi ? '' : ' and any migration succeeds'}, copy ${PARAMS.runDir}/sandbox.json when present to ${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json, then call teardown_sandbox on OLD sandbox ${sandbox.sandboxId}, without force. If teardown of the OLD sandbox fails, including a 403 because another developer owns it, report the failure in summary and continue on the NEW fork; never retry with force. Write ${PARAMS.runDir}/sandbox.json with the NEW sandbox metadata, the retained cohort and team when present, seedRecipe="${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json", and seedsReplayed=false. From this point, use and return the NEW sandboxId, loginUrl, previewUrl, and seedRecipe. The summary must say "seeds not replayed; recipe at ${PARAMS.runDir}/sandbox.${sandbox.sandboxId}.json".
-6. Unless the allowed clean-fork skip returned early, run in the current sandbox with timeout 900: ${check}. Set testsPassed from its exit result and skipped=false.
-Return sandboxId, loginUrl, previewUrl, mode, testsPassed, skipped, reason, summary, and seedRecipe ("" when none). Summary must report mode, measured file count, total bytes, seconds spent on the sync step, and the test result. On any tool-unavailable or blocker skip, return skipped=true, its reason, the current sandbox metadata, seedRecipe from that metadata or "", and testsPassed=false.`
-}
-
-function postSandboxMarker(shipResult, sandbox) {
-  return agentT('shipper', `${ghEnvironmentInstruction()}Append the pull-request marker to the PR body exactly once on ${shipResult.prUrl}. Read the current body with \`gh pr view ${shipResult.prNumber} --repo ${shipResult.repo} --json body -q .body\`. ` +
-  `If the body contains exactly \`<!-- forge-sandbox: ${sandbox.sandboxId} -->\`, do nothing. If it has a forge-sandbox marker with a different id, replace that entire marker line with exactly \`<!-- forge-sandbox: ${sandbox.sandboxId} -->\` and ensure exactly one marker remains. If it has no marker, append a blank line and that exact marker at the end. Save any changed whole body with gh pr edit --body-file. Never post a comment. Return {written: true} as before.`,
-  { label: 'sandbox-marker', phase: 'Sandbox', agentType: 'shipper', schema: ACK_SCHEMA })
-}
-
-function writeStatus(patch, phaseLabel) {
-  const patchPath = `${PARAMS.runDir}/status-patch.json`
-  return agentT('trim', `Use the Write tool to write exactly the text between the \`<<<FORGE-FILE ${patchPath}>>>\` line and the \`<<<FORGE-END>>>\` line, excluding those two marker lines, to ${patchPath}. If the Write tool refuses because the file exists and has not been read, Read it once, then Write it again. Then run exactly one command with the Bash tool and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/status_merge.py --status ${shellQuote(`${PARAMS.runDir}/STATUS.json`)} --patch-file ${shellQuote(patchPath)}
-If the Write or the command is refused, blocked by a hook, or fails, return {"written": false}. Never write a file another way: no Bash heredoc, echo, printf, or python write.
-
-<<<FORGE-FILE ${patchPath}>>>
-${JSON.stringify(patch, null, 2)}
-<<<FORGE-END>>>`,
-  { label: `status-${phaseLabel}`, phase: phaseLabel, schema: ACK_SCHEMA })
-}
-
-async function smoke(sandbox, context) {
-  const criteria = smokeCriteria()
-  const results = []
-  for (let offset = 0; offset < criteria.length; offset += 6) {
-    const chunk = criteria.slice(offset, offset + 6)
-    const number = offset / 6 + 1
-    const label = number === 1 ? 'smoke' : `smoke-${number}`
-    const specStep = number === 1
-      ? `If ${PARAMS.projectDir}/e2e/ contains Playwright specs, first read ${PARAMS.projectDir}/e2e/README.md for the base-URL and login env vars, run the suite against ${sandbox.previewUrl} with the line reporter and \`--grep\` on any criterion tag the plan names, and save the output to ${PARAMS.runDir}/smoke/e2e.log. A criterion covered by a passing spec is PASS with evidence = that log path. Only criteria with no matching spec are attempted with Playwright MCP tools.`
-      : 'Do not run the Playwright spec suite in this chunk. Attempt each criterion below with Playwright MCP tools.'
-    const smokeResult = await agentT('smoke', `${specStep} You run the acceptance-criterion SMOKE stage, never exploratory testing. Read ${sandboxFile()} (ranged read; keys rootLogin or testUsers[0].email, and testPassword). ` +
-    `If testPassword is present, open ${sandbox.previewUrl} and sign in with that email and password in a fresh context; only if it is absent open ${sandbox.loginUrl}. Then attempt each criterion with no matching spec in order: ${JSON.stringify(chunk)}. Save one relevant screenshot per MCP-attempted criterion as .playwright-mcp/<name>.png (Playwright MCP refuses paths outside its output dir), then mv it to ${PARAMS.runDir}/smoke/ and never leave it in the repository. Use the application preview ${sandbox.previewUrl}. Before returning, run ls on every screenshot and log path you intend to report. A path that does not exist becomes an empty string and its note says the evidence is missing. Return criterion, pass/fail, note, and screenshot path; only paths that exist, never image data.`,
-    { label, phase: 'Sandbox', agentType: 'browser', schema: SMOKE_SCHEMA })
-    if (!smokeResult) return null
-    results.push(...(smokeResult.results || []))
-  }
-  return { results }
-}
-
-function sandboxRefresh(sandbox, shipResult, context) {
-  const repoBase = String(PARAMS.repo).split('/').filter(Boolean).pop() || ''
-  const isUi = repoBase === FORGE_CONFIG.repos.frontend
-  const check = sandboxCheck(isUi, context.testPaths || ['tests/unit'])
-  return agentT('sandboxQA', `You run SANDBOX POST-FIX RE-RUN. ${syncInstructions(sandbox, shipResult, context.files || [], isUi, true, check, sandboxToolFallback)}`,
-  { label: 'sandbox-refresh', phase: 'Fix', schema: SANDBOX_SCHEMA })
-}
-
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
   const gateNotice = noGates
-    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint recommendation and command from ${PARAMS.runDir}/checkpoint.json.`
+    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint smoke command from ${PARAMS.runDir}/checkpoint.json (an empty command means no runnable check was written).`
     : ''
   const cleanup = usesGateCheckout()
     ? `Before anything else, run exactly this command once and continue regardless of its output: \`${gateCheckoutCleanupCommand()}\`. `
     : ''
   const handoffState = {
     ...state,
-    qaDraft: qaDraftSummary(state.qaDraft),
     context: context && {
       files: context.files || [], criteria: acceptanceCriteria(), testPaths: context.testPaths || [],
     },
   }
-  await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
   if (state.status === 'PRE_SHIP') {
-    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
+    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: after a relaunch the data below can be empty, so keep its implementer summary and smoke result wherever the data below is empty or null. Include the implementer's summary from this data: ${JSON.stringify((state.implement && state.implement.summary) || '')}. Include the checkpoint smoke command (empty means no runnable check was written; a command naming smoke.py means the writer wrote ${PARAMS.runDir}/smoke.py): ${JSON.stringify((state.checkpoint && state.checkpoint.command) || '')}. Include the smoke result (passed, exit code, log path; null means no smoke ran): ${JSON.stringify(smokeResult(state))}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
-End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
+End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
-When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and neither the run data nor checkpoint.json holds the checkpoint summary and reason after a relaunch. Carry its checkpoint summary and reason into What changed and why.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
+When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and after a relaunch neither the run data nor checkpoint.json holds the implementer's summary. Carry its implementer summary and smoke result into What changed and why.
 ${gateNotice}
-Write these sections exactly: What changed and why; Gate results; Sandbox + smoke results (include login URL, preview URL, sandbox id, and any post-fix re-run, with no expiry caveats); Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
-Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
+Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
+Render the Manual QA checklist from the acceptance criteria below, one unchecked item per criterion.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
-End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, the branch, and the sandbox id when there is one (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
+End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
 Return the handoff path.`,
   { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
+}
+
+function smokeResult(state) {
+  const smoke = state.checkpointSmoke
+  return smoke ? { passed: smoke.passed === true, exitCode: smoke.exitCode, logPath: smoke.logPath } : null
 }
 
 function usesGateCheckout() {
@@ -2402,13 +2135,12 @@ async function fullLane() {
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
       : `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed, then gated on its SHA in ${GATE_CHECKOUT} while the next phase runs.`)
   }
-  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, checkpointSmokeCommand: '', postFixSmoke: null, gate: null, ship: null, qaDraft: null, sandbox: null, smoke: null, review: null, convergence: null, sandboxRefresh: null, ffReview: null }
+  const initial = { status: 'DONE', implement: null, checkpoint: null, checkpointSmoke: null, checkpointSmokeCommand: '', postFixSmoke: null, gate: null, ship: null, review: null, convergence: null, ffReview: null }
   if (PARAMS.checkpointDecision) {
     const saved = await readCheckpoint()
     const problem = savedCheckpointProblem(saved)
     if (problem) throw new Error(`checkpointDecision requires a valid ${PARAMS.runDir}/checkpoint.json: ${problem}`)
     initial.implement = { filesChanged: saved.implementFilesChanged }
-    if (saved.planChanged) await decide(`plan.md changed since the checkpoint (${PLAN}); the run continues on the saved checkpoint.`)
     // A checkpoint an older forge saved has a context without a brief file; later stages take a fresh one.
     initial.context = saved.context.briefPath ? saved.context : null
     if (saved.phases) {
@@ -2460,32 +2192,41 @@ async function fullLane() {
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      const result = state.context.noCode === true
-        ? noCodeCheckpoint(state.context)
+      const noCode = state.context.noCode === true
+      const result = noCode
+        ? noCodeCheckpoint()
         : await checkpointReview(state.context, state.gate, state.implement, state.phases || null)
       if (!result) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint agent returned null; shipping was stopped.')
         return state
       }
-      state.checkpoint = checkpointDocument(result, state.implement, state.context, PARAMS.auto ? 'auto' : 'pending', state)
+      state.checkpoint = checkpointDocument(result, state.implement, state.context, state)
       if (!await writeCheckpoint(state.checkpoint)) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint result could not be written; shipping was stopped.')
         return state
       }
-      await decide(`Pre-ship checkpoint: recommends ${state.checkpoint.recommendation} - ${state.checkpoint.reason}`)
-      if (!PARAMS.auto) {
+      if (noCode) {
+        await decide(`Pre-ship checkpoint: ${(state.context.files || []).length} changed files, none of them code; the smoke writer did not run.`)
+        if (!PARAMS.auto) state.status = 'PRE_SHIP'
+        return state
+      }
+      if (!state.checkpoint.command) {
+        await decide('Pre-ship checkpoint: the smoke writer found no runnable check; a person decides.')
         state.status = 'PRE_SHIP'
         return state
       }
-      return followCheckpoint(state, state.checkpoint.recommendation, state.checkpoint.command)
+      const passed = await runCheckpointSmoke(state, state.checkpoint.command)
+      if (!PARAMS.auto) state.status = 'PRE_SHIP'
+      else if (!passed) state.status = 'BLOCKED'
+      return state
     },
     async state => {
       phase('Ship')
       if (stopped(state)) return state
       if (PARAMS.noShip) {
-        await decide('Ship, sandbox, and smoke stages skipped because args.noShip is true.')
+        await decide('Ship stage skipped because args.noShip is true.')
         return state
       }
       // Fresh, not the checkpoint's saved context: that one predates any later localOnly change.
@@ -2508,54 +2249,16 @@ async function fullLane() {
       return state
     },
     async state => {
-      phase('Sandbox')
-      if (stopped(state) || !state.ship) return state
-      state.context = await changedFiles()
-      const sandboxOn = sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos)
-      const draftQa = sandboxOn || PARAMS.checkpointDecision === 'qa'
-      const draftSkipped = draftQa ? '' : ' QA draft skipped: no QA stage is on.'
-      if (contextFailed(state.context)) {
-        if (draftQa) {
-          state.qaDraft = await qaArtifactDraft(state.ship, state.context || { files: [] })
-          if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
-        }
-        state.status = 'BLOCKED'
-        await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}${draftSkipped}`)
-        return state
-      }
-      if (!sandboxOn) {
-        if (draftQa) {
-          state.qaDraft = await qaArtifactDraft(state.ship, state.context)
-          if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
-        }
-        await decide(`Sandbox and smoke skipped because stages.sandbox is off.${draftSkipped}`)
-        return state
-      }
-      ;[state.qaDraft, state.sandbox] = await Promise.all([
-        qaArtifactDraft(state.ship, state.context),
-        sandboxQA(state.ship, state.context),
-      ])
-      if (!state.qaDraft) state.qaDraft = { path: `${PARAMS.runDir}/qa-artifact.html`, items: 0, opened: false, error: 'agent returned null' }
-      if (!state.sandbox) state.sandbox = { key: 'sandbox-qa', status: 'FAIL', reason: 'agent returned null' }
-      if (state.sandbox.skipped) await decide(`Sandbox QA skipped: ${state.sandbox.reason}`)
-      if (state.sandbox.sandboxId) await postSandboxMarker(state.ship, state.sandbox)
-      if (state.sandbox.previewUrl) {
-        state.smoke = await smoke(state.sandbox, state.context)
-        if (!state.smoke) state.smoke = { key: 'smoke', status: 'FAIL', reason: 'agent returned null' }
-        if (Array.isArray(state.smoke.results)) {
-          await writeStatus({
-            criteria: state.smoke.results.map(result => ({ text: result.criterion, status: result.passed ? 'pass' : 'fail', evidence: result.screenshot || result.note || null, round: 0 })),
-            rounds: { smoke: 1 },
-          }, 'Sandbox')
-        }
-      } else {
-        await decide('Smoke skipped because sandbox QA returned no preview URL.')
-      }
-      return state
-    },
-    async state => {
       phase('Review')
       if (stopped(state)) return state
+      if (state.ship) {
+        state.context = await changedFiles()
+        if (contextFailed(state.context)) {
+          state.status = 'BLOCKED'
+          await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}`)
+          return state
+        }
+      }
       state.context = state.context || await changedFiles()
       state.review = await reviewPanel(state.context)
       if (state.review.status === 'BLOCKED') {
@@ -2566,7 +2269,7 @@ async function fullLane() {
       if ((configuredRole('review') || {}).provider !== 'claude' && state.review.failures.some(failure => failure.key === 'codex')) {
         // Cross-model review is the contract; never continue Claude-only.
         state.status = 'BLOCKED'
-        await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the run is BLOCKED instead of continuing with Claude-only findings. The PR and sandbox are preserved; resume once Codex is available.')
+        await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the run is BLOCKED instead of continuing with Claude-only findings. The PR is preserved; resume once Codex is available.')
         return state
       }
       if (state.review.unresolvedDisputes.length) state.needsJudge = true
@@ -2615,35 +2318,6 @@ async function fullLane() {
             }
           }
         }
-        if (sandboxAllowed(configuredStage('sandbox'), PARAMS.repo, FORGE_CONFIG.repos) && state.sandbox && state.sandbox.sandboxId && synced && !synced.skipped) {
-          const refreshFiles = [...new Set([
-            ...((state.context && state.context.files) || []),
-            ...((state.implement && state.implement.filesChanged) || []),
-            ...((state.convergence && state.convergence.touchedFiles) || []),
-          ])]
-          state.sandboxRefresh = await sandboxRefresh(state.sandbox, state.ship, { ...state.context, files: refreshFiles })
-          if (!state.sandboxRefresh) state.sandboxRefresh = { key: 'sandbox-refresh', status: 'FAIL', reason: 'agent returned null' }
-          if (state.sandboxRefresh.mode === 'skip' && state.sandbox.testsPassed === true && state.sandbox.sandboxId === state.sandboxRefresh.sandboxId) {
-            state.sandboxRefresh.testsPassed = true
-            const carried = 'previous passing result carried forward for the same fork'
-            state.sandboxRefresh.summary = `${state.sandboxRefresh.summary}; ${carried}`
-            state.sandboxRefresh.reason = state.sandboxRefresh.reason ? `${state.sandboxRefresh.reason}; ${carried}` : carried
-          }
-          if (state.sandboxRefresh.sandboxId && state.sandboxRefresh.sandboxId !== state.sandbox.sandboxId) {
-            state.sandbox = {
-              ...state.sandbox,
-              sandboxId: state.sandboxRefresh.sandboxId,
-              loginUrl: state.sandboxRefresh.loginUrl,
-              previewUrl: state.sandboxRefresh.previewUrl,
-              testsPassed: state.sandboxRefresh.testsPassed,
-              seedRecipe: state.sandboxRefresh.seedRecipe,
-            }
-            await postSandboxMarker(state.ship, state.sandbox)
-          }
-          if (state.sandboxRefresh.mode === 'git-fetch' || state.sandboxRefresh.mode === 'hot-patch' || state.sandboxRefresh.mode === 're-fork') {
-            state.sandbox.testsPassed = state.sandboxRefresh.testsPassed
-          }
-        }
       }
       return state
     },
@@ -2682,28 +2356,28 @@ async function fullLane() {
 }
 
 async function reviewLane() {
-  await decide('Review lane skipped Implement, standalone Gate, Ship, Sandbox, and Smoke stages.')
+  await decide('Review lane skipped Implement, standalone Gate, and Ship stages.')
   phase('Review')
   const context = await changedFiles()
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
-    return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+    return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, gate: null, implement: null }
   }
   const review = await reviewPanel(context)
   if (review.status === 'BLOCKED') {
     await decide(review.reason)
-    return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+    return { status: 'BLOCKED', context, review, convergence: null, ship: null, gate: null, implement: null }
   }
   if ((configuredRole('review') || {}).provider !== 'claude' && review.failures.some(failure => failure.key === 'codex')) {
     await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the review lane is BLOCKED instead of continuing Claude-only.')
-    return { status: 'BLOCKED', context, review, convergence: null, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+    return { status: 'BLOCKED', context, review, convergence: null, ship: null, gate: null, implement: null }
   }
   if (review.unresolvedDisputes.length) return { needsJudge: true, context, review }
   phase('Fix')
   const convergence = await converge(review, context)
   if (convergence.needsJudge) return { needsJudge: true, context, review, convergence }
   const status = convergence.blocked || capBlocked ? 'BLOCKED' : 'DONE'
-  return { status, context, review, convergence, ship: null, sandbox: null, smoke: null, sandboxRefresh: null, gate: null, implement: null }
+  return { status, context, review, convergence, ship: null, gate: null, implement: null }
 }
 
 await loadForgeConfig()
@@ -2747,14 +2421,10 @@ return {
   handoffPath: (ho && ho.handoffPath) || '',
   prUrl: (state.ship && state.ship.prUrl) || '',
   unstaged: state.unstaged || [],
-  qaDraft: qaDraftSummary(state.qaDraft),
-  sandboxId: (state.sandbox && state.sandbox.sandboxId) || '',
-  recommendation: (state.checkpoint && state.checkpoint.recommendation) || '',
   command: (state.checkpoint && state.checkpoint.command) || '',
-  reason: (state.checkpoint && state.checkpoint.reason) || '',
-  summary: (state.checkpoint && state.checkpoint.summary) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
   planSha256: PLAN_FACTS.sha256,
+  ...(state.checkpointSmoke ? { smoke: smokeResult(state) } : {}),
   ffReview: state.ffReview || null,
   phases: PHASED ? (state.phases || []) : undefined,
   decisions,
