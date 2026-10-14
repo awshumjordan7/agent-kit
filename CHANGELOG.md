@@ -13,6 +13,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/hooks, core/settings.fragment.json, tests/secret_hook, .github/workflows/secret-hook.yml: the env-file hook and its tests are removed; the sandbox module replaces it.
 - core/scripts, core/skills/ship-pr, core/skills/forge, core/references/env-recipe.md, core/agents/worker.md: network git and env-loaded commands go through two fixed scripts that run outside the sandbox.
 - core/skills/forge/scripts/codex-exec.sh: the wrapper stops with one line instead of waiting forever when its lock folder cannot be created.
+- core/layer.toml: register the sandbox module so the installer loads it when the profile turns it on.
 
 ## 2026-10-13
 - core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.
