@@ -1014,6 +1014,42 @@ for path in files:
         if root_tests_fallback and os.path.isdir(os.path.join(repo, "tests")):
             add_target(default_command, "tests")
 
+repo_root = os.path.realpath(repo)
+
+
+def repo_relative(target):
+    if os.path.isabs(target):
+        resolved = os.path.realpath(target)
+        if resolved != repo_root and not resolved.startswith(repo_root + os.sep):
+            return None
+        target = os.path.relpath(resolved, repo_root)
+    relative = os.path.normpath(target.replace(os.sep, "/")).replace(os.sep, "/")
+    if relative == ".." or relative.startswith("../"):
+        return None
+    return relative
+
+
+# pytest narrows collection to the file when given a folder and a file inside it, so keep only the folder.
+for command, targets in groups.items():
+    paths = [repo_relative(target) for target in targets if not target.startswith("-k ")]
+    covering = [path for path in paths if path is not None]
+    kept = []
+    for target in targets:
+        if target.startswith("-k "):
+            kept.append(target)
+            continue
+        relative = repo_relative(target)
+        if relative is None:
+            if target not in kept:
+                kept.append(target)
+            continue
+        if relative in kept:
+            continue
+        if any(other != relative and (other == "." or relative.startswith(other + "/")) for other in covering):
+            continue
+        kept.append(relative)
+    groups[command] = kept
+
 with open(output_path, "wb") as handle:
     for command, targets in groups.items():
         path_args = []
