@@ -21,6 +21,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/skills/forge/references/forge-core.js: the shipper skips `git add` for staged deletions that are still absent and stops before committing when a git add fails.
 - core/skills/forge/scripts/gate.sh: a test command no longer gets a file or folder that sits inside another of its targets, so pytest collects the whole folder.
 - core/skills/forge/references/forge-core.js: the implementer and commit gate prompts say to run gate.sh as one bare call, since a pipe or redirect keeps it in the Bash sandbox where tests cannot read env files.
+- core/skills/forge/references/artifacts.md, core/skills/forge/scripts/render_artifact.py, core/skills/forge/references (templates): only forge's plan and QA pages render from templates; other artifacts are worker-written following the artifact-design skill, and the generic template and render mode are removed.
 
 ## 2026-10-13
 - core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.
