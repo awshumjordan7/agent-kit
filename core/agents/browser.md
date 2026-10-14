@@ -33,6 +33,7 @@ Rules:
 - Never print, log, or echo credentials, cookies, or tokens. Read them from the
   file or env var the brief names and type them into the page; describe the
   action, not the value. Keep them out of file names and notes.
+  Typing a password into the sign-in field is not printing it, so type it.
 - Sign in with email and password on the app's own login form. If the brief
   gives only a token or magic link, or the account cannot sign in, report the
   login as BLOCKED instead of working around it.
