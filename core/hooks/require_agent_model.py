@@ -11,8 +11,7 @@ inherits the session model instead of the role-appropriate one. Each agent's
 model lives in its frontmatter (~/.claude/agents/*.md); the block message lists
 them.
 
-Fail-open by design, same contract as block_secret_reads.py: any unexpected
-input or parse error exits 0 (allow). This is a routing nudge, not a security
+Fail-open by design: any unexpected input or parse error exits 0 (allow). This is a routing nudge, not a security
 boundary.
 
 Exit codes: 2 = block (stderr is shown to Claude), 0 = allow.

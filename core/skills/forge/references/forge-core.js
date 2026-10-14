@@ -1706,7 +1706,6 @@ async function fixLoop(opts) {
 
 // The working tree can carry unrelated local work, including tracked secret-bearing env
 // files; the shipper stages only the run's own files, never "whatever git status shows".
-// The sample names match the secret hook's ALLOWLIST (core/hooks/block_secret_reads.py).
 const ENV_SAMPLE_FILE = /(^|\/)\.env\.(?:example|sample|template|dist)$/i
 
 function envLikePath(path) {
