@@ -16,6 +16,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/layer.toml: register the sandbox module so the installer loads it when the profile turns it on.
 - core/CLAUDE.md, core/agents/browser.md: sub-agents wait on a done-file in the foreground instead of Monitor or a pgrep -f loop, and the browser agent types sign-in passwords instead of refusing.
 - core/hooks/context_guard.py, modules/sandbox: run handoff.py and the other excluded scripts as one bare call, and commit through git-net.sh so pre-commit hooks can read tracked files the sandbox hides.
+- core/skills/ship-pr, core/skills/forge/SKILL.md, core/scripts/handoff.py: the attribution check skips base-branch commits; staging skips already-staged deletions and stops on a failed add; commits go through git-net.sh; the base-branch resolver takes the repo path; the unread handoff marker is removed.
 
 ## 2026-10-13
 - core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.

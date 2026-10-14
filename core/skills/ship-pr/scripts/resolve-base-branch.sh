@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve the correct PR base branch for the repo in the current working directory.
+# Resolve the correct PR base branch for the repo given as the first argument, else the current working directory.
 #
 # Looks up references/base-branches.json by "owner/repo" slug (parsed from the
 # `origin` remote). If the repo isn't listed, falls back to the remote's actual
@@ -7,6 +7,7 @@
 # doesn't need any GitHub API scope — unlike `gh repo view`, which can 404 if
 # the active `gh` account lacks the `repo` scope for a private repo.
 set -euo pipefail
+if [ $# -gt 0 ]; then cd "$1"; fi
 
 run_gh() {
   local configured name
