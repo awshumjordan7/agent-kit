@@ -2357,7 +2357,11 @@ async function fullLane() {
           ...((state.convergence && state.convergence.touchedFiles) || []),
         ], state.context)
         await recordUnstaged(state, synced, 'Ship sync')
-        if (synced && !synced.skipped) await shipCheck(state, 'Ship sync')
+        if (synced && !synced.skipped) {
+          const left = await shipCheck(state, 'Ship sync')
+          state.uncommitted = left
+          state.uncommittedError = left ? null : 'ship-facts unavailable'
+        }
         if (!synced || synced.skipped) {
           state.status = 'BLOCKED'
           await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
@@ -2469,8 +2473,6 @@ if (state.needsJudge) {
   }
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
-// A DONE run with a ship has pushed every fix and passed the clean-tree check after the push.
-if (state.status === 'DONE' && state.ship && !state.ship.skipped) state.uncommitted = []
 phase('Handoff')
 if (state.uncommitted === undefined) await readUncommitted(state, 'final', 'Handoff')
 const ho = await handoff(state, state.context || {})
