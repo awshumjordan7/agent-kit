@@ -7,7 +7,8 @@
     "filesystem": {
       "allowRead": ["/**/.env.example", "~/.config/gh/config.yml", "~/.config/gh/hosts.yml"],
       "denyRead": ["/**/.env", "/**/.env.*", "/**/.envs/**", "/**/.envrc", "/**/.env_*"],
-      "allowWrite": ["~/Projects", "~/.claude", "~/.codex", "~/.ai-setup", "~/.cache", "~/.npm"]
+      "allowWrite": ["~/Projects", "~/.claude", "~/.codex", "~/.ai-setup", "~/.cache", "~/.npm"],
+      "denyWrite": ["~/.claude/scripts"]
     },
     "credentials": {
       "files": [
@@ -31,8 +32,7 @@
       "bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh *",
       "python3 ~/.claude/scripts/handoff.py *",
       "python3 ~/.claude/scripts/drift_report.py *",
-      "python3 ~/Projects/personal/agent-kit/install.py *",
-      "python3 /Users/jfierro/Projects/personal/agent-kit/install.py *"
+      "python3 */agent-kit/install.py *"
     ]
   }
 }
