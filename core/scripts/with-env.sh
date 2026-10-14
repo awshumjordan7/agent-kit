@@ -4,6 +4,12 @@
 # `-- env POSTGRES_HOST=localhost <command>`. Nothing here stops the command printing values.
 set -euo pipefail
 
+# Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+if [ -n "${SANDBOX_RUNTIME+x}" ]; then
+  echo "with-env.sh must run outside the Bash sandbox, and this call ran inside it. Run it again as one bare Bash call spelled exactly bash ~/.claude/scripts/with-env.sh --dir <repo> <env files> -- <command>: no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written." >&2
+  exit 86
+fi
+
 usage() {
   echo "usage: with-env.sh [--dir DIR] ENV_FILE... -- COMMAND..." >&2
   exit 2

@@ -11,6 +11,11 @@ from pathlib import Path
 METRICS_NAME = "drift-metrics.jsonl"
 REVIEW_DONE_NAME = "drift-review-done"
 REVIEW_CYCLE_NAME = "drift-review-cycle-start"
+SANDBOX_HINT = (
+    "drift_report.py must run outside the Bash sandbox, and this call ran inside it. "
+    "Run it again as one bare Bash call spelled exactly python3 ~/.claude/scripts/drift_report.py <args>: "
+    "no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written."
+)
 
 
 def _drift_state_dir() -> Path:
@@ -50,6 +55,12 @@ def _print_block(title: str, records: list[dict]) -> None:
     for outcome, count in sorted(outcomes.items()):
         sys.stdout.write(f"  {outcome}: {count}\n")
     sys.stdout.write(f"  unreflected per launched handoff: {_unreflected_rate(records)}\n")
+
+
+def _sandbox_hint() -> None:
+    # Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+    if "SANDBOX_RUNTIME" in os.environ:
+        sys.stderr.write(SANDBOX_HINT + "\n")
 
 
 def report(path: Path) -> int:
@@ -93,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             done.write_text(f"{date.today().isoformat()}\n", encoding="utf-8")
         except OSError as error:
             sys.stderr.write(f"drift_report.py: failed to write {done}: {error}\n")
+            _sandbox_hint()
             return 1
         sys.stdout.write(f"review marked done: {done}\n")
         return 0
@@ -105,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             done.unlink(missing_ok=True)
         except OSError as error:
             sys.stderr.write(f"drift_report.py: failed to reset the review cycle: {error}\n")
+            _sandbox_hint()
             return 1
         sys.stdout.write("review cycle reset\n")
         return 0

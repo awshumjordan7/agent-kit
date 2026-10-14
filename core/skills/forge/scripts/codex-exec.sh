@@ -85,6 +85,11 @@ case "$MODE" in
     start|resume|watch|config|stats) ;;
     *) echo "usage: codex-exec.sh start|resume|watch|config|stats --thread-file <f> --prompt-file <p> --log <l> --out <o> [...]" >&2; exit 64 ;;
 esac
+# Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+if [ -n "${SANDBOX_RUNTIME+x}" ]; then
+    echo "codex-exec.sh must run outside the Bash sandbox, and this call ran inside it. Run it again as one bare Bash call spelled exactly bash ~/.claude/skills/forge/scripts/codex-exec.sh <mode> <args>: no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written." >&2
+    exit 86
+fi
 
 SKILL_DIR="${FORGE_CODEX_EXEC_SKILL_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 CONFIG_FILE="$SKILL_DIR/forge.config.json"
