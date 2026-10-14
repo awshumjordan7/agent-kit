@@ -17,6 +17,10 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/CLAUDE.md, core/agents/browser.md: sub-agents wait on a done-file in the foreground instead of Monitor or a pgrep -f loop, and the browser agent types sign-in passwords instead of refusing.
 - core/hooks/context_guard.py, modules/sandbox: run handoff.py and the other excluded scripts as one bare call, and commit through git-net.sh so pre-commit hooks can read tracked files the sandbox hides.
 - core/skills/ship-pr, core/skills/forge/SKILL.md, core/scripts/handoff.py: the attribution check skips base-branch commits; staging skips already-staged deletions and stops on a failed add; commits go through git-net.sh; the base-branch resolver takes the repo path; the unread handoff marker is removed.
+- core/skills/forge (forge-core.js, SKILL.md, references/auto-mode.md): a fix loop that stops for a human ruling first commits and pushes the fixes it applied when the branch is shipped, the loop is not blocked and the gate passes, and the needsJudge and final returns list the decision lines and any uncommitted paths.
+- core/skills/forge/references/forge-core.js: the shipper skips `git add` for staged deletions that are still absent and stops before committing when a git add fails.
+- core/skills/forge/scripts/gate.sh: a test command no longer gets a file or folder that sits inside another of its targets, so pytest collects the whole folder.
+- core/skills/forge/references/forge-core.js: the implementer and commit gate prompts say to run gate.sh as one bare call, since a pipe or redirect keeps it in the Bash sandbox where tests cannot read env files.
 
 ## 2026-10-13
 - core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.

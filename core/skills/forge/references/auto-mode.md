@@ -20,7 +20,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 
 ## The trail — `decisions.md`
 
-Every judgment call is appended as it happens (crash-safe), one line each:
+Every judgment call is buffered during the run and appended to `decisions.md` at handoff, one line each. A `needsJudge` return also carries the buffered lines in `decisions`:
 
     [step] decision — reason
 
