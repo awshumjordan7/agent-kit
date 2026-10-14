@@ -134,29 +134,6 @@ def _open_windows_terminal_tab(
     )
 
 
-def _write_handoff_marker(session_name: str, state_path: Path, pids: set[int]) -> None:
-    """Tell context_guard.py this session already started its successor."""
-    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if not session_id:
-        sys.stderr.write("handoff.py: CLAUDE_CODE_SESSION_ID unset; no handoff marker written\n")
-        return
-    state_dir = Path(
-        os.environ.get("CONTEXT_GUARD_STATE_DIR")
-        or os.path.expanduser("~/.claude/hooks/state/context-guard")
-    )
-    marker = {
-        "successor": session_name,
-        "state": str(state_path.resolve()),
-        "pids": sorted(pids),
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / f"{session_id}.handoff").write_text(json.dumps(marker))
-    except OSError as error:
-        sys.stderr.write(f"handoff.py: failed to write handoff marker: {error}\n")
-
-
 @dataclass
 class LogEntry:
     key: str
@@ -651,7 +628,6 @@ def _run_handoff(
             f"handoff: successor {session_name!r} did not start{locked}; {run_yourself}\n"
         )
         return 1
-    _write_handoff_marker(session_name, state_path, new_pids)
     _advance_checkpoint(
         run_dir, checkpoint, entries, _answered_questions(sections), goal_lines
     )
