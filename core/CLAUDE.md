@@ -38,8 +38,12 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.
 - **No cap on sub-agents; batch them.** When more than one sub-agent would run at the same time, run them
   as one Workflow (each `agent()` sets model and effort) instead of separate Agent spawns. Size each scout
-  brief to about 6-7 sources or 40 tool calls. Poll a long-running job from a worker that waits with
-  Monitor, never from a tight status loop.
+  brief to about 6-7 sources or 40 tool calls.
+- **Sub-agents wait in the foreground.** A sub-agent that ends its turn is finished, and its background jobs are killed.
+  So it starts a long job in the background writing a done-file (`<cmd>; echo $? > <file>`). Then it re-runs one
+  Bash call (timeout 600000) on `perl -e '$f=shift; $t=time; until (-e $f or time-$t >= 540) { sleep 10 } print((-e $f) ? "done\n" : "not yet\n")' <file>`
+  until it prints "done". It never waits with Monitor or a `pgrep -f` loop. The main session hands such waits to a
+  worker, never to a tight status loop.
 - **External contracts are captured, not assumed.** Never assert an endpoint, verb, payload, or
   response shape without a captured real response saved under the run dir by a worker and cited by
   path. Fixtures derive from captures.

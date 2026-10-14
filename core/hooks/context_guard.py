@@ -33,7 +33,8 @@ NOTICE = (
     "Context guard: ~{n}k tokens. This session is past 280k and a handoff is one command away: "
     "rewrite STATE.md, then run "
     "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name> --transcript {transcript}` "
-    "and message the successor. Nothing is blocked; hand off when the run reaches a good stopping point."
+    "as one bare Bash call (a redirect, pipe, `;` or `cd` prefix keeps it inside the Bash sandbox, where it fails), "
+    "then message the successor. Nothing is blocked; hand off when the run reaches a good stopping point."
 )
 
 IMPLEMENTER_AGENT = "claude-implementer"
