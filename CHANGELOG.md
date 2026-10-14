@@ -3,6 +3,13 @@
 One line per instruction change. A change adds its lines under today's `## YYYY-MM-DD`
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
+## 2026-10-14
+- core/skills/forge (forge-core.js, SKILL.md, references): remove the automatic browser QA stage (sandbox QA, browser smoke, QA draft, post-fix refresh); QA now runs by hand with the stage docs, and the profile keys stages.sandbox and stages.qa_login are accepted and ignored.
+- core/skills/forge: remove STATUS.json and status_merge.py; the handoff builds its Manual QA checklist from the acceptance criteria.
+- core/skills/forge: plan-facts returns the acceptance criteria in the same call, and forgeConfig is now a required launch argument (the config reader agent is gone).
+- core/skills/forge: the pre-ship checkpoint writes a smoke check on Opus medium instead of recommending ship, smoke or QA, and forge runs that smoke in the foreground before the pause and fails it when it changes the working tree; checkpoint.json drops recommendation, decidedBy and the plan hash.
+- core/skills/forge: remove gate.sh --push, the parity stage, the inline gate diff, the implementation-summary file, reviewer disputes and triage-template.md.
+
 ## 2026-10-13
 - core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.
 - core/scripts (exposure_scan.py): a weekly scanner logs where secret-shaped values appeared in transcripts, without the values.
