@@ -34,7 +34,6 @@ Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and
 - When live behavior matters, build or keep a runnable evidence harness before feature work. Emit per-capability evidence with pass, fail, or blocked status.
 - Harness and QA setup must be idempotent: use get_or_create/update_or_create, or clean up the rows it owns first, so the setup is safe to run twice against the same database.
 - The post-fix verifier receives only the original post-triage findings, the implementer's per-finding explanations, and the fix diff. It marks each of those findings `RESOLVED` or `UNRESOLVED` and cannot add findings; unresolved items stay open for the next round or the BLOCKED handoff. Codex reports inaccessible live targets as implemented-unverified.
-- Maintain `STATUS.json` with acceptance criteria, evidence paths, round state, and open findings. Merge updates; never truncate prior evidence.
 - When a deliverable mirrors a reference implementation, run both against the same target and compare observable results.
 - Capture external contracts before confirmation. Build fixtures from captures, not guessed response shapes.
 

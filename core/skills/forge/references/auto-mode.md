@@ -29,15 +29,6 @@ nothing and was retried on Opus), skipped stages (lens returned null), lane-limi
 The handoff artifact renders this as **Judgment calls**.
 Access-rule sentences are also written here and to `accessRules` in `plan-data.json`, and the plan artifact is re-rendered (SKILL.md step 4) before the run continues.
 
-## The state — `STATUS.json`
-
-Alongside the prose trail, the run dir carries `STATUS.json` (criteria → status/evidence/round,
-rounds, open findings). forge-core merges into it at smoke, each fix round, and handoff — it is
-never truncated, so it survives a crashed or killed run. A resume (`resumeFromRunId`, which works only
-in the launching session) or a successor session's relaunch from `launch-args.json` picks up from its
-weakest entry rather than from scratch; the handoff renders from it.
-`decisions.md` is append-only for the same reason.
-
 ## Reliability guards
 
 - Spawn cap (`args.spawnCap`, default 32 agent spawns). Exceeded → `BLOCKED` with a decision line.

@@ -25,7 +25,6 @@ const TIERS = {
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     ffReview: { model: 'sonnet', effort: 'low' },
-    trim: { model: 'haiku', effort: 'low' },
     lens: { model: 'sonnet', effort: 'high' },
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
@@ -41,7 +40,6 @@ const TIERS = {
     codexWrap: { model: 'sonnet', effort: 'low' },
     gate: { model: 'haiku', effort: 'low' },
     ffReview: { model: 'sonnet', effort: 'low' },
-    trim: { model: 'haiku', effort: 'low' },
     lens: { model: 'sonnet', effort: 'high' },
     shipper: { model: 'sonnet', effort: 'low' },
     handoff: { model: 'sonnet', effort: 'low' },
@@ -599,7 +597,6 @@ const STUBS = {
     : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }),
   readConfig: () => ({ roles: {}, stages: { ff_review: false }, thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES, ticketUrl: '', repos: { frontend: '', backend: '' }, gate: {} }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
-  trim: () => ({ written: true }),
   codexWrap: opts => {
     if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
     return { written: true }
@@ -1246,7 +1243,7 @@ function reviewerPrompt(identity, focus, context, codex = false) {
   const readFirst = codex
     ? ''
     : `Read ${REVIEWER_CONTRACT} in full first; it binds you. Read ${context.briefPath} in full with the Read tool first: it holds ${BRIEF_PARTS}.\n\n`
-  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if ${PARAMS.runDir}/STATUS.json or harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
+  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
 Use disputes only for a concrete concern at a file:line that you examined and explicitly reject, with the evidence in reason. Return exactly the review schema.
 
 PROJECT DIR
@@ -1871,17 +1868,6 @@ async function shipCheck(state, label) {
   }
 }
 
-function writeStatus(patch, phaseLabel) {
-  const patchPath = `${PARAMS.runDir}/status-patch.json`
-  return agentT('trim', `Use the Write tool to write exactly the text between the \`<<<FORGE-FILE ${patchPath}>>>\` line and the \`<<<FORGE-END>>>\` line, excluding those two marker lines, to ${patchPath}. If the Write tool refuses because the file exists and has not been read, Read it once, then Write it again. Then run exactly one command with the Bash tool and return its stdout JSON unchanged: python3 ~/.claude/skills/forge/scripts/status_merge.py --status ${shellQuote(`${PARAMS.runDir}/STATUS.json`)} --patch-file ${shellQuote(patchPath)}
-If the Write or the command is refused, blocked by a hook, or fails, return {"written": false}. Never write a file another way: no Bash heredoc, echo, printf, or python write.
-
-<<<FORGE-FILE ${patchPath}>>>
-${JSON.stringify(patch, null, 2)}
-<<<FORGE-END>>>`,
-  { label: `status-${phaseLabel}`, phase: phaseLabel, schema: ACK_SCHEMA })
-}
-
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
   const gateNotice = noGates
@@ -1896,21 +1882,20 @@ async function handoff(state, context) {
       files: context.files || [], criteria: acceptanceCriteria(), testPaths: context.testPaths || [],
     },
   }
-  await writeStatus({ rounds: { handoff: 1 }, status: state.status }, 'Handoff')
   if (state.status === 'PRE_SHIP') {
     return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. Include the checkpoint recommendation, command, reason, and summary from this data: ${JSON.stringify(state.checkpoint)}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
-End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
+End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
 When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and neither the run data nor checkpoint.json holds the checkpoint summary and reason after a relaunch. Carry its checkpoint summary and reason into What changed and why.
 ${gateNotice}
 Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
-Read ${PARAMS.runDir}/STATUS.json and render the Manual QA checklist from its criteria (status + evidence per item) when it exists.
+Render the Manual QA checklist from the acceptance criteria below, one unchecked item per criterion.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
-End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/STATUS.json, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
+End handoff.md with a \`Next steps\` list, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist). Do not create or modify ${PARAMS.runDir}/STATE.md.
 Return the handoff path.`,
   { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
 }
