@@ -4,6 +4,10 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 
 ## 2026-10-14
+- core/scripts/git-net.sh, core/scripts/with-env.sh, core/scripts/handoff.py, core/skills/forge/scripts/codex-exec.sh, install.py: a call that runs inside the Bash sandbox stops with exit 86 and a message naming the bare call to use.
+- core/skills/forge/scripts/gate.sh, core/skills/ship-pr/scripts/resolve-base-branch.sh, core/scripts/drift_report.py: a sandboxed run prints the bare-call message (gate.sh also adds it to its JSON warnings; the other two only on failure).
+- core/skills/forge (references/forge-core.js, references/codex-wrapper.md): every forge prompt that names an excluded script says to run it as one bare call, and the Codex review prompt spells out the start and resume commands instead of a `$MODE` variable.
+- core/skills/ship-pr/SKILL.md, modules/sandbox/CLAUDE.fragment.md: amend, push, fetch and pull lines say "one bare call", and the sandbox fragment names the stop message.
 - core/skills/forge (forge-core.js, SKILL.md, references): remove the automatic browser QA stage (sandbox QA, browser smoke, QA draft, post-fix refresh); QA now runs by hand with the stage docs, and the profile keys stages.sandbox and stages.qa_login are accepted and ignored.
 - core/skills/forge: remove STATUS.json and status_merge.py; the handoff builds its Manual QA checklist from the acceptance criteria.
 - core/skills/forge: plan-facts returns the acceptance criteria in the same call, and forgeConfig is now a required launch argument (the config reader agent is gone).

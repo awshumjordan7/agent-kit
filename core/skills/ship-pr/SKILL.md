@@ -38,8 +38,8 @@ Use this skill only after implementation and validation are complete and the use
   git log --format='%H%n%B' "<range>" --not "origin/<base>" | grep -inE '^co-authored-by:.*(claude|anthropic)|^claude-session:|generated with \[?claude code|claude\.ai/code/session'
   ```
 
-  It must print nothing. If it prints lines from the last commit, rewrite that commit's message with `bash ~/.claude/scripts/git-net.sh -C <repo> commit --amend -F <file>` and run it again. If older unpushed commits match, stop and report. Never rewrite pushed commits; report matches found in them without blocking.
-- Push with `bash ~/.claude/scripts/git-net.sh -C <repo> push -u origin <branch>`. Run every network git command (fetch, pull, push) this way, as a whole command: the Bash sandbox routes ssh through a proxy that git cannot use.
+  It must print nothing. If it prints lines from the last commit, rewrite that commit's message with `bash ~/.claude/scripts/git-net.sh -C <repo> commit --amend -F <file>` as one bare call (no cd prefix, pipe, redirect, `;` or `&&`) and run it again. If older unpushed commits match, stop and report. Never rewrite pushed commits; report matches found in them without blocking.
+- Push with `bash ~/.claude/scripts/git-net.sh -C <repo> push -u origin <branch>`. Run every network git command (fetch, pull, push) this way, as one bare call (no cd prefix, pipe, redirect, `;` or `&&`): the Bash sandbox routes ssh through a proxy that git cannot use.
 - Never force-push unless the user explicitly authorizes it.
 
 ## 4. GitHub commands
