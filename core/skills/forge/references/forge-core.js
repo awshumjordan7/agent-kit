@@ -355,7 +355,7 @@ const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     branch: { type: 'string' }, prUrl: { type: 'string' }, prNumber: { type: 'integer' }, repo: { type: 'string' },
-    skipped: { type: 'boolean' }, reason: { type: 'string' },
+    skipped: { type: 'boolean' }, reason: { type: 'string' }, sha: { type: 'string' },
     unstaged: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
@@ -1752,7 +1752,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
   const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
-    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${existing.branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${existing.branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}. Update the PR body after the push. ${bodyRule} ${tail}`
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${existing.branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${existing.branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. Update the PR body after the push. ${bodyRule} ${tail}`
     : committedBranch
     ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
     : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch. If the current branch is the base branch or detached, create branch ${planBranchName()} from origin/<base>, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
@@ -1767,23 +1767,80 @@ async function recordUnstaged(state, result, label) {
 }
 
 // After a push the tree must hold no run file: a dirty path left here was never committed. Env-like
-// paths stay uncommitted by design, so they are recorded instead of blocking.
-async function shipCheck(state, label) {
+// paths stay uncommitted by design, so they are recorded instead of blocking. Returns the non-env
+// dirty paths, or null when the facts were unavailable.
+async function shipCheck(state, label, block = true) {
   PARAMS.spawnCap += 1
-  const facts = await factsCommand(`ship-facts-${label === 'Ship' ? 'ship' : 'sync'}`, `python3 ~/.claude/skills/forge/scripts/run_context.py ship-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${localOnlyFlags()}`,
-    SHIP_FACTS_SCHEMA, label === 'Ship' ? 'Ship' : 'Fix')
+  const facts = await factsCommand(`ship-facts-${label === 'Ship' ? 'ship' : 'sync'}`, shipFactsCommand(), SHIP_FACTS_SCHEMA, label === 'Ship' ? 'Ship' : 'Fix')
   if (!facts) {
-    state.status = 'BLOCKED'
+    if (block) state.status = 'BLOCKED'
     await decide(`${label} check for uncommitted run files returned no result; check git status in ${PARAMS.projectDir} by hand.`)
-    return
+    return null
   }
   const envLike = facts.dirty.filter(envLikePath)
   const left = facts.dirty.filter(path => !envLikePath(path))
   if (envLike.length) await decide(`${label} left env-like paths uncommitted by design: ${envLike.join(', ').slice(0, 500)}`)
   if (left.length) {
-    state.status = 'BLOCKED'
+    if (block) state.status = 'BLOCKED'
     await decide(`${label} left ${left.length} run file(s) uncommitted: ${left.join(', ').slice(0, 500)}. A human must commit or discard them.`)
   }
+  return left
+}
+
+function shipFactsCommand() {
+  return `python3 ~/.claude/skills/forge/scripts/run_context.py ship-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${localOnlyFlags()}`
+}
+
+// A stop that did not push names the paths it left on disk. Null means the read failed, never a clean tree.
+async function readUncommitted(state, label, phaseLabel) {
+  PARAMS.spawnCap += 1
+  const facts = await factsCommand(`ship-facts-${label}`, shipFactsCommand(), SHIP_FACTS_SCHEMA, phaseLabel)
+  if (!facts) {
+    state.uncommitted = null
+    state.uncommittedError = 'ship-facts unavailable'
+    await decide(`The ${label} check for uncommitted paths returned no result; check git status in ${PARAMS.projectDir} by hand.`)
+    return
+  }
+  state.uncommitted = facts.dirty.filter(path => !envLikePath(path))
+  state.uncommittedError = null
+}
+
+// Pushing gate-passing fixes before a needsJudge stop keeps them when a rulings resume re-triages the
+// tree. A skipped or failed push is recorded and never changes the needsJudge outcome.
+async function syncBeforeJudge(state) {
+  const loop = state.convergence
+  const branch = (state.ship && state.ship.branch) || '(unknown branch)'
+  const waiting = `${loop.unresolvedDisputes.length} disputed item(s) get a human ruling`
+  const gatePassing = configuredGateMode() === 'none' || (loop.gateRan && loop.gatePassed)
+  state.fixSync = { ran: false, ok: false, sha: null }
+  const skip = !state.ship ? 'the run has no shipped branch' : !gatePassing ? 'the gate is not passing on the fixed tree' : ''
+  if (skip) {
+    await decide(`Fixes stayed unpushed on ${branch} until ${waiting}, because ${skip}.`)
+    return
+  }
+  state.fixSync.ran = true
+  const context = await changedFiles()
+  if (contextFailed(context) || !context.diffValid) {
+    await decide(`Fixes stayed unpushed on ${branch} until ${waiting}: changed-file collection failed before ship sync (${(context && context.error) || 'review diff invalid'}).`)
+    return
+  }
+  state.context = context
+  const synced = await ship(state.ship, [
+    ...((state.implement && state.implement.filesChanged) || []),
+    ...(loop.touchedFiles || []),
+  ], state.context)
+  await recordUnstaged(state, synced, 'Ship sync')
+  if (!synced || synced.skipped) {
+    await decide(`Ship sync to ${branch} failed before the needsJudge stop (${(synced && synced.reason) || 'shipper returned null'}); the fixes stay uncommitted until ${waiting}.`)
+    return
+  }
+  state.ship = synced
+  state.fixSync.sha = synced.sha || null
+  const left = await shipCheck(state, 'Ship sync', false)
+  state.fixSync.ok = Array.isArray(left) && left.length === 0
+  state.uncommitted = left
+  state.uncommittedError = left ? null : 'ship-facts unavailable'
+  await decide(`Fixes were pushed to ${branch} at ${state.fixSync.sha || 'an unreported sha'} before the needsJudge stop${state.fixSync.ok ? '' : ', but the tree was not clean afterwards'}; ${loop.unresolvedDisputes.length} disputed item(s) need a human ruling.`)
 }
 
 function ffReview(shipResult) {
@@ -2281,12 +2338,10 @@ async function fullLane() {
       if (state.convergence.needsJudge) state.needsJudge = true
       if (state.convergence.blocked) {
         state.status = 'BLOCKED'
-      }
-      if (state.convergence.blocked || (state.convergence.needsJudge && state.convergence.fixesApplied)) {
         const branch = (state.ship && state.ship.branch) || '(unknown branch)'
-        await decide(state.convergence.blocked
-          ? `Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} item(s) stayed open after the fix loop (${state.convergence.reason}).`
-          : `Fixes stayed unpushed on ${branch} until ${state.convergence.unresolvedDisputes.length} disputed item(s) get a human ruling.`)
+        await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} item(s) stayed open after the fix loop (${state.convergence.reason}).`)
+      } else if (state.convergence.needsJudge && state.convergence.fixesApplied) {
+        await syncBeforeJudge(state)
       }
       if (!state.convergence.blocked && !state.convergence.needsJudge && state.convergence.fixesApplied && state.ship) {
         state.context = await changedFiles()
@@ -2404,10 +2459,18 @@ if (state.needsJudge) {
   ].map(item => ({ id: findingKey(item.finding || {}), ...item }))
   const loop = state.convergence
   const convergence = loop && loop.blocked ? { reason: loop.reason, open: loop.open, deciderNotes: loop.deciderNotes } : null
-  return { status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir }
+  if (state.uncommitted === undefined) await readUncommitted(state, 'needsJudge', 'Fix')
+  return {
+    status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir,
+    decisions: [...decisions], fixSync: state.fixSync || { ran: false, ok: false, sha: null },
+    uncommitted: state.uncommitted, uncommittedError: state.uncommittedError || null,
+  }
 }
 if (capBlocked && !['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
+// A DONE run with a ship has pushed every fix and passed the clean-tree check after the push.
+if (state.status === 'DONE' && state.ship && !state.ship.skipped) state.uncommitted = []
 phase('Handoff')
+if (state.uncommitted === undefined) await readUncommitted(state, 'final', 'Handoff')
 const ho = await handoff(state, state.context || {})
 if (!ho) {
   if (!['READY_FOR_HUMAN', 'PRE_SHIP'].includes(state.status)) state.status = 'BLOCKED'
@@ -2420,6 +2483,8 @@ return {
   handoffPath: (ho && ho.handoffPath) || '',
   prUrl: (state.ship && state.ship.prUrl) || '',
   unstaged: state.unstaged || [],
+  uncommitted: state.uncommitted,
+  uncommittedError: state.uncommittedError || null,
   command: (state.checkpoint && state.checkpoint.command) || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
   planSha256: PLAN_FACTS.sha256,
