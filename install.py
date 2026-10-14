@@ -31,8 +31,8 @@ def _check_sandbox() -> None:
         raise SystemExit(86)
 
 
-_check_python_version()
 _check_sandbox()
+_check_python_version()
 
 from aisetup.cli import main  # noqa: E402
 
