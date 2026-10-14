@@ -533,8 +533,17 @@ lock_gone_or_fail() {
 }
 acquire_lock() {
     [ "$PARALLEL" = "true" ] && return 0
-    local waited=0 announced=false owner
+    local waited=0 announced=false owner create_failures=0
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        # A failed mkdir with no lock present means the folder is not writable (a sandbox,
+        # say); another session may also have just released it, so retry briefly first.
+        if [ ! -e "$LOCK_DIR" ]; then
+            create_failures=$(( create_failures + 1 ))
+            if [ "$create_failures" -gt 3 ]; then
+                fail 78 "CODEX_LOCK_UNWRITABLE: cannot create lock folder $LOCK_DIR"
+            fi
+            sleep 1; continue
+        fi
         owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
         if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
             echo "warn: removing stale codex lock held by dead pid $owner" >&2

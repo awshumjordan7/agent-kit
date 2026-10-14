@@ -9,6 +9,10 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 - core/skills/forge: plan-facts returns the acceptance criteria in the same call, and forgeConfig is now a required launch argument (the config reader agent is gone).
 - core/skills/forge: the pre-ship checkpoint writes a smoke check on Opus medium instead of recommending ship, smoke or QA, and forge runs that smoke in the foreground before the pause and fails it when it changes the working tree; checkpoint.json drops recommendation, decidedBy and the plan hash.
 - core/skills/forge: remove gate.sh --push, the parity stage, the inline gate diff, the implementation-summary file, reviewer disputes and triage-template.md.
+- modules/sandbox: a new macOS-only module turns on Claude Code's sandbox for Bash, which blocks env-file and credential-folder reads at the operating-system level.
+- core/hooks, core/settings.fragment.json, tests/secret_hook, .github/workflows/secret-hook.yml: the env-file hook and its tests are removed; the sandbox module replaces it.
+- core/scripts, core/skills/ship-pr, core/skills/forge, core/references/env-recipe.md, core/agents/worker.md: network git and env-loaded commands go through two fixed scripts that run outside the sandbox.
+- core/skills/forge/scripts/codex-exec.sh: the wrapper stops with one line instead of waiting forever when its lock folder cannot be created.
 
 ## 2026-10-13
 - core/hooks (block_secret_reads.py), core/settings.fragment.json: the regex secret-read hook is replaced by a check that blocks only Bash commands naming an env file and Artifact uploads of one; built-in deny rules cover the file tools.

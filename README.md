@@ -76,6 +76,7 @@ claude mcp list
 | github | off | GitHub CLI and MCP tools |
 | marketing | off | market research and content workflows |
 | terminal | off | Ghostty defaults on macOS |
+| sandbox | off | Claude Code sandbox for Bash on macOS |
 
 See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](docs/overlay.md) for private layers.
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook

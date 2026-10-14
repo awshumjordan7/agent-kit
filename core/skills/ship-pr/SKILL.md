@@ -10,7 +10,7 @@ Use this skill only after implementation and validation are complete and the use
 ## 1. Orient
 
 - Inspect `git status --short`, the current branch, and the `origin` remote.
-- Run `scripts/resolve-base-branch.sh` and state the result.
+- Run `bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh` as a whole command, with the repository as the working directory, and state the result. A `cd <repo> &&` prefix keeps it inside the Bash sandbox, where its `git ls-remote` fails.
 - Do not overwrite, stash, or discard unrelated changes.
 
 ## 2. Branch and commit
@@ -38,7 +38,7 @@ Use this skill only after implementation and validation are complete and the use
   ```
 
   It must print nothing. If it prints lines from the last commit, rewrite that commit's message with `git commit --amend -F <file>` and run it again. If older unpushed commits match, stop and report. Never rewrite pushed commits; report matches found in them without blocking.
-- Push with `git push -u origin <branch>`.
+- Push with `bash ~/.claude/scripts/git-net.sh -C <repo> push -u origin <branch>`. Run every network git command (fetch, pull, push) this way, as a whole command: the Bash sandbox routes ssh through a proxy that git cannot use.
 - Never force-push unless the user explicitly authorizes it.
 
 ## 4. GitHub commands
