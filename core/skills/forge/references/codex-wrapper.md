@@ -24,7 +24,7 @@ Codes 64 (usage error or `codex` not on PATH), 65 (`CODEX_DIFF_INVALID`), 69 (`C
 
 Forge resolves `gate.mode` per repository, defaulting to `full`. Personal repositories use `none`, have no tests, and must not receive test, lint, typecheck, migration, or Semgrep work in Codex prompts. They spawn no gate agent; the review diff comes from plain `git diff`.
 
-Every build reaches a pre-ship checkpoint after the gate. A fresh writer gives one smoke command or writes `<runDir>/smoke.py`, and forge runs it before the pause. Attended runs then pause at `PRE_SHIP`; `auto` ships on a passing smoke and stops on a failing smoke or when there is no command. QA runs only by hand, with the overlay stage docs. Mode `none` skips its gate and still reaches the checkpoint.
+Every build reaches a pre-ship checkpoint after the gate. A fresh writer gives one smoke command or writes `<runDir>/smoke.py`, and forge runs it before the pause. Attended runs then pause at `PRE_SHIP`; `auto` ships on a passing smoke or a no-code run, stops BLOCKED on a failing smoke, and stops at `PRE_SHIP` when code changed but there is no command. QA runs only by hand, with the overlay stage docs. Mode `none` skips its gate and still reaches the checkpoint.
 
 Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`; `qa` stops at `PRE_SHIP` again, since forge has no QA stage. A resumed build reads `checkpoint.json` through `run_context.py checkpoint-facts`, skips Implement and Gate, and continues from that decision. The file holds no summary or script; a file written by an older forge still reads, and its context is collected again.
 

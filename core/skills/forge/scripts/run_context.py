@@ -68,9 +68,9 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def _changed_paths(before: list[str], after: list[str]) -> list[str]:
-    changed = set(before).symmetric_difference(after)
-    return sorted({entry[3:] for entry in changed})
+def _tree_state(repo: Path) -> dict[str, tuple[str, str | None]]:
+    porcelain, paths = _status(repo)
+    return {path: (entry[:2], _sha256(repo / path)) for entry, path in zip(porcelain, paths)}
 
 
 # The cap stays below the 600000 ms Bash timeout the calling agent uses, so the command reports
@@ -81,7 +81,7 @@ SMOKE_TIMEOUT_SECONDS = 570
 def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.log") -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / Path(log_name).name
-    before, _paths = _status(repo)
+    before = _tree_state(repo)
     try:
         completed = subprocess.run(
             command,
@@ -102,8 +102,8 @@ def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.lo
             output = output.decode("utf-8", "replace")
         exit_code = 124
         timed_out = True
-    after, _paths = _status(repo)
-    changed_paths = _changed_paths(before, after)
+    after = _tree_state(repo)
+    changed_paths = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
     tail = "\n".join(output.splitlines()[-200:])
     log_path.write_text(tail + ("\n" if tail else ""), encoding="utf-8")
     if changed_paths:
