@@ -31,7 +31,7 @@ FIXED_IDS = {
 }
 KNOWN_KEYS = {
     "plan": {
-        "ticket", "title", "lane", "repo", "date", "runDir", "sandboxTier", "lenses", "status",
+        "ticket", "title", "lane", "repo", "date", "runDir", "lenses", "status",
         "accessRules", "planReview", "pending", "links", "next", "decision",
     },
     "qa": {
@@ -425,7 +425,7 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
         lenses = ", ".join(str(x) for x in lenses)
     run_rows = [
         [label, str(value)]
-        for label, value in (("Run dir", data.get("runDir")), ("Sandbox", data.get("sandboxTier")), ("Lenses", lenses))
+        for label, value in (("Run dir", data.get("runDir")), ("Lenses", lenses))
         if value
     ]
 

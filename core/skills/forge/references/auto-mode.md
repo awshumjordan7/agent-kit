@@ -13,7 +13,7 @@ Same lane, no stops. The user is away; the run makes its best call and leaves a 
 ## What is never skipped
 
 - Test-table approval. Auto starts only after the user explicitly approves the table or its `None: <reason>`.
-- The local gate and the sandbox gate.
+- The local gate. Forge runs no sandbox or browser QA; the main session runs QA on demand with the overlay stage docs.
 - Scope limits. A run that needs a materially different plan stops with the evidence and reason.
 - The capped fix loop. It stops BLOCKED at `MAX_FIX_ROUNDS` (2) rounds, or earlier when a round shrinks neither the open review set nor the failing gate count, with the open items and decider notes in the handoff. Review items the decider rejects, defers, or cannot decide still stop for a human ruling.
 - Bot-review findings are triaged and reported in the handoff only; auto never fixes them, they never enter the fix loop, and the run does not stop for them.
@@ -25,8 +25,8 @@ Every judgment call is appended as it happens (crash-safe), one line each:
     [step] decision — reason
 
 Sources: interpretation choices, judge rulings, Opus fallbacks (a Fable role returned
-nothing and was retried on Opus), skipped stages (sandbox MCP unavailable, lens returned
-null), lane-limit stops. The handoff artifact renders this as **Judgment calls**.
+nothing and was retried on Opus), skipped stages (lens returned null), lane-limit stops.
+The handoff artifact renders this as **Judgment calls**.
 Access-rule sentences are also written here and to `accessRules` in `plan-data.json`, and the plan artifact is re-rendered (SKILL.md step 4) before the run continues.
 
 ## The state — `STATUS.json`

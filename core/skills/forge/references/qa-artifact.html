@@ -2,7 +2,7 @@
   Forge QA checklist. Render it, never hand-fill it:
     python3 ~/.claude/skills/forge/scripts/render_artifact.py qa \
       --data <runDir>/qa-data.json --out <runDir>/qa-artifact.html
-  The main session or the qaDraft worker writes qa-data.json; the renderer removes this comment,
+  The main session writes qa-data.json during QA it runs on demand; the renderer removes this comment,
   fills every slot, and exits 1 when a slot is left unfilled.
 
   qa-data.json keys (placeholder in brackets):
