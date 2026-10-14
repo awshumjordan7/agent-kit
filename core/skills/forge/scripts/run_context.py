@@ -535,7 +535,6 @@ _RELAUNCH_MARKERS = (
     "context-gate.json",
     "checkpoint.json",
     "impl-progress-*.md",
-    "implementation-summary*.md",
 )
 
 

@@ -34,7 +34,7 @@ with the same `head`, `baseSha` (the merge-base sha), `diffSha256`, `configSha25
 `stageSelection`; its JSON names that result's label in `reusedFrom`. A run without `--base` or any unequal value
 runs the stages.
 
-Use `gate.sh --only lint,typecheck,migrations,tests,semgrep,parity` to run selected stages. The JSON result lists
+Use `gate.sh --only lint,typecheck,migrations,tests,semgrep` to run selected stages. The JSON result lists
 unselected stages in `skipped`. New Semgrep ERROR findings block only for security rules outside test paths; other
 new findings are returned in `warnings`. In `full` mode, a repository with Semgrep enabled fails the gate when the
 Semgrep binary is not installed; install it or set `"semgrep": false` in that repository's entry.

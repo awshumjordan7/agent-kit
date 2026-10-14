@@ -19,7 +19,7 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 A plan with two or more `### Phase <id>: <title>` headings under `## Phases` runs one phase at a time:
 
 1. Before the first phase, Forge switches to a new branch when the checkout is on the base branch or detached, as ship-pr does, and records the run in `<runDir>/phases.json`, which `run_context.py phases-save` writes with titles taken from the plan file. A failed write stops the run BLOCKED.
-2. Each phase gets its own implementer turn (`implement-phase-<id>`, `implementation-summary-phase-<id>.md`) with the full plan as context and the instruction to implement only that phase.
+2. Each phase gets its own implementer turn (`implement-phase-<id>`) with the full plan as context and the instruction to implement only that phase.
 3. The phase's files are committed as `Phase <id>: <title>` through `gate.sh --no-stages --commit`, and the SHA is recorded in `<runDir>/phases.json`.
 4. In gate mode `full`, the phase gate (`gate-phase-<id>`) runs on that SHA with `gate.sh --sha` in `<runDir>/gate-checkout` while the next phase is implemented. Gates run one at a time. The last phase gets no gate of its own: after every earlier gate and its fix commits have settled, the final gate runs on HEAD over every run file.
 5. A failed gate is collected at the next phase boundary, never while an implementer is editing. The fix loop runs in the primary worktree, each applied round is committed as `Fix Phase <id> gate`, and that SHA is re-gated. The final gate, and any fix it needs, finishes before the pre-ship checkpoint.
@@ -45,7 +45,7 @@ The triage agent confirms each finding against current code. Confirmed findings,
 
 ## Repository gate modes
 
-`gate.mode` is resolved per repository and defaults to `full`. Full mode retains the configured gate. Personal repositories use `none`: they have no tests, spawn no gate agent, and run no test, lint, typecheck, migration, Semgrep, or parity command; Forge still creates the review diff with plain `git diff`.
+`gate.mode` is resolved per repository and defaults to `full`. Full mode retains the configured gate. Personal repositories use `none`: they have no tests, spawn no gate agent, and run no test, lint, typecheck, migration, or Semgrep command; Forge still creates the review diff with plain `git diff`.
 
 Every build reaches a pre-ship checkpoint after the gate. A fresh Opus writer reads the plan and the diff, then gives the one command, or writes `<runDir>/smoke.py`, that best proves the change works within 540 seconds; it returns an empty command when no runnable check can. Forge runs that smoke in the foreground right after the writer returns, and a smoke that changes the working tree fails. When no changed file is code, the writer does not run and no smoke runs. Attended runs then pause at `PRE_SHIP` with the smoke result. `auto` ships on a passing smoke or a no-code run, stops BLOCKED on a failing smoke, and stops at `PRE_SHIP` when there is no command. QA runs only by hand, on demand, with the overlay stage docs. Mode `none` still reaches this checkpoint after skipping its gate.
 

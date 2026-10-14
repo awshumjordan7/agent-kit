@@ -147,13 +147,6 @@ const REVIEW_SCHEMA = {
     verdict: { type: 'string', enum: ['approve', 'request_changes'] },
     score: { type: 'integer', minimum: 1, maximum: 5 },
     findings: { type: 'array', items: FINDING },
-    disputes: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        properties: { file: { type: 'string' }, line: { type: 'integer' }, reason: { type: 'string' } },
-        required: ['file', 'line', 'reason'],
-      },
-    },
   },
   required: ['verdict', 'score', 'findings'],
 }
@@ -286,8 +279,7 @@ const GATE_SCHEMA = {
     },
     skipped: { type: 'array', items: { type: 'string' } },
     commands: { type: 'array', items: { type: 'string' } },
-    files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' },
-    diffTruncated: { type: 'boolean' }, diffExcluded: { type: 'array', items: { type: 'string' } },
+    files: { type: 'array', items: { type: 'string' } }, diffExcluded: { type: 'array', items: { type: 'string' } },
     excludedFiles: { type: 'array', items: { type: 'string' } },
     diffPath: { type: 'string' }, diffBytes: { type: 'integer' },
     head: { type: 'string' }, baseSha: { type: 'string' }, diffSha256: { type: 'string' },
@@ -296,7 +288,7 @@ const GATE_SCHEMA = {
     commit: {
       anyOf: [
         { type: 'null' },
-        { type: 'object', additionalProperties: false, properties: { sha: { anyOf: [{ type: 'string' }, { type: 'null' }] }, pushed: { type: 'boolean' }, error: { type: 'string' }, dropped: { type: 'array', items: { type: 'string' } } }, required: ['sha', 'pushed', 'error', 'dropped'] },
+        { type: 'object', additionalProperties: false, properties: { sha: { anyOf: [{ type: 'string' }, { type: 'null' }] }, error: { type: 'string' }, dropped: { type: 'array', items: { type: 'string' } } }, required: ['sha', 'error', 'dropped'] },
       ],
     },
   },
@@ -522,7 +514,7 @@ const STUBS = {
     : { filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null, status: 'DONE', progressFile: null },
   reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
-    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] },
+    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings() },
   checkpoint: () => ({ command: 'true', scriptWritten: false }),
   triage: () => ({ verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) }),
   decider: opts => {
@@ -531,15 +523,15 @@ const STUBS = {
     return { items: items.map(item => ({ id: findingKey(item), source: item.source, action: 'fix', reason: 'dry-run decision', files: [item.file].filter(Boolean), change: item.fix_hint, check: 'dry-run check' })), cannotDecide: [], notes: 'dry-run spec', diffStat: ' 1 file changed', applied: false, apply: null }
   },
   applier: opts => STUBS.implementer(opts),
-  lens: () => ({ verdict: 'approve', score: 5, findings: [], disputes: [] }),
+  lens: () => ({ verdict: 'approve', score: 5, findings: [] }),
   gate: opts => {
     if (String(opts.label).startsWith('commit-')) {
-      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep', 'parity'], commit: { sha: dryRunSha(opts.label), pushed: false, error: '', dropped: [] } }
+      return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep'], commit: { sha: dryRunSha(opts.label), error: '', dropped: [] } }
     }
     const forcedFailure = PARAMS.dryRunFailGate === opts.label
     return forcedFailure
-      ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
-      : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diff: 'dry-run diff', diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
+      ? { passed: false, failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }], commands: ['dry-run gate'], files: ['auth/api/client.py'], diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
+      : { passed: true, failures: [], commands: ['dry-run gate'], files: ['auth/api/client.py'], diffPath: `${PARAMS.runDir}/gate-dry-run.diff`, diffBytes: 23 }
   },
   shipper: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
@@ -570,7 +562,7 @@ const STUBS = {
     : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   codexWrap: opts => {
-    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings(), disputes: [] }, error: '', handoffs: 0 }
+    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings() }, error: '', handoffs: 0 }
     return { written: true }
   },
 }
@@ -909,12 +901,12 @@ function gateScriptInstruction() {
 }
 
 function claudeTestPromptInstruction() {
-  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, Semgrep, or parity commands.'
+  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, or Semgrep commands.'
   return `${gateScriptInstruction()} The gate re-runs it; copy the final pytest summary line from the last lines of each tests log into summary (or state that commands shows tests skipped), and never report tests as intentionally skipped.`
 }
 
 function runBeforeReturningInstruction() {
-  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, Semgrep, or parity commands; the pre-ship checkpoint writes and runs a smoke check.'
+  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, or Semgrep commands; the pre-ship checkpoint writes and runs a smoke check.'
   return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
 }
 
@@ -966,10 +958,9 @@ Continue from the progress file; do not redo work it marks done; do not re-read 
 function implement(phase = null) {
   const suffix = phase ? `-phase-${phase.id}` : ''
   const label = `implement${suffix}`
-  const summaryPath = `${PARAMS.runDir}/implementation-summary${suffix}.md`
   const scope = phaseScope(phase)
   const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Write the implementation summary to ${summaryPath}. Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
+  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
     { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
 }
 
@@ -1202,8 +1193,8 @@ function reviewerPrompt(identity, focus, context, codex = false) {
   const readFirst = codex
     ? ''
     : `Read ${REVIEWER_CONTRACT} in full first; it binds you. Read ${context.briefPath} in full with the Read tool first: it holds ${BRIEF_PARTS}.\n\n`
-  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if harness output files (selfcheck*.json, parity.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
-Use disputes only for a concrete concern at a file:line that you examined and explicitly reject, with the evidence in reason. Return exactly the review schema.
+  return `${readFirst}You are the ${identity} reviewer. Review independently; do not inspect review transcripts or other reviewers' findings. ${focus} Ground findings in your own evidence: if harness output files (selfcheck*.json, smoke/) exist, read them; never rely on the implementer's or fixer's summary. The named diff file is the review source; read repository files only to confirm a specific file:line it touches, with ranged reads.
+Return exactly the review schema.
 
 PROJECT DIR
 ${PARAMS.projectDir}
@@ -1267,21 +1258,6 @@ function lensReview(lens, context) {
     : lens.prompt
   return agentT('lens', reviewerPrompt(`${lens.key} lens`, `${skill} Report only ${lens.key} concerns.`, context),
     { label: `lens-${lens.key}`, phase: 'Review', schema: REVIEW_SCHEMA })
-}
-
-function detectContradictions(rows) {
-  const contradictions = []
-  for (const source of rows) {
-    for (const finding of source.result.findings || []) {
-      if (!['HIGH', 'CRITICAL'].includes(finding.severity)) continue
-      for (const other of rows) {
-        if (other.key === source.key) continue
-        const dispute = (other.result.disputes || []).find(item => item.file === finding.file && item.line === finding.line)
-        if (dispute) contradictions.push({ finding, raisedBy: source.key, dispute, disputedBy: other.key })
-      }
-    }
-  }
-  return contradictions
 }
 
 function uniqueFindings(rows) {
@@ -1357,31 +1333,16 @@ function ruledItem(item, ruling) {
   return { ...item, ruling: rescoped ? 'rescope' : 'apply', ...(rescoped ? { fix_hint: String(ruling.instruction) } : {}) }
 }
 
-async function applyRulings(findings, contradictions) {
+function applyRulings(findings) {
   const dropped = new Set()
   const applied = new Map()
-  const unresolved = []
-  const record = (finding, ruling) => {
+  for (const finding of findings) {
+    const ruling = rulingFor(finding)
+    if (!ruling) continue
     if (ruling.decision === 'drop') dropped.add(findingKey(finding))
     else applied.set(findingKey(finding), ruledItem(finding, ruling))
   }
-  for (const contradiction of contradictions) {
-    const finding = contradiction.finding
-    const ruling = rulingFor(finding)
-    if (ruling) {
-      record(finding, ruling)
-    } else if (PARAMS.auto) {
-      await decide(`Auto ruling applied ${finding.file}:${finding.line} conservatively: ${finding.claim}`)
-    } else {
-      unresolved.push(contradiction)
-    }
-  }
-  for (const finding of findings) {
-    const ruling = rulingFor(finding)
-    if (ruling) record(finding, ruling)
-  }
   return {
-    unresolved,
     applied: findings.flatMap(finding => applied.has(findingKey(finding)) ? [applied.get(findingKey(finding))] : []),
     confirmed: findings.filter(finding => !dropped.has(findingKey(finding)) && !applied.has(findingKey(finding))),
   }
@@ -1405,8 +1366,7 @@ async function reviewPanel(context) {
   const failures = specs.flatMap((spec, index) => raw[index] ? [] : [{ key: spec.key, status: 'FAIL', reason: 'agent returned null' }])
   if (skipCodex && failures.some(failure => failure.key === 'claude')) return { status: 'BLOCKED', reason: 'Review panel: Claude reviewer failed and Codex was skipped, so no general review ran' }
   const findings = uniqueFindings(rows)
-  const disputes = detectContradictions(rows)
-  const ruled = await applyRulings(findings, disputes)
+  const ruled = applyRulings(findings)
   const triage = await triageFindings(ruled.confirmed, context)
   let partitioned
   if (triage) {
@@ -1423,8 +1383,8 @@ async function reviewPanel(context) {
   for (const finding of confirmed) {
     await decide(`Review confirmed ${attribution(finding)} ${finding.file}:${finding.line}`)
   }
-  const unresolvedDisputes = [...ruled.unresolved, ...partitioned.disputes]
-  return { reviews: rows, findings, disputes, unresolvedDisputes, confirmed, failures, returned: present.length }
+  const unresolvedDisputes = partitioned.disputes
+  return { reviews: rows, findings, unresolvedDisputes, confirmed, failures, returned: present.length }
 }
 
 // The applier gets only the decider's fix items, already verified, so it applies them without re-triage.

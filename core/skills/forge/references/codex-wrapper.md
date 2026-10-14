@@ -22,7 +22,7 @@ Codes 64 (usage error or `codex` not on PATH), 65 (`CODEX_DIFF_INVALID`), 69 (`C
 
 ## Forge policy
 
-Forge resolves `gate.mode` per repository, defaulting to `full`. Personal repositories use `none`, have no tests, and must not receive test, lint, typecheck, migration, Semgrep, or parity work in Codex prompts. They spawn no gate agent; the review diff comes from plain `git diff`.
+Forge resolves `gate.mode` per repository, defaulting to `full`. Personal repositories use `none`, have no tests, and must not receive test, lint, typecheck, migration, or Semgrep work in Codex prompts. They spawn no gate agent; the review diff comes from plain `git diff`.
 
 Every build reaches a pre-ship checkpoint after the gate. A fresh writer gives one smoke command or writes `<runDir>/smoke.py`, and forge runs it before the pause. Attended runs then pause at `PRE_SHIP`; `auto` ships on a passing smoke and stops on a failing smoke or when there is no command. QA runs only by hand, with the overlay stage docs. Mode `none` skips its gate and still reaches the checkpoint.
 
