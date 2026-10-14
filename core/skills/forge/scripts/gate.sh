@@ -72,6 +72,13 @@ while (($#)); do
   esac
 done
 
+# Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+sandbox_message=''
+if [[ -n ${SANDBOX_RUNTIME+x} ]] && ! $print_mode; then
+  sandbox_message="gate.sh must run outside the Bash sandbox, and this call ran inside it. Run it again as one bare Bash call spelled exactly bash ~/.claude/skills/forge/scripts/gate.sh <args>: no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written."
+  printf '%s\n' "$sandbox_message" >&2
+fi
+
 all_stages='lint,typecheck,migrations,tests,semgrep'
 if $only_given; then
   [[ -n $only_stages ]] || die 'gate.sh: --only requires at least one stage'
@@ -711,6 +718,8 @@ record_warning() {
   printf '%s\n' "$summary" >"$log"
   printf '%s\twarning\t0\t%s\n' "$tool" "$log" >>"$results_file"
 }
+
+[[ -z $sandbox_message ]] || record_warning sandbox "$sandbox_message"
 
 run_configured_tool() {
   local tool=$1
@@ -1402,7 +1411,13 @@ result["diffPath"] = diff_path
 result["diffBytes"] = len(diff)
 if reuse_path:
     with open(reuse_path, encoding="utf-8") as handle:
-        result.update(json.load(handle))
+        reuse = json.load(handle)
+    result.update(reuse)
+    if "warnings" in reuse:
+        # The sandbox warning describes how this call ran, never the cached run.
+        result["warnings"] = [item for item in result["warnings"] if item.get("tool") != "sandbox"] + [
+            item for item in warnings if item["tool"] == "sandbox"
+        ]
 
 commit_error = ""
 if not failures and commit_message:

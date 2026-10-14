@@ -78,6 +78,12 @@
 
 set -euo pipefail
 
+# Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+if [ -n "${SANDBOX_RUNTIME+x}" ]; then
+    echo "codex-exec.sh must run outside the Bash sandbox, and this call ran inside it. Run it again as one bare Bash call spelled exactly bash ~/.claude/skills/forge/scripts/codex-exec.sh <mode> <args>: no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written." >&2
+    exit 86
+fi
+
 ORIGINAL_ARGS=("$@")
 MODE="${1:-}"
 shift || true

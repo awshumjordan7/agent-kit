@@ -38,15 +38,19 @@ if [ -f "$CONFIG" ]; then
 fi
 
 if [ -z "$BASE" ]; then
-  BASE="$(git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')"
+  BASE="$(git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')" || BASE=""
 fi
 
 if [ -z "$BASE" ] && command -v gh >/dev/null 2>&1; then
-  BASE="$(run_gh repo view "$SLUG" --json defaultBranchRef -q .defaultBranchRef.name)"
+  BASE="$(run_gh repo view "$SLUG" --json defaultBranchRef -q .defaultBranchRef.name)" || BASE=""
 fi
 
 if [ -z "$BASE" ]; then
   echo "Could not resolve a base branch for $SLUG — check manually (e.g. 'gh repo view') or ask the user." >&2
+  # Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls, where the network lookups fail.
+  if [ -n "${SANDBOX_RUNTIME+x}" ]; then
+    echo "resolve-base-branch.sh must run outside the Bash sandbox, and this call ran inside it. Run it again as one bare Bash call spelled exactly bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh <repo>: no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written." >&2
+  fi
   exit 1
 fi
 

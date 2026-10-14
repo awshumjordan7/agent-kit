@@ -43,6 +43,11 @@ REVIEW_REMINDER = (
     "Drift-fix review due: run `python3 ~/.claude/scripts/drift_report.py`, "
     "then `python3 ~/.claude/scripts/drift_report.py --mark-reviewed`"
 )
+SANDBOX_STOP = (
+    "handoff.py must run outside the Bash sandbox, and this call ran inside it. "
+    "Run it again as one bare Bash call spelled exactly python3 ~/.claude/scripts/handoff.py <args>: "
+    "no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the ~/.claude path as written."
+)
 LOG_HEADER = re.compile(r"^### (\S+) (\S+) (\S+) (\S+)(.*)$")
 RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
 ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
@@ -638,6 +643,10 @@ def _run_handoff(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+    if "SANDBOX_RUNTIME" in os.environ:
+        sys.stderr.write(SANDBOX_STOP + "\n")
+        return 86
     argv = sys.argv[1:] if argv is None else argv
     positional: list[str] = []
     transcript = None

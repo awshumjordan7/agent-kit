@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 
@@ -18,6 +19,19 @@ def _check_python_version() -> None:
         raise SystemExit(3)
 
 
+def _check_sandbox() -> None:
+    # Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
+    if "SANDBOX_RUNTIME" in os.environ:
+        print(
+            "install.py must run outside the Bash sandbox, and this call ran inside it. "
+            "Run it again as one bare Bash call spelled exactly python3 <agent-kit checkout>/install.py <args>: "
+            "no cd prefix, pipe, redirect, 2>&1, ';' or '&&', with the checkout path as written.",
+            file=sys.stderr,
+        )
+        raise SystemExit(86)
+
+
+_check_sandbox()
 _check_python_version()
 
 from aisetup.cli import main  # noqa: E402
