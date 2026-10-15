@@ -39,5 +39,10 @@ Overlay data may supply `forge.thresholds` (`quickReviewThreshold`, `fixCap`), p
 under `forge.repos` (`frontend`, `backend`). Stage-specific instructions can be provided at
 `references/stages/<stage>.md`, allowing private behavior without replacing the core workflow implementation.
 
+Keys under `forge.gate` may contain `{{answers.<module>.<id>}}` or `{{layers.<name>.path}}` tokens, rendered at
+install and update. A missing answer uses the question default. An answer set to an empty string drops that entry.
+A token naming no answer or path stops the install with the render error. Example:
+`"{{answers.overlay.platform_api_dir}}": {...}`.
+
 Keep the private denylist in the overlay repository and configure the same list as the public repository's
 `DENYLIST` secret. Before merging a fork pull request, run the scan locally because fork events cannot read secrets.

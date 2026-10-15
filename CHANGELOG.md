@@ -5,6 +5,8 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-15
+- core/skills/forge (scripts/gate.sh, references/gate-commands.md): a new optional gate key, `testFileInfixes`, makes a changed file run its same-name test file (`x.ts` runs `x.spec.ts`) for repos that keep tests next to the source.
+- aisetup (compose.py), docs/overlay.md: gate entry keys may use `{{answers...}}` and `{{layers...}}` tokens, rendered at install and update. An empty answer drops the entry. Templates now get question defaults for answers missing from the profile.
 - core/references/brief-template.md: restore the rule that a brief handing over a trace.zip, HAR or auth storage-state file forbids printing its raw contents; it was deleted along with the trace-read.py helper.
 - core/skills/forge/scripts/gate.sh: a `--files` entry that is a `tests` folder now selects that folder for the test run; before, the folder path had no trailing slash, so the gate skipped tests and passed (inbox 2026-10-15T13:28).
 - core/hooks/lint_check.py: lint only .py files with ruff and drop the eslint branch, which ran from the session cwd and returned "couldn't find an eslint.config" on 106 js/ts edits with no real finding (I-341); the forge gate still runs eslint.

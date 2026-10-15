@@ -28,8 +28,9 @@ from aisetup.merge import (
     deep_merge,
     merge_settings,
 )
+from aisetup.mcp import _answer_context
 from aisetup.profile import load_recommended_profile, profile_render_context
-from aisetup.render import RenderError, render_agent_frontmatter, render_text
+from aisetup.render import TOKEN_RE, RenderError, lookup, render_agent_frontmatter, render_text
 from aisetup.tomlwrite import TomlWriteError, dumps as toml_dumps
 
 
@@ -246,6 +247,44 @@ def _render_templates(
             target.write_text(rendered, encoding="utf-8")
 
 
+def _render_gate_keys(context: dict[str, Any]) -> None:
+    forge = context.get("forge")
+    gate = forge.get("gate") if isinstance(forge, dict) else None
+    if not isinstance(gate, dict):
+        return
+    rendered_gate: dict[str, Any] = {}
+    keys_by_folder: dict[str, str] = {}
+    for key, entry in gate.items():
+        rendered = key
+        if "{{" in key:
+            for match in TOKEN_RE.finditer(key):
+                token = match.group(2)
+                try:
+                    value = lookup(context, token)
+                except KeyError:
+                    continue
+                # render_text would turn None into "", which would drop the entry silently.
+                if value is None:
+                    raise ComposeError(
+                        f"forge.gate key {key}: {token} has no answer and no default"
+                    )
+            try:
+                rendered = render_text(key, context, source="forge.gate")
+            except RenderError as error:
+                raise ComposeError(str(error)) from error
+            if not rendered.strip():
+                continue
+        folder = os.path.realpath(os.path.expanduser(rendered))
+        if folder in keys_by_folder:
+            raise ComposeError(
+                f"forge.gate keys {keys_by_folder[folder]} and {key} point at the same folder: "
+                f"{folder}"
+            )
+        keys_by_folder[folder] = key
+        rendered_gate[rendered] = entry
+    forge["gate"] = rendered_gate
+
+
 STAGED_DOCTOR_MODULE = "_aisetup_staged_doctor"
 
 
@@ -311,6 +350,8 @@ def compose_tree(
         default_profile, _ = load_recommended_profile(repo_root)
         fragments = [fragment for layer in layers.layers for fragment in layer_data(layer)]
         context = profile_render_context(default_profile, fragments, profile)
+        context["answers"] = _answer_context(layers, profile)["answers"]
+        _render_gate_keys(context)
         _render_templates(destination, layers, context)
         _render_agents(destination, profile)
         _render_derived(destination, auxiliary_root)
