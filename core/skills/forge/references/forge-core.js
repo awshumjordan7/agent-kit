@@ -156,7 +156,7 @@ const IMPL_RESULT = {
     filesChanged: { type: 'array', items: { type: 'string' } },
     testsWritten: { type: 'boolean' }, summary: { type: 'string' },
     unverified: { type: 'array', items: { type: 'string' } },
-    error: { type: ['string', 'null'] },
+    error: { type: ['string', 'null'], description: 'Only when the work failed; notes, workarounds and skipped checks go in summary or unverified.' },
     status: { type: 'string', enum: ['DONE', 'PARTIAL'] },
     progressFile: { type: ['string', 'null'] },
   },
@@ -909,7 +909,7 @@ function claudeTestPromptInstruction() {
 
 function runBeforeReturningInstruction() {
   if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, or Semgrep commands; the pre-ship checkpoint writes and runs a smoke check.'
-  return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and Semgrep when installed. Fix what they report; the gate remains authoritative.'
+  return 'Before returning, run that gate.sh command again after your last edit, then ruff check, ruff format --check, and a Semgrep scan of the changed files through the semgrep MCP when it is available (the gate runs the Semgrep CLI itself). Fix what they report; the gate remains authoritative.'
 }
 
 function phaseScope(phase) {
@@ -962,7 +962,7 @@ function implement(phase = null) {
   const label = `implement${suffix}`
   const scope = phaseScope(phase)
   const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Report live-dependent capabilities under unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
+  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Report live-dependent capabilities under unverified. Set error only when the work failed; put notes, workarounds and skipped checks in summary or unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
     { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
 }
 
