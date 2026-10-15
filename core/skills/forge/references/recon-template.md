@@ -5,6 +5,10 @@ build-lane run. Its one job: make sure the plan reuses what already exists inste
 inventing a parallel version of it. Read by the plan step, the Codex plan review, and
 the reviewers.
 
+For a narrow, well-understood ask, keep only `What the spec asks for`, `Already exists — reuse` and
+`Callers of anything being changed`, and drop the other sections. Keep the `file:line` references:
+`scripts/build-plan-review-prompt.sh` builds the plan reviewer's excerpt pack from them.
+
 ## What the spec asks for
 Three to five sentences restating `spec.md` in terms of the codebase (which apps, models,
 endpoints, screens).
@@ -34,8 +38,7 @@ implementer copies their shape.
 - Feature flags / settings that gate the area
 
 ## Open questions
-Anything the spec leaves ambiguous. In an attended run these go to the user before the plan;
-in `auto`, the plan picks the reading closest to the spec text and logs it in `decisions.md`.
+Anything the spec leaves ambiguous. These go to the user before the plan.
 
 ## Run settings
 - `login_mode`: `token` (v1 default)

@@ -38,23 +38,11 @@ def _read_metrics(path: Path) -> list[dict]:
     return records
 
 
-def _unreflected_rate(records: list[dict]) -> str:
-    counted = [
-        item["unreflected"]
-        for item in records
-        if item.get("outcome") == "launched" and isinstance(item.get("unreflected"), int)
-    ]
-    if not counted:
-        return "n/a"
-    return f"{sum(counted) / len(counted):.2f} ({sum(counted)} over {len(counted)} launched)"
-
-
 def _print_block(title: str, records: list[dict]) -> None:
     outcomes = Counter(str(item.get("outcome")) for item in records)
     sys.stdout.write(f"{title}\n")
     for outcome, count in sorted(outcomes.items()):
         sys.stdout.write(f"  {outcome}: {count}\n")
-    sys.stdout.write(f"  unreflected per launched handoff: {_unreflected_rate(records)}\n")
 
 
 def _sandbox_hint() -> None:

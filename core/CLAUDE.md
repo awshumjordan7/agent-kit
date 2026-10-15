@@ -44,9 +44,6 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   Bash call (timeout 600000) on `perl -e '$f=shift; $t=time; until (-e $f or time-$t >= 540) { sleep 10 } print((-e $f) ? "done\n" : "not yet\n")' <file>`
   until it prints "done". It never waits with Monitor or a `pgrep -f` loop. The main session hands such waits to a
   worker, never to a tight status loop.
-- **External contracts are captured, not assumed.** Never assert an endpoint, verb, payload, or
-  response shape without a captured real response saved under the run dir by a worker and cited by
-  path. Fixtures derive from captures.
 - **Every sub-agent prompt follows `~/.claude/references/brief-template.md`.** Write the brief before
   the spawn; do not edit it after.
 - **Artifacts are worker-made**, following `~/.claude/skills/forge/references/artifacts.md`.
@@ -59,8 +56,7 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
-  In the main session, if ListAgents shows a session named `optimizing-workflow*`, also send it a one-line message pointing at the entry.
-  File first, message second. A sub-agent puts the entry's path in its final message instead.
+  A sub-agent also puts the entry's path in its final message.
 - **Run-dir files stay short.** `decisions.md` entries are at most three lines in the form
   `[step] decision - reason`, with evidence as a file path, never inline dumps.
 - **Files named with "credential" stay unreadable.** A built-in deny rule blocks reading and editing them, so keep that word out of your own run-dir, scratch and capture file names.

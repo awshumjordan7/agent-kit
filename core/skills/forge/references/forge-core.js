@@ -58,7 +58,6 @@ const requestedLane = args.lane || 'build'
 const canonicalLane = ['quick', 'dev'].includes(requestedLane) ? 'build' : requestedLane
 const PARAMS = {
   lane: canonicalLane,
-  auto: args.auto === true,
   runDir: args.runDir,
   projectDir: args.projectDir,
   repo: args.repo || '',
@@ -1045,7 +1044,7 @@ ${JSON.stringify(implement || {})}`,
   { label: 'checkpoint', phase: 'Checkpoint', schema: CHECKPOINT_SCHEMA })
 }
 
-// A run that changed only docs, instruction text or config skips the smoke writer; an attended run
+// A run that changed only docs, instruction text or config skips the smoke writer; the run
 // still stops at PRE_SHIP so the user reads the diff.
 function noCodeCheckpoint() {
   return { command: '', scriptWritten: false }
@@ -1132,7 +1131,7 @@ async function readCheckpoint() {
 }
 
 // Returns true when the smoke passed. A failed smoke is recorded but does not set the status, so
-// an attended run can still pause at PRE_SHIP with the result.
+// the run can still pause at PRE_SHIP with the result.
 async function runCheckpointSmoke(state, command) {
   state.checkpointSmokeCommand = command
   state.checkpointSmoke = await smokeRun(command)
@@ -1286,7 +1285,7 @@ function triageId(index) {
   return `F${index + 1}`
 }
 
-function partitionTriage(findings, verdicts, auto = false) {
+function partitionTriage(findings, verdicts) {
   const fix = []
   const disputes = []
   const dropped = []
@@ -1304,8 +1303,7 @@ function partitionTriage(findings, verdicts, auto = false) {
     const verdict = byId[position] ||
       take(item => !ids.includes(item.id) && item.file === finding.file && item.line === finding.line)
     if (!verdict || verdict.real === 'uncertain') {
-      if (auto) fix.push(finding)
-      else disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
+      disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
     } else if (verdict.real === 'yes' && verdict.worthIt) {
       fix.push(finding)
     } else {
@@ -1372,7 +1370,7 @@ async function reviewPanel(context) {
   const triage = await triageFindings(ruled.confirmed, context)
   let partitioned
   if (triage) {
-    partitioned = partitionTriage(ruled.confirmed, triage.verdicts, PARAMS.auto)
+    partitioned = partitionTriage(ruled.confirmed, triage.verdicts)
   } else {
     await decide('Triage agent returned no result; retaining the pre-triage confirmed findings.')
     partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
@@ -2267,7 +2265,7 @@ async function fullLane() {
       }
       if (noCode) {
         await decide(`Pre-ship checkpoint: ${(state.context.files || []).length} changed files, none of them code; the smoke writer did not run.`)
-        if (!PARAMS.auto) state.status = 'PRE_SHIP'
+        state.status = 'PRE_SHIP'
         return state
       }
       if (!state.checkpoint.command) {
@@ -2275,9 +2273,8 @@ async function fullLane() {
         state.status = 'PRE_SHIP'
         return state
       }
-      const passed = await runCheckpointSmoke(state, state.checkpoint.command)
-      if (!PARAMS.auto) state.status = 'PRE_SHIP'
-      else if (!passed) state.status = 'BLOCKED'
+      await runCheckpointSmoke(state, state.checkpoint.command)
+      state.status = 'PRE_SHIP'
       return state
     },
     async state => {

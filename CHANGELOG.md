@@ -2,6 +2,18 @@
 
 One line per instruction change. A change adds its lines under today's `## YYYY-MM-DD`
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
+When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
+
+## 2026-10-15
+- core/hooks/lint_check.py: lint only .py files with ruff and drop the eslint branch, which ran from the session cwd and returned "couldn't find an eslint.config" on 106 js/ts edits with no real finding (I-341); the forge gate still runs eslint.
+- core/hooks/context_guard.py, core/settings.fragment.json, core/agents/claude-implementer.md: drop the Stop registration, which only reset state, and run the implementer PreToolUse limits from the claude-implementer frontmatter, so the main session no longer starts the hook on every tool call.
+- modules/sandbox/settings.fragment.json: exclude `run_context.py smoke-run`, so the forge smoke run can read tracked env files that the Bash sandbox hides.
+- core/CLAUDE.md: drop the "External contracts are captured" bullet (worker.md, build-lane.md and the forge plan rules keep it) and the step that messages an optimizing-workflow session after filing an inbox entry.
+- core/scripts (handoff.py, drift_report.py, report_issue.py): handoff.py no longer lists user-log entries missing from STATE.md in the successor prompt (I-372, I-373); drift_report.py drops its unreflected-rate line; report_issue.py drops the unused ack, claim and list commands and files entries as before.
+- CHANGELOG.md: the header says to cite an inbox id (I-xxx or C-xxx) when a change fixes an inbox entry.
+- core/skills/precommit-hook-env-failure, core/skills/forge/scripts/trace-read.py, core/references/brief-template.md, core/settings.fragment.json: remove the unused precommit-hook-env-failure skill (0 Skill calls since 10-01), the trace-read.py helper and its brief-template line (2 runs since 10-01), and the security-guidance plugin entry (the Semgrep gate covers it).
+- core/skills/forge (forge-core.js, SKILL.md, references): remove the `auto` launch argument and auto-mode.md (0 of 37 runs used it); the plan confirmation, the tests approval and the PRE_SHIP pause always apply, and the workflow_carry.py resume rule moves into SKILL.md step 6.
+- core/skills/forge (SKILL.md, scripts/build-plan-review-prompt.sh, references): fold the triage.md investigation file into recon.md (4 of 37 runs used it); a narrow ask fills only the template's first three sections.
 
 ## 2026-10-14
 - core/skills/forge/references/forge-core.js: the implementer sets `error` only when the work failed (notes go in summary or unverified), and runs Semgrep through the semgrep MCP because the local CLI cannot write its log under the Bash sandbox.

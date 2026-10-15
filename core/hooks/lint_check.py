@@ -1,3 +1,9 @@
+"""PostToolUse hook for Write and Edit: run ruff on a changed .py file and add its findings to context.
+
+Only Python is linted. JS and TS files get no hook output; their lint runs in the forge gate.
+Fail-open: any missing tool, timeout or non-file path returns no output and exit 0.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,31 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
-def _project_root(path: Path) -> Path | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return Path(result.stdout.strip()) if result.returncode == 0 else None
-
-
 def lint_command(path: Path) -> tuple[str, ...] | None:
     if path.suffix == ".py" and shutil.which("ruff"):
         return ("ruff", "check", str(path))
-    if path.suffix not in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
-        return None
-    root = _project_root(path)
-    local_eslint = root / "node_modules/.bin/eslint" if root else None
-    if local_eslint and local_eslint.is_file():
-        return (str(local_eslint), str(path))
-    if shutil.which("eslint"):
-        return ("eslint", str(path))
     return None
 
 
@@ -53,8 +37,7 @@ def run(payload: dict[str, Any]) -> str:
     output = (result.stdout + result.stderr).strip()
     if result.returncode == 0 or not output:
         return ""
-    tool = "ruff" if path.suffix == ".py" else "eslint"
-    return f"Lint ({tool}): {path}\n{output}"
+    return f"Lint (ruff): {path}\n{output}"
 
 
 def main() -> int:

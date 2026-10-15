@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit/PostToolUse/Stop hook: one non-blocking notice at 280k.
+"""UserPromptSubmit/PostToolUse hook: one non-blocking notice at 280k.
 
-The main session gets a single notice when usage first passes 280k tokens. It never
-blocks Stop.
+The main session gets a single notice when usage first passes 280k tokens. Nothing is
+blocked.
 
-As a PreToolUse hook it guards only the claude-implementer sub-agent: one soft
+As a PreToolUse hook, registered in the claude-implementer agent frontmatter, it
+guards only that sub-agent: one soft
 block at 250k, then at 300k every tool call except progress-file edits and
 StructuredOutput is blocked. Other sub-agents and the main session pass through.
 
@@ -249,9 +250,6 @@ def main() -> int:
             save_state(state_path, state["band"], state["blocked"])
         except OSError:
             return 0
-
-    if event_name == "Stop":
-        return 0
 
     if measure >= BAND_280K and state["band"] < BAND_280K:
         if not os.path.exists(state_path):
