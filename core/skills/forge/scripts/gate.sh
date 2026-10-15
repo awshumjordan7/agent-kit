@@ -991,11 +991,11 @@ for path in files:
     full_path = os.path.join(repo, normalized)
     if not os.path.exists(full_path):
         continue
-    if "/tests/" in f"/{normalized}" or os.path.basename(normalized).startswith("test_"):
+    if "/tests/" in f"/{normalized}/" or os.path.basename(normalized).startswith("test_"):
         # pytest rejects a non-Python path (fixture JSON, snapshots) as "not found".
         if os.path.isdir(full_path) or normalized.endswith(".py"):
             add_target(default_command, normalized)
-        elif "/tests/" in f"/{normalized}":
+        elif "/tests/" in f"/{normalized}/":
             parts = normalized.split("/")
             last_tests = len(parts) - 1 - parts[::-1].index("tests")
             add_target(default_command, "/".join(parts[: last_tests + 1]))

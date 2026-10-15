@@ -5,6 +5,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-15
+- core/skills/forge/scripts/gate.sh: a `--files` entry that is a `tests` folder now selects that folder for the test run; before, the folder path had no trailing slash, so the gate skipped tests and passed (inbox 2026-10-15T13:28).
 - core/hooks/lint_check.py: lint only .py files with ruff and drop the eslint branch, which ran from the session cwd and returned "couldn't find an eslint.config" on 106 js/ts edits with no real finding (I-341); the forge gate still runs eslint.
 - core/hooks/context_guard.py, core/settings.fragment.json, core/agents/claude-implementer.md: drop the Stop registration, which only reset state, and run the implementer PreToolUse limits from the claude-implementer frontmatter, so the main session no longer starts the hook on every tool call.
 - modules/sandbox/settings.fragment.json: exclude `run_context.py smoke-run`, so the forge smoke run can read tracked env files that the Bash sandbox hides.
