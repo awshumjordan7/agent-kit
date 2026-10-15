@@ -64,16 +64,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 $HOME/.claude/hooks/context_guard.py",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
             "command": "python3 $HOME/.claude/hooks/user_log_hook.py",
             "timeout": 15
           }
@@ -87,16 +77,6 @@
           {
             "type": "command",
             "command": "python3 $HOME/.claude/hooks/require_agent_model.py"
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/hooks/context_guard.py",
-            "timeout": 5
           }
         ]
       }
@@ -134,9 +114,6 @@
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "security-guidance@claude-plugins-official": true
   },
   "alwaysThinkingEnabled": true,
   "effortLevel": "xhigh",

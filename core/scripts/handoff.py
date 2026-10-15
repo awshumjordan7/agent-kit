@@ -31,12 +31,6 @@ NEXT_HEADING = "## Next"
 REQUIRED_HEADINGS = (GOAL_HEADING, QUESTIONS_HEADING)
 CHECKPOINT_NAME = ".handoff-checkpoint.json"
 USER_LOG_NAME = "user-log.md"
-MATCH_PREFIX_CHARS = 60
-MIN_CANDIDATE_CHARS = 12
-SHOWN_UNREFLECTED_LIMIT = 10
-MATCH_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
-LIST_MARKER = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+")
-SENTENCE_END = re.compile(r"(?<=[.?!])\s+")
 REVIEW_LAUNCH_COUNT = 10
 REVIEW_AGE_DAYS = 21
 REVIEW_REMINDER = (
@@ -53,7 +47,6 @@ RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
 ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
 METRIC_COUNT_KEYS = (
     "log_entries_since_last",
-    "unreflected",
     "open_questions",
     "answered_questions",
     "goal_changed",
@@ -149,24 +142,6 @@ class LogEntry:
 
 def _normalise(text: str) -> str:
     return " ".join(text.split())
-
-
-def _match_normalise(text: str) -> str:
-    return _normalise(text).casefold().translate(MATCH_QUOTES)
-
-
-def _match_needles(text: str) -> list[str]:
-    """Return the prefixes of each line and sentence of `text` long enough to match on their own."""
-    needles = []
-    for line in text.splitlines():
-        for piece in SENTENCE_END.split(LIST_MARKER.sub("", line)):
-            piece = _match_normalise(piece)
-            if len(piece) >= MIN_CANDIDATE_CHARS:
-                needles.append(piece[:MATCH_PREFIX_CHARS])
-    if needles:
-        return needles
-    whole = _match_normalise(text)[:MATCH_PREFIX_CHARS]
-    return [whole] if whole else []
 
 
 def _sections(state_text: str) -> dict[str, list[str]]:
@@ -268,11 +243,6 @@ def _read_user_log(run_dir: Path) -> list[LogEntry] | None:
     return entries
 
 
-def _same_entry(key: str, reference: str) -> bool:
-    """A log header carries a short uuid while a resend label may carry the full one."""
-    return key.startswith(reference) or reference.startswith(key)
-
-
 def _user_log_sync(run_dir: Path, transcript: Path | None) -> bool:
     """Bring user-log.md up to date before the checks read it; warns, never refuses."""
     if transcript is None:
@@ -306,53 +276,13 @@ def _goal_change_report(goal_lines: list[str], checkpoint: dict, record: dict) -
     )
 
 
-def _unreflected_messages_warning(
-    entries: list[LogEntry] | None,
-    checkpoint: dict,
-    state_text: str,
-    run_dir: Path,
-    record: dict,
-) -> str | None:
-    """Return one line naming log entries since the previous handoff that STATE.md lacks."""
+def _log_entries_since_last(entries: list[LogEntry] | None, checkpoint: dict, record: dict) -> None:
+    """Record how many user-log entries the previous handoff had not seen; never refuses."""
     if entries is None:
-        sys.stderr.write(
-            "handoff.py: user messages not checked: log not synced\n"
-        )
-        return None
+        sys.stderr.write("handoff.py: user-log entry count not checked: log not synced\n")
+        return
     seen = set(checkpoint.get("user_log_uuids_seen") or [])
-    since = [entry for entry in entries if entry.key not in seen]
-    record["log_entries_since_last"] = len(since)
-    state_haystack = _match_normalise(state_text)
-    try:
-        decisions = (run_dir / "decisions.md").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        decisions = ""
-    full_haystack = state_haystack + " " + _match_normalise(decisions)
-    unreflected = []
-    for index, entry in enumerate(since):
-        later = since[index + 1 :]
-        # Only the latest message of a resend chain has to be recorded.
-        if any(item.resend_of and _same_entry(entry.key, item.resend_of) for item in later):
-            continue
-        if entry.channel == "ask":
-            answers = [line[2:] for line in entry.text.splitlines() if line.startswith("A:")]
-            needles = _match_needles("\n".join(answers))
-            haystack = state_haystack
-        else:
-            needles = _match_needles(entry.text)
-            haystack = full_haystack
-        if needles and not any(needle in haystack for needle in needles):
-            unreflected.append(entry)
-    record["unreflected"] = len(unreflected)
-    if not unreflected:
-        return None
-    shown = [
-        f'{entry.key[:8]} "{_normalise(entry.text)[:MATCH_PREFIX_CHARS]}"'
-        for entry in unreflected[:SHOWN_UNREFLECTED_LIMIT]
-    ]
-    more = len(unreflected) - len(shown)
-    suffix = f" | and {more} more in {USER_LOG_NAME}" if more else ""
-    return f"Check these were recorded in STATE.md: {' | '.join(shown)}{suffix}"
+    record["log_entries_since_last"] = sum(entry.key not in seen for entry in entries)
 
 
 def _mow_list(sections: dict[str, list[str]], checkpoint: dict, record: dict) -> str | None:
@@ -387,7 +317,7 @@ def _summary_line(record: dict) -> str:
 
     return (
         f"Drift check: {show('log_entries_since_last')} user-log entries since the previous "
-        f"handoff, {show('unreflected')} unreflected, {show('open_questions')} open and "
+        f"handoff, {show('open_questions')} open and "
         f"{show('answered_questions')} answered questions, goal changed: {show('goal_changed')}."
     )
 
@@ -546,9 +476,7 @@ def _run_handoff(
     goal_report = _goal_change_report(goal_lines, checkpoint, record)
     if goal_report:
         sys.stdout.write(goal_report)
-    check_line = _unreflected_messages_warning(entries, checkpoint, state_text, run_dir, record)
-    if check_line:
-        sys.stdout.write(f"handoff.py: {check_line}\n")
+    _log_entries_since_last(entries, checkpoint, record)
     mow = _mow_list(sections, checkpoint, record)
     if mow:
         sys.stdout.write(mow)
@@ -557,11 +485,6 @@ def _run_handoff(
         "Read only that file to start; it points at everything else. "
         + _summary_line(record)
     )
-    if record.get("unreflected"):
-        prompt += (
-            f" {record['unreflected']} user-log entries may be missing from STATE.md; "
-            f"compare {(run_dir / USER_LOG_NAME).resolve()} with STATE.md."
-        )
     if dry_run:
         sys.stdout.write(f"dry run: nothing launched; successor prompt:\n{prompt}\n")
         record["outcome"] = "dry-run"

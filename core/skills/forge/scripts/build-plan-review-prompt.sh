@@ -25,7 +25,7 @@ done
 }
 [ -f "$RUN_DIR/plan.md" ] || { echo "error: $RUN_DIR/plan.md not found" >&2; exit 64; }
 if [ -z "$RECON_FILE" ]; then
-    if [ -f "$RUN_DIR/recon.md" ]; then RECON_FILE="$RUN_DIR/recon.md"; else RECON_FILE="$RUN_DIR/triage.md"; fi
+    RECON_FILE="$RUN_DIR/recon.md"
 elif [[ "$RECON_FILE" != /* ]] && [ -f "$RUN_DIR/$RECON_FILE" ]; then
     RECON_FILE="$RUN_DIR/$RECON_FILE"
 fi

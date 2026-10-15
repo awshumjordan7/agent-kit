@@ -5,6 +5,13 @@ model: opus
 effort: high
 maxTurns: 150
 disallowedTools: Agent
+hooks:
+  PreToolUse:
+    - matcher: ""
+      hooks:
+        - type: command
+          command: python3 $HOME/.claude/hooks/context_guard.py
+          timeout: 5
 ---
 
 Implement only the confirmed plan or bounded fix round in the prompt.
