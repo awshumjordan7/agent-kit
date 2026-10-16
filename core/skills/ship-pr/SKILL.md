@@ -27,6 +27,10 @@ Use this skill only after implementation and validation are complete and the use
   2. Its instruction files are the paths matching `(^|/)CLAUDE(\.fragment)?\.md$`, `(^|/)AGENTS\.md$`, `(^|/)agents/[^/]+\.md$`, `(^|/)skills/.+\.md$` or `(^|/)references/[^/]+\.md$` (the same patterns as `.github/scripts/check_changelog.py`). With none, skip the rest of this check.
   3. With any, both are required: (a) CHANGELOG.md is in that list and `git diff --cached "$(git merge-base origin/<base> HEAD)" -- CHANGELOG.md` adds at least one line starting `- `; (b) the user's OK is on record, as a `USER OK: "<the user's words>"` line in the brief or a `user-ok.md` file in the run dir the brief names.
   4. If either is missing, commit and push nothing and return `NEEDS_CHANGELOG_OK` with the instruction file list and which of (a) and (b) is missing. Leave the staging as it is.
+- Ship check, after staging and the Ruff fixes and before any commit or push. Run `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py check --repo <repo> --files <approved files>` as one bare call, adding `--run-dir <run dir>` when the brief names one. It hashes the working tree, which matches the staging for the approved files at this point.
+  - `SHIP_RECORD_OK` or `SHIP_RECORD_EXEMPT`: continue.
+  - `NEEDS_SHIP_CONFIRM`: unless the brief has a `SHIP ANYWAY: "<the user's words>"` line, commit and push nothing, leave the staging as it is, and return `NEEDS_SHIP_CONFIRM` with the script's line.
+  - Files a hook rewrites during a commit retry are not checked again.
 - Use an imperative commit subject. Let repository hooks run.
 - If a hook changes files, review and stage only those related changes, then retry once.
 
@@ -52,4 +56,4 @@ Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and
 
 The PR body is written by the shipper on its own pushes only. Nothing refreshes a description after commits land outside ship-pr; rerun ship-pr or edit it by hand. The body holds a summary, the change list and links. No testing-results section unless the caller supplies a PR-body extra section; keep that section verbatim.
 
-When the changelog check failed, return only `NEEDS_CHANGELOG_OK`, the instruction file list and what is missing. Otherwise return the pull request URL and resolved base branch. State that the attribution check printed nothing. List each unstaged approved file as `<path> - <reason>`, or say `All approved files staged.` Report any hook or authentication failure with its exact command and concise output.
+When the changelog check failed, return only `NEEDS_CHANGELOG_OK`, the instruction file list and what is missing. When the ship check stopped the ship, return only `NEEDS_SHIP_CONFIRM` and the script's line. Otherwise return the pull request URL and resolved base branch. State that the attribution check printed nothing. List each unstaged approved file as `<path> - <reason>`, or say `All approved files staged.` Report any hook or authentication failure with its exact command and concise output.
