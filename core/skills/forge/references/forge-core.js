@@ -403,9 +403,9 @@ const PLAN_FACTS_SCHEMA = factsSchema({
     },
     plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
     bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
-    criteria: { type: 'array', items: { type: 'string' } },
+    criteria: { type: 'array', items: { type: 'string' } }, planFile: { type: 'string' },
   },
-  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria'],
+  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria', 'planFile'],
 })
 const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
 const PHASES_FACTS_SCHEMA = factsSchema(PHASES_FILE_SCHEMA)
@@ -781,14 +781,15 @@ function fnv1a(text) {
   return hash
 }
 
-const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [] }
+const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [], planFile: '' }
 let PLAN_FACTS = EMPTY_PLAN_FACTS
 
 // The plan stays on disk: the script takes only these facts, and every agent that needs the plan reads it by path.
 async function loadPlanFacts() {
   const planFile = shellQuote(PARAMS.planPath)
   PARAMS.spawnCap += 1
-  const facts = await factsCommand('read-plan', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile}`, PLAN_FACTS_SCHEMA, 'Implement')
+  const facts = await factsCommand('read-plan', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile}`, PLAN_FACTS_SCHEMA, 'Implement',
+    checked => checked.planFile === PARAMS.planPath)
   if (PARAMS.lane === 'build') {
     if (!facts) throw new Error(`could not read the plan at ${PARAMS.planPath}: the plan-facts command returned no checked result`)
     if (facts.error) throw new Error(facts.error)
@@ -847,15 +848,20 @@ function shellQuote(value) {
 
 // One agent runs one command that prints { facts, canonLength, fnv1a }. The digest is recomputed over
 // the returned facts, so an echo that adds, drops or edits a field is a miss. The caller's spawn
-// budget covers the first attempt; only the retry raises the cap here.
-async function factsCommand(label, command, schema, phaseLabel) {
+// budget covers the first attempt; only the retry raises the cap here. An accept check that fails
+// counts as a miss, like a digest mismatch.
+async function factsCommand(label, command, schema, phaseLabel, accept = null) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) PARAMS.spawnCap += 1
-    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: ${command}`,
+    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged. Copy the command character for character; never retype a path. Command: ${command}`,
       { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
     if (read && read.facts && typeof read.facts === 'object') {
       const canon = canonicalJson(read.facts)
-      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return read.facts
+      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) {
+        if (!accept || accept(read.facts)) return read.facts
+        await decide(`${label} attempt ${attempt} failed its accept check.`)
+        continue
+      }
     }
     if (!read && capBlocked) return null
     await decide(`${label} attempt ${attempt} ${read ? 'did not match the facts digest' : 'returned no result'}.`)
@@ -1041,6 +1047,19 @@ async function changedFiles() {
   return facts
 }
 
+// The gate's own test command carries the env setup a bare pytest call lacks.
+function smokeTestTemplates() {
+  if (configuredGateMode() === 'none') return ''
+  const entry = configuredGateEntry()
+  const tests = entry.tests || ''
+  const worktreeTests = (entry.worktree && entry.worktree.tests) || ''
+  if (!tests && !worktreeTests) return ''
+  const lines = ['\n\nTEST COMMANDS. When the check runs tests, build it from the configured gate test command instead of a bare test runner, because it carries the environment the tests need. Replace <paths> with the test paths and drop <create-db>.']
+  if (tests) lines.push(`tests: ${tests}`)
+  if (worktreeTests) lines.push(`worktree.tests: ${worktreeTests}`, `Use worktree.tests instead of tests when \`git -C ${shellQuote(PARAMS.projectDir)} rev-parse --git-common-dir\` prints a different folder than \`git -C ${shellQuote(PARAMS.projectDir)} rev-parse --git-dir\`; the check itself runs both commands to decide.`)
+  return lines.join('\n')
+}
+
 // Runs as the default agent type, not reviewer, because it writes smoke.py itself and the reviewer
 // type has no Write tool. The prompt restates the reviewer rules that the agent type would carry.
 function checkpointReview(context, gate, implement, phases = null) {
@@ -1050,7 +1069,7 @@ You are the fresh pre-ship smoke writer. After the plan file, read the diff file
 
 RULES. You have a budget of 30 tool calls. Read a repository file only to confirm a file:line the diff touches, at most 120 lines per read, and do not explore adjacent code. Do not run git and do not search the web. Do not use the Agent, Edit or NotebookEdit tools. You may write exactly one file, ${PARAMS.runDir}/smoke.py, and only as described below; write nothing else.
 
-Give the one check that best proves the change works. Forge runs it from ${PARAMS.projectDir} right after you return, and it must finish within 540 seconds. The check may write only to temp folders or ${PARAMS.runDir}; forge fails a smoke that changes the repository working tree. When one command proves the change, set command to that exact command, keep it to one line under 300 characters, and set scriptWritten to false. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\`. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Never name a file that does not exist yet. When no runnable check can prove the change, return an empty command, set scriptWritten to false and write no file; a person then decides.
+Give the one check that best proves the change works. Forge runs it from ${PARAMS.projectDir} right after you return, and it must finish within 540 seconds. The check may write only to temp folders or ${PARAMS.runDir}; forge fails a smoke that changes the repository working tree. When one command proves the change, set command to that exact command, keep it to one line under 300 characters, and set scriptWritten to false. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\`. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Never name a file that does not exist yet. When no runnable check can prove the change, return an empty command, set scriptWritten to false and write no file; a person then decides.${smokeTestTemplates()}
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
