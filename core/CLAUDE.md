@@ -11,7 +11,7 @@ Follow this sequence for every non-trivial task. Never skip steps.
 
 ### Rapid-Fix Mode
 
-For small, obvious fixes (1-3 files, fully specified, no architecture decisions): skip Discuss and Plan. Confirm in one sentence, then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
+For small, obvious fixes (1-3 files, fully specified, no architecture decisions): skip Discuss. The plan question (under Delegation) is the one confirmation, and No is its usual answer. The code review still runs. Then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
 
 Switch back to full workflow if scope grows into data model/API/architecture changes.
 
@@ -29,6 +29,23 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Routing.** A small, fully specified fix of up to three files (nothing left to decide): the main session
   makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: forge,
   whose `claude-implementer` agent writes the code. The `shipper` always commits and pushes. The main session never edits code otherwise.
+- **Plan question.** Before any code change outside forge (a main-session edit, a `worker`, or a `claude-implementer`
+  spawn), ask once with AskUserQuestion: "Draft a plan for this change?" Recommend Yes when the change touches
+  more than 3 files or changes behavior. Otherwise recommend No. Forge runs skip this, because forge plans and reviews itself.
+  - With either answer, the change gets its own run dir: `<workflow dir>/<YYYY-MM-DD>-<slug>/`. `<workflow dir>` is the
+    `.workflow/` folder that holds the session's own run dir, or `<repo>/.workflow/` when the session has none.
+    Create it with an empty `decisions.md` before any worker starts, and name it in every brief for the change.
+  - Record the answer with `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py answer --repo <repo> --run-dir <run dir> --plan yes|no`.
+  - With Yes: write `<run dir>/plan.md`, run `~/.claude/skills/forge/scripts/build-plan-review-prompt.sh` and the
+    `plan-review` role. Record that verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage plan-review
+    --provider <p> --model <m> --verdict <v>`. Then wait for the user's go. When the plan has a `## Changelog` section,
+    write `<run dir>/user-ok.md` with the user's approval quoted word for word and the date, as forge does (forge SKILL.md step 4).
+  - With either answer: after the change, run `~/.claude/skills/forge/scripts/build-code-review-prompt.sh` and the `review`
+    role. Record the verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage review --label <label>
+    --provider <p> --model <m> --verdict <v>`.
+  - The role's provider decides who reviews: `codex` runs `codex-exec.sh`, and `claude` runs the `reviewer` agent with the printed paths.
+  - When the shipper returns `NEEDS_SHIP_CONFIRM`, ask "Ship without <what is missing>?". Relaunch it with a
+    `SHIP ANYWAY: "<the user's words>"` line only on yes.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
   (its turn cap is 75).
