@@ -24,6 +24,7 @@ Use this skill only after implementation and validation are complete and the use
   git -C <repo> checkout -b "<branch>" "origin/<base>"
   ```
 
+  Between the fetch and the checkout, run `git -C <repo> log --oneline "origin/<base>..HEAD"`. When it prints any commit, the base branch holds unpushed local commits that a branch from `origin/<base>` would leave out. Create no branch, and stop and report those commits.
   Stop and report on either failure: the checkout aborts because the remote base overlaps uncommitted edits (no branch is created and the working tree is untouched), or a branch with that name already exists. Never force-delete or rename around it. Skip this branch step when already on a feature branch.
 - Before staging or committing, run `bash -n` on every changed `*.sh` file.
 - When Python files changed, run `bash ~/.claude/skills/forge/scripts/gate.sh --print-mode` in the repository. Only when it prints `full` and `uvx` is on the PATH, run `uvx ruff@0.15.10 check --fix --select F,E9 <changed .py files>`. When it prints `none`, run no Python check. When it exits non-zero, report its output and treat the mode as `full`. When the mode is `full` and `uvx` is not on the PATH, skip Ruff and report the skip in the shipper result. These are the only shipper checks.

@@ -183,7 +183,7 @@ def cmd_check(args: argparse.Namespace, repo: Path) -> int:
             current = isinstance(recorded_sha, str) and recorded_sha == files_sha(repo, args.files)
         except (OSError, subprocess.CalledProcessError):
             current = False
-    if plan != "not asked" and current:
+    if current and (plan == "declined" or (plan == "yes" and plan_review != "missing")):
         print("SHIP_RECORD_OK")
         return 0
     review_text = "missing" if review is None else (review if current else "stale")
