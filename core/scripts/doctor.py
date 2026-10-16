@@ -155,7 +155,7 @@ def skill_directory(ctx: Context, source: Path) -> Path | None:
 
 def check_paths_exist(ctx: Context) -> list[Finding]:
     findings: list[Finding] = []
-    skip_markers = ("<", ">", "{", "}", "*", "$RUN", "<run>")
+    skip_markers = ("<", ">", "{", "}", "*", "[", "\\", "$RUN", "<run>")
     for source in source_markdown(ctx):
         for line_number, line in enumerate(ctx.read(source).splitlines(), 1):
             for match in PATH_REF_RE.finditer(line):
