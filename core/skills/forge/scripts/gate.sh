@@ -313,6 +313,13 @@ local_only = entry.get("localOnly", [])
 if not isinstance(local_only, list) or not all(isinstance(pattern, str) and pattern for pattern in local_only):
     print(f"gate.sh: invalid localOnly config for repository: {repo}", file=sys.stderr)
     raise SystemExit(2)
+test_file_infixes = entry.get("testFileInfixes", [])
+if not isinstance(test_file_infixes, list) or not all(
+    isinstance(infix, str) and infix.startswith(".") and len(infix) > 1 and "/" not in infix
+    for infix in test_file_infixes
+):
+    print(f"gate.sh: invalid testFileInfixes config for repository: {repo}", file=sys.stderr)
+    raise SystemExit(2)
 for rule in entry["testPathRules"]:
     if "command" in rule and not isinstance(rule["command"], str):
         print(f"gate.sh: invalid testPathRules command for repository: {repo}", file=sys.stderr)
@@ -973,6 +980,7 @@ with open(config_path, encoding="utf-8") as handle:
     test_config = json.load(handle)
 rules = test_config["testPathRules"]
 root_tests_fallback = bool(test_config.get("rootTestsFallback", False))
+test_file_infixes = test_config.get("testFileInfixes", [])
 with open(files_path, "rb") as handle:
     files = [item.decode("utf-8", "surrogateescape") for item in handle.read().split(b"\0") if item]
 
@@ -1002,6 +1010,20 @@ for path in files:
         continue
     if os.path.splitext(normalized)[1] not in source_suffixes:
         continue
+    if test_file_infixes:
+        root = os.path.splitext(normalized)[0]
+        if any(root.endswith(infix) for infix in test_file_infixes):
+            add_target(default_command, normalized)
+            continue
+        found = False
+        for infix in test_file_infixes:
+            for suffix in sorted(source_suffixes):
+                candidate = root + infix + suffix
+                if os.path.isfile(os.path.join(repo, candidate)):
+                    add_target(default_command, candidate)
+                    found = True
+        if found:
+            continue
     matched = False
     for rule in rules:
         pattern = str(rule.get("match", ""))

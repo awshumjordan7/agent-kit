@@ -22,6 +22,13 @@ every diff, of the launch check and the post-ship check, and of `--commit` stagi
 listed in the result's `excludedFiles`. An absent key means none. Unlike `diffExclude`, whose files are still
 committed, `localOnly` files are never committed by forge.
 
+Repository entries may define `testFileInfixes`, the text between a file's name and its extension that marks a
+test file, for example `[".spec", ".test"]`. When set, a changed test file runs itself, and a changed source file
+runs every same-name test file next to it (`x.ts` runs `x.spec.ts`, `x.spec.tsx` or `x.test.ts`). For that file, a
+found test file takes precedence over `testPathRules`. A file without one falls back to `testPathRules`. An absent
+key means off. When another changed file selects a folder through a rule, and that folder contains the selected test
+files, the whole folder runs, because a folder target covers the files inside it.
+
 `gate.sh --sha <sha> --files <paths>` gates a committed SHA in the run's detached checkout `<runDir>/gate-checkout`
 instead of `--repo` in place. The checkout is created once per run and moved between SHAs so installed dependencies
 persist; the repository's `worktree` overrides apply there, Semgrep compares against the merge-base of the base
