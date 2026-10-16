@@ -75,7 +75,7 @@ Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and
    - Run `gh pr checks <number> --watch --fail-fast --interval 15` with the `env -u` prefix above, as one call. Set its Bash timeout to the time left before the deadline, at most 600000 ms. Each output row is tab-separated: name, state, elapsed time, link. Match the outcomes below in order; the first match wins.
    - Exit code 0: the result line is `checks: passed`.
    - Any row whose state is `fail` or `cancel`: the result line is `checks: failed`, followed by the name and link (columns 1 and 4) of each such row.
-   - No check rows in the output: the checks are not registered yet. Wait 30 seconds with `perl -e 'sleep 30'` and run the same command again. After 3 retries or at the deadline, whichever comes first, the result line is `checks: none reported`.
+   - No check rows in the output, and the output names no authentication, permission, network or HTTP failure: the checks are not registered yet. Wait 30 seconds with `perl -e 'sleep 30'` and run the same command again. After 3 retries or at the deadline, whichever comes first, the result line is `checks: none reported`.
    - Exit code 8 (checks pending) or a Bash timeout: the result line is `checks: pending after 10 min`.
    - Any other error: the result line is `checks: error <first error line>`.
    - No result undoes the push or the pull request. Return the pull request URL and the result line.
