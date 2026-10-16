@@ -25,7 +25,9 @@ done
 }
 [ -f "$RUN_DIR/plan.md" ] || { echo "error: $RUN_DIR/plan.md not found" >&2; exit 64; }
 if [ -z "$RECON_FILE" ]; then
+    # A plan written outside forge has no recon; its own file:line references give the excerpts.
     RECON_FILE="$RUN_DIR/recon.md"
+    [ -f "$RECON_FILE" ] || RECON_FILE="$RUN_DIR/plan.md"
 elif [[ "$RECON_FILE" != /* ]] && [ -f "$RUN_DIR/$RECON_FILE" ]; then
     RECON_FILE="$RUN_DIR/$RECON_FILE"
 fi
