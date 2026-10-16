@@ -466,10 +466,13 @@ function pickImplRole(lane, fullySpecified, plannedSourceFileCount, threshold = 
     : 'impl'
 }
 
+function repoName(repo) {
+  return String(repo || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
+}
+
 function sandboxAllowed(stageOn, repo, repos) {
   if (!stageOn) return false
-  const basename = String(repo || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
-  return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(basename)
+  return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(repoName(repo))
 }
 
 function configuredLenses() {
@@ -569,6 +572,7 @@ const STUBS = {
 const decisions = []
 if (canonicalLane !== requestedLane) decisions.push(`Lane alias ${requestedLane} canonicalized to build`)
 if (typeof args.planText === 'string') decisions.push(`args.planText is ignored; the plan is read from planPath (${PARAMS.planPath}).`)
+if (args.ghEnvUnset !== undefined && args.ghEnvUnset !== null && !Array.isArray(args.ghEnvUnset)) decisions.push(`args.ghEnvUnset is ignored because it is not an array; the forge.config.json ghEnvUnset entry applies.`)
 const dryRunJournal = []
 const __test = {
   partitionTriage,
@@ -632,7 +636,13 @@ async function agentT(role, prompt, opts = {}) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
     return STUBS[role](opts)
   }
-  let result = await runtimeAgent(prompt, callOpts)
+  let result = null
+  try {
+    result = await runtimeAgent(prompt, callOpts)
+  } catch (error) {
+    if (!String(error && error.message).includes('without calling StructuredOutput')) throw error
+    await decide(`${role} ended without StructuredOutput (turn cap?): ${error.message}`)
+  }
   if (result === null && profile.model === 'fable' && !forceTier) {
     if (spawnCount >= PARAMS.spawnCap - 2) {
       capBlocked = true
@@ -642,7 +652,13 @@ async function agentT(role, prompt, opts = {}) {
     await decide(`${role} returned null on Fable; retrying once with Opus high.`)
     spawnCount++
     const fallback = role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
-    result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
+    try {
+      result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
+    } catch (error) {
+      if (!String(error && error.message).includes('without calling StructuredOutput')) throw error
+      await decide(`${role} ended without StructuredOutput (turn cap?): ${error.message}`)
+      result = null
+    }
   }
   return result
 }
@@ -1727,7 +1743,11 @@ const SHIP_ATTRIBUTION_RULE = "Run the ship-pr skill's attribution check before 
 
 function ghEnvUnsetNames() {
   const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
-  const configured = (FORGE_CONFIG && FORGE_CONFIG.ghEnvUnset && FORGE_CONFIG.ghEnvUnset[basename]) || []
+  const entries = (FORGE_CONFIG && FORGE_CONFIG.ghEnvUnset) || {}
+  const key = Object.prototype.hasOwnProperty.call(entries, basename)
+    ? basename
+    : Object.keys(entries).find(k => k && basename.startsWith(`${k}-`))
+  const configured = (key && entries[key]) || []
   return (PARAMS.ghEnvUnset || configured).map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
 }
 
@@ -1750,12 +1770,16 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
     : ''
   const tail = `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
+  const base = LAUNCH.base
+  const baseRule = base
+    ? `The base branch is ${base}; do not run resolve-base-branch.sh; use it as <base> in every ship-pr step, including \`gh pr create --base ${base}\`. `
+    : ''
   const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${existing.branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${existing.branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. Update the PR body after the push. ${bodyRule} ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch. If the current branch is the base branch or detached, create branch ${planBranchName()} from origin/<base>, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? '' : 'resolve the repository base branch and '}stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? 'if' : 'resolve the repository base branch. If'} the current branch is the base branch or detached, create branch ${planBranchName()} from origin/${base || '<base>'}, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -2381,7 +2405,7 @@ async function fullLane() {
     async state => {
       if (stopped(state) || !state.ship || !sandboxAllowed(configuredStage('ff_review'), PARAMS.repo, FORGE_CONFIG.repos)) return state
       phase('Bot Review')
-      if (state.ship.repo && String(state.ship.repo).toLowerCase() !== String(PARAMS.repo).toLowerCase()) {
+      if (state.ship.repo && repoName(state.ship.repo).toLowerCase() !== repoName(PARAMS.repo).toLowerCase()) {
         await decide(`Bot review skipped: ship repo ${state.ship.repo} differs from configured repo ${PARAMS.repo}.`)
         return state
       }
