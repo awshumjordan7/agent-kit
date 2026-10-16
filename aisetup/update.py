@@ -229,8 +229,10 @@ def update_repositories(profile: dict[str, Any]) -> list[RepoStatus]:
         if status.repo == "overlay":
             continue
         if status.repo == "agent-kit" and pinned_core_tag:
+            # Count against the pin read after the overlay merge, which can raise it.
             # behind == 0 means the pinned tag is already an ancestor of HEAD.
-            if status.behind:
+            behind, _ = _counts(status.path, pinned_core_tag)
+            if behind:
                 _git(status.path, "merge", "--ff-only", pinned_core_tag)
         elif status.behind:
             track = profile["layers"]["core"].get("track", "main")

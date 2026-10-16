@@ -5,6 +5,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-16
+- aisetup/update.py: update recounts how far agent-kit is behind the required version after ai-setup moves, so one install.py update brings agent-kit up when the new ai-setup commit raises requires_agent_kit, instead of installing the new ai-setup on the old agent-kit until a second run.
 - core/scripts/doctor.py: the installed-files path check skips tokens that contain `[` or `\`, so a regex quoted in a skill (ship-pr SKILL.md's changelog patterns) no longer fails every install with "referenced path does not exist".
 - core/CLAUDE.md: before a code change outside forge, the main session asks once whether to draft a plan (recommended for more than 3 files or a behavior change), gives the change its own run dir, and always runs a code review after the change. Rapid-Fix uses that question as its confirmation.
 - core/skills/forge (scripts/build-code-review-prompt.sh, references/code-review-prompt.md, scripts/build-plan-review-prompt.sh, references/codex-wrapper.md, references/forge-core.js): a code review prompt can be built for any change outside forge for Codex or Claude reviewers; plan review works without recon.md; forge runs pass their run dir to the new ship check.
