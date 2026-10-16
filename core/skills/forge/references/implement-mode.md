@@ -46,7 +46,9 @@ on the top-level model; that was the most expensive path in the skill.
 
 - Not a place to fix the plan. If a phase can't be implemented as written, stop and say
   what's wrong with the plan; don't improvise around it.
-- Not reviewed. Use `forge review` afterwards if the change warrants it.
+- Not reviewed. Use `forge review` afterwards if the change warrants it. The run is not exempt
+  from ship-pr's ship check: it returns NEEDS_SHIP_CONFIRM until a code review is recorded (the
+  plan-question rules in CLAUDE.md), or until the shipper is relaunched with `SHIP ANYWAY`.
 - Not the build lane. It differs on purpose in two ways:
   - It gates the working tree and commits on a pass; the build lane commits first and then
     gates the SHA.

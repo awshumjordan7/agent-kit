@@ -11,15 +11,13 @@ import sys
 import time
 import xml.parsers.expat
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from difflib import unified_diff
+from datetime import datetime, timezone
 from pathlib import Path
 
-# user_log.py and drift_report.py sit next to this file in both the repo and the installed layout.
+# user_log.py sits next to this file in both the repo and the installed layout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import user_log
-from drift_report import METRICS_NAME, REVIEW_CYCLE_NAME, REVIEW_DONE_NAME, _drift_state_dir
 
 USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>] [--transcript <path>] [--dry-run]"
 POLL_INTERVAL_SECONDS = 1
@@ -31,12 +29,6 @@ NEXT_HEADING = "## Next"
 REQUIRED_HEADINGS = (GOAL_HEADING, QUESTIONS_HEADING)
 CHECKPOINT_NAME = ".handoff-checkpoint.json"
 USER_LOG_NAME = "user-log.md"
-REVIEW_LAUNCH_COUNT = 10
-REVIEW_AGE_DAYS = 21
-REVIEW_REMINDER = (
-    "Drift-fix review due: run `python3 ~/.claude/scripts/drift_report.py`, "
-    "then `python3 ~/.claude/scripts/drift_report.py --mark-reviewed`"
-)
 SANDBOX_STOP = (
     "handoff.py must run outside the Bash sandbox, and this call ran inside it. "
     "Run it again as one bare Bash call spelled exactly python3 ~/.claude/scripts/handoff.py <args>: "
@@ -45,13 +37,6 @@ SANDBOX_STOP = (
 LOG_HEADER = re.compile(r"^### (\S+) (\S+) (\S+) (\S+)(.*)$")
 RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
 ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
-METRIC_COUNT_KEYS = (
-    "log_entries_since_last",
-    "open_questions",
-    "answered_questions",
-    "goal_changed",
-    "mow_candidates",
-)
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -259,23 +244,6 @@ def _user_log_sync(run_dir: Path, transcript: Path | None) -> bool:
     return user_log.sync(transcript, run_dir) is not None
 
 
-def _goal_change_report(goal_lines: list[str], checkpoint: dict, record: dict) -> str | None:
-    """Return a diff of the Goal section against the previous handoff's snapshot; never refuses."""
-    snapshot = checkpoint.get("goal_snapshot")
-    if not isinstance(snapshot, list):
-        return None
-    record["goal_changed"] = snapshot != goal_lines
-    if not record["goal_changed"]:
-        return None
-    diff = unified_diff(
-        snapshot, goal_lines, "goal at previous handoff", "goal now", lineterm=""
-    )
-    return (
-        "handoff.py: the Goal and standing rules section changed since the previous handoff; "
-        "check that no rule was paraphrased or dropped:\n" + "\n".join(diff) + "\n"
-    )
-
-
 def _log_entries_since_last(entries: list[LogEntry] | None, checkpoint: dict, record: dict) -> None:
     """Record how many user-log entries the previous handoff had not seen; never refuses."""
     if entries is None:
@@ -285,7 +253,7 @@ def _log_entries_since_last(entries: list[LogEntry] | None, checkpoint: dict, re
     record["log_entries_since_last"] = sum(entry.key not in seen for entry in entries)
 
 
-def _mow_list(sections: dict[str, list[str]], checkpoint: dict, record: dict) -> str | None:
+def _mow_list(sections: dict[str, list[str]], checkpoint: dict) -> str | None:
     """Return answered questions kept for a full handoff and DONE Next items; never edits."""
     seen = set(checkpoint.get("answered_questions_seen") or [])
     stale = [question for question in _answered_questions(sections) if question in seen]
@@ -294,7 +262,6 @@ def _mow_list(sections: dict[str, list[str]], checkpoint: dict, record: dict) ->
         for line in sections.get(NEXT_HEADING, [])
         if re.search(r"\bDONE\b", line)
     ]
-    record["mow_candidates"] = len(stale) + len(done)
     if not stale and not done:
         return None
     lines = [
@@ -311,14 +278,11 @@ def _summary_line(record: dict) -> str:
         value = record.get(key)
         if value is None:
             return "not checked"
-        if isinstance(value, bool):
-            return "yes" if value else "no"
         return str(value)
 
     return (
         f"Drift check: {show('log_entries_since_last')} user-log entries since the previous "
-        f"handoff, {show('open_questions')} open and "
-        f"{show('answered_questions')} answered questions, goal changed: {show('goal_changed')}."
+        f"handoff, {show('open_questions')} open questions."
     )
 
 
@@ -327,7 +291,6 @@ def _advance_checkpoint(
     checkpoint: dict,
     entries: list[LogEntry] | None,
     answered: list[str],
-    goal_lines: list[str],
 ) -> None:
     seen = set(checkpoint.get("user_log_uuids_seen") or [])
     seen.update(entry.key for entry in entries or [])
@@ -335,7 +298,6 @@ def _advance_checkpoint(
         "last_handoff_ts": datetime.now(timezone.utc).isoformat(),
         "user_log_uuids_seen": sorted(seen),
         "answered_questions_seen": answered,
-        "goal_snapshot": goal_lines,
     }
     path = run_dir / CHECKPOINT_NAME
     temporary = path.with_suffix(".tmp")
@@ -346,73 +308,6 @@ def _advance_checkpoint(
         sys.stderr.write(f"handoff.py: failed to write {path}: {error}\n")
 
 
-def _write_metrics(run_dir: Path | None, session_name: str, record: dict) -> None:
-    line = json.dumps(
-        {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "run_dir": str(run_dir) if run_dir else None,
-            "session": session_name,
-            **record,
-        }
-    )
-    targets = [_drift_state_dir() / METRICS_NAME]
-    if run_dir is not None:
-        targets.append(run_dir / METRICS_NAME)
-    for target in targets:
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-        except OSError as error:
-            sys.stderr.write(f"handoff.py: failed to write drift metrics to {target}: {error}\n")
-
-
-def _review_reminder() -> str | None:
-    state_dir = _drift_state_dir()
-    if (state_dir / REVIEW_DONE_NAME).exists():
-        return None
-    try:
-        cycle_start = datetime.fromisoformat(
-            (state_dir / REVIEW_CYCLE_NAME).read_text(encoding="utf-8").strip()
-        )
-    except (OSError, ValueError):
-        cycle_start = None
-    try:
-        lines = (state_dir / METRICS_NAME).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    launched = 0
-    first_ts = None
-    for line in lines:
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(item, dict):
-            continue
-        if cycle_start is not None:
-            # A naive or malformed ts raises TypeError or ValueError; such lines are kept.
-            try:
-                before_cycle = datetime.fromisoformat(item.get("ts")) < cycle_start
-            except (TypeError, ValueError):
-                before_cycle = False
-            if before_cycle:
-                continue
-        if first_ts is None and isinstance(item.get("ts"), str):
-            first_ts = item["ts"]
-        if item.get("outcome") == "launched":
-            launched += 1
-    due = launched >= REVIEW_LAUNCH_COUNT
-    if not due and first_ts:
-        try:
-            first = datetime.fromisoformat(first_ts)
-        except ValueError:
-            first = None
-        if first is not None and first.tzinfo is not None:
-            due = datetime.now(timezone.utc) - first >= timedelta(days=REVIEW_AGE_DAYS)
-    return REVIEW_REMINDER if due else None
-
-
 def handoff(
     state_path: Path,
     session_name: str,
@@ -420,15 +315,7 @@ def handoff(
     transcript: Path | None = None,
     dry_run: bool = False,
 ) -> int:
-    record: dict = {"outcome": "error", **dict.fromkeys(METRIC_COUNT_KEYS)}
-    run_dir = state_path.parent if state_path.is_file() else None
-    try:
-        return _run_handoff(state_path, session_name, cwd, transcript, dry_run, record)
-    finally:
-        _write_metrics(run_dir, session_name, record)
-        reminder = _review_reminder()
-        if reminder:
-            sys.stdout.write(f"{reminder}\n")
+    return _run_handoff(state_path, session_name, cwd, transcript, dry_run, record={})
 
 
 def _run_handoff(
@@ -441,7 +328,6 @@ def _run_handoff(
 ) -> int:
     if not state_path.is_file():
         sys.stderr.write(f"handoff.py: STATE.md not found: {state_path}\n")
-        record["outcome"] = "refused:missing-state"
         return 1
     age = time.time() - state_path.stat().st_mtime
     if age > STATE_MAX_AGE_SECONDS:
@@ -449,35 +335,25 @@ def _run_handoff(
             f"handoff.py: STATE.md is {int(age)}s old (limit {STATE_MAX_AGE_SECONDS}s); "
             "rewrite it, then rerun handoff.py in a later tool call\n"
         )
-        record["outcome"] = "refused:stale-state"
         return 1
     try:
         state_text = state_path.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
         sys.stderr.write(f"handoff.py: failed to read STATE.md: {error}\n")
-        record["outcome"] = "refused:missing-state"
         return 1
     sections = _sections(state_text)
     refusal = _required_sections_refusal(sections)
     if refusal:
         sys.stderr.write(refusal)
-        record["outcome"] = "refused:sections"
         return 1
     question_bullets = _bullets(sections[QUESTIONS_HEADING])
-    record["open_questions"] = sum(bullet.startswith("- [open]") for bullet in question_bullets)
-    record["answered_questions"] = sum(
-        bullet.startswith("- [answered") for bullet in question_bullets
-    )
+    record["open_questions"] = sum(bullet.startswith("- [open") for bullet in question_bullets)
     run_dir = state_path.parent
     synced = _user_log_sync(run_dir, transcript)
     checkpoint = _load_checkpoint(run_dir)
-    goal_lines = [line.strip() for line in sections[GOAL_HEADING] if line.strip()]
     entries = _read_user_log(run_dir) if synced else None
-    goal_report = _goal_change_report(goal_lines, checkpoint, record)
-    if goal_report:
-        sys.stdout.write(goal_report)
     _log_entries_since_last(entries, checkpoint, record)
-    mow = _mow_list(sections, checkpoint, record)
+    mow = _mow_list(sections, checkpoint)
     if mow:
         sys.stdout.write(mow)
     prompt = (
@@ -487,9 +363,7 @@ def _run_handoff(
     )
     if dry_run:
         sys.stdout.write(f"dry run: nothing launched; successor prompt:\n{prompt}\n")
-        record["outcome"] = "dry-run"
         return 0
-    record["outcome"] = "failed:launch"
     input_text = shlex.join(
         ["claude", "--name", session_name, "--permission-mode", "bypassPermissions", prompt]
     )
@@ -556,10 +430,7 @@ def _run_handoff(
             f"handoff: successor {session_name!r} did not start{locked}; {run_yourself}\n"
         )
         return 1
-    _advance_checkpoint(
-        run_dir, checkpoint, entries, _answered_questions(sections), goal_lines
-    )
-    record["outcome"] = "launched"
+    _advance_checkpoint(run_dir, checkpoint, entries, _answered_questions(sections))
     sys.stdout.write(f"session: {session_name}\n")
     sys.stdout.write(f"state:   {state_path}\n")
     return 0

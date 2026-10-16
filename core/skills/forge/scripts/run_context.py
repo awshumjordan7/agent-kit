@@ -309,8 +309,10 @@ def _read_plan(plan_file: Path) -> tuple[bytes, str, str]:
         return raw, "", f"could not read the plan at {plan_file}: {exc}"
 
 
-def plan_facts(plan_file: Path) -> dict:
-    raw, plan, error = _read_plan(plan_file)
+def plan_facts(plan_file: str) -> dict:
+    # planFile echoes the argument as given: Path would rewrite ./plan.md as plan.md, and forge
+    # compares this string with the path it passed.
+    raw, plan, error = _read_plan(Path(plan_file))
     phases: list[dict] = []
     if not error:
         phases, error = _plan_phases(plan)
@@ -325,6 +327,7 @@ def plan_facts(plan_file: Path) -> dict:
             "sha256": hashlib.sha256(raw).hexdigest() if raw else "",
             "error": error,
             "criteria": _criteria(_section(plan, "Acceptance Criteria")),
+            "planFile": plan_file,
         }
     )
 
@@ -904,7 +907,7 @@ def main() -> None:
     smoke_run_parser.add_argument("--command", dest="smoke_command", required=True)
     smoke_run_parser.add_argument("--log-name", default="smoke.log")
     plan_facts_parser = subparsers.add_parser("plan-facts")
-    plan_facts_parser.add_argument("--plan-file", type=Path, required=True)
+    plan_facts_parser.add_argument("--plan-file", required=True)
     checkpoint_save_parser = subparsers.add_parser("checkpoint-save")
     checkpoint_save_parser.add_argument("--run-dir", type=Path, required=True)
     checkpoint_save_parser.add_argument("--script", action="store_true")

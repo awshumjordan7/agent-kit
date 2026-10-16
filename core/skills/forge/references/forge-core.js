@@ -354,7 +354,7 @@ const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     branch: { type: 'string' }, prUrl: { type: 'string' }, prNumber: { type: 'integer' }, repo: { type: 'string' },
-    skipped: { type: 'boolean' }, reason: { type: 'string' }, sha: { type: 'string' },
+    skipped: { type: 'boolean' }, reason: { type: 'string' }, sha: { type: 'string' }, checks: { type: 'string' },
     unstaged: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
@@ -403,9 +403,9 @@ const PLAN_FACTS_SCHEMA = factsSchema({
     },
     plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
     bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
-    criteria: { type: 'array', items: { type: 'string' } },
+    criteria: { type: 'array', items: { type: 'string' } }, planFile: { type: 'string' },
   },
-  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria'],
+  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria', 'planFile'],
 })
 const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
 const PHASES_FACTS_SCHEMA = factsSchema(PHASES_FILE_SCHEMA)
@@ -466,10 +466,13 @@ function pickImplRole(lane, fullySpecified, plannedSourceFileCount, threshold = 
     : 'impl'
 }
 
+function repoName(repo) {
+  return String(repo || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
+}
+
 function sandboxAllowed(stageOn, repo, repos) {
   if (!stageOn) return false
-  const basename = String(repo || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
-  return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(basename)
+  return [repos && repos.frontend, repos && repos.backend].filter(Boolean).includes(repoName(repo))
 }
 
 function configuredLenses() {
@@ -569,6 +572,7 @@ const STUBS = {
 const decisions = []
 if (canonicalLane !== requestedLane) decisions.push(`Lane alias ${requestedLane} canonicalized to build`)
 if (typeof args.planText === 'string') decisions.push(`args.planText is ignored; the plan is read from planPath (${PARAMS.planPath}).`)
+if (args.ghEnvUnset !== undefined && args.ghEnvUnset !== null && !Array.isArray(args.ghEnvUnset)) decisions.push(`args.ghEnvUnset is ignored because it is not an array; the forge.config.json ghEnvUnset entry applies.`)
 const dryRunJournal = []
 const __test = {
   partitionTriage,
@@ -632,7 +636,13 @@ async function agentT(role, prompt, opts = {}) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
     return STUBS[role](opts)
   }
-  let result = await runtimeAgent(prompt, callOpts)
+  let result = null
+  try {
+    result = await runtimeAgent(prompt, callOpts)
+  } catch (error) {
+    if (!String(error && error.message).includes('without calling StructuredOutput')) throw error
+    await decide(`${role} ended without StructuredOutput (turn cap?): ${error.message}`)
+  }
   if (result === null && profile.model === 'fable' && !forceTier) {
     if (spawnCount >= PARAMS.spawnCap - 2) {
       capBlocked = true
@@ -642,7 +652,13 @@ async function agentT(role, prompt, opts = {}) {
     await decide(`${role} returned null on Fable; retrying once with Opus high.`)
     spawnCount++
     const fallback = role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
-    result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
+    try {
+      result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
+    } catch (error) {
+      if (!String(error && error.message).includes('without calling StructuredOutput')) throw error
+      await decide(`${role} ended without StructuredOutput (turn cap?): ${error.message}`)
+      result = null
+    }
   }
   return result
 }
@@ -765,14 +781,15 @@ function fnv1a(text) {
   return hash
 }
 
-const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [] }
+const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [], planFile: '' }
 let PLAN_FACTS = EMPTY_PLAN_FACTS
 
 // The plan stays on disk: the script takes only these facts, and every agent that needs the plan reads it by path.
 async function loadPlanFacts() {
   const planFile = shellQuote(PARAMS.planPath)
   PARAMS.spawnCap += 1
-  const facts = await factsCommand('read-plan', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile}`, PLAN_FACTS_SCHEMA, 'Implement')
+  const facts = await factsCommand('read-plan', `python3 ~/.claude/skills/forge/scripts/run_context.py plan-facts --plan-file ${planFile}`, PLAN_FACTS_SCHEMA, 'Implement',
+    checked => checked.planFile === PARAMS.planPath)
   if (PARAMS.lane === 'build') {
     if (!facts) throw new Error(`could not read the plan at ${PARAMS.planPath}: the plan-facts command returned no checked result`)
     if (facts.error) throw new Error(facts.error)
@@ -831,15 +848,20 @@ function shellQuote(value) {
 
 // One agent runs one command that prints { facts, canonLength, fnv1a }. The digest is recomputed over
 // the returned facts, so an echo that adds, drops or edits a field is a miss. The caller's spawn
-// budget covers the first attempt; only the retry raises the cap here.
-async function factsCommand(label, command, schema, phaseLabel) {
+// budget covers the first attempt; only the retry raises the cap here. An accept check that fails
+// counts as a miss, like a digest mismatch.
+async function factsCommand(label, command, schema, phaseLabel, accept = null) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) PARAMS.spawnCap += 1
-    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: ${command}`,
+    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged. Copy the command character for character; never retype a path. Command: ${command}`,
       { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
     if (read && read.facts && typeof read.facts === 'object') {
       const canon = canonicalJson(read.facts)
-      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) return read.facts
+      if (canon.length === read.canonLength && fnv1a(canon) === read.fnv1a) {
+        if (!accept || accept(read.facts)) return read.facts
+        await decide(`${label} attempt ${attempt} failed its accept check.`)
+        continue
+      }
     }
     if (!read && capBlocked) return null
     await decide(`${label} attempt ${attempt} ${read ? 'did not match the facts digest' : 'returned no result'}.`)
@@ -1025,6 +1047,19 @@ async function changedFiles() {
   return facts
 }
 
+// The gate's own test command carries the env setup a bare pytest call lacks.
+function smokeTestTemplates() {
+  if (configuredGateMode() === 'none') return ''
+  const entry = configuredGateEntry()
+  const tests = entry.tests || ''
+  const worktreeTests = (entry.worktree && entry.worktree.tests) || ''
+  if (!tests && !worktreeTests) return ''
+  const lines = ['\n\nTEST COMMANDS. When the check runs tests, build it from the configured gate test command instead of a bare test runner, because it carries the environment the tests need. Replace <paths> with the test paths and drop <create-db>.']
+  if (tests) lines.push(`tests: ${tests}`)
+  if (worktreeTests) lines.push(`worktree.tests: ${worktreeTests}`, `Use worktree.tests instead of tests when \`git -C ${shellQuote(PARAMS.projectDir)} rev-parse --git-common-dir\` prints a different folder than \`git -C ${shellQuote(PARAMS.projectDir)} rev-parse --git-dir\`; the check itself runs both commands to decide.`)
+  return lines.join('\n')
+}
+
 // Runs as the default agent type, not reviewer, because it writes smoke.py itself and the reviewer
 // type has no Write tool. The prompt restates the reviewer rules that the agent type would carry.
 function checkpointReview(context, gate, implement, phases = null) {
@@ -1034,7 +1069,7 @@ You are the fresh pre-ship smoke writer. After the plan file, read the diff file
 
 RULES. You have a budget of 30 tool calls. Read a repository file only to confirm a file:line the diff touches, at most 120 lines per read, and do not explore adjacent code. Do not run git and do not search the web. Do not use the Agent, Edit or NotebookEdit tools. You may write exactly one file, ${PARAMS.runDir}/smoke.py, and only as described below; write nothing else.
 
-Give the one check that best proves the change works. Forge runs it from ${PARAMS.projectDir} right after you return, and it must finish within 540 seconds. The check may write only to temp folders or ${PARAMS.runDir}; forge fails a smoke that changes the repository working tree. When one command proves the change, set command to that exact command, keep it to one line under 300 characters, and set scriptWritten to false. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\`. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Never name a file that does not exist yet. When no runnable check can prove the change, return an empty command, set scriptWritten to false and write no file; a person then decides.
+Give the one check that best proves the change works. Forge runs it from ${PARAMS.projectDir} right after you return, and it must finish within 540 seconds. The check may write only to temp folders or ${PARAMS.runDir}; forge fails a smoke that changes the repository working tree. When one command proves the change, set command to that exact command, keep it to one line under 300 characters, and set scriptWritten to false. If the proof needs more than one short line, write a complete Python 3 program to ${PARAMS.runDir}/smoke.py yourself with the Write tool before you return, set scriptWritten to true and leave command empty; forge runs \`python3 ${PARAMS.runDir}/smoke.py\`. When that file already exists, Read it first and then Write it, because the Write tool refuses to overwrite a file you have not read. Never name a file that does not exist yet. When no runnable check can prove the change, return an empty command, set scriptWritten to false and write no file; a person then decides.${smokeTestTemplates()}
 
 GATE RESULT
 ${gate ? JSON.stringify(gate) : '(no gate result; this repository uses gate mode none)'}
@@ -1727,7 +1762,11 @@ const SHIP_ATTRIBUTION_RULE = "Run the ship-pr skill's attribution check before 
 
 function ghEnvUnsetNames() {
   const basename = String(PARAMS.projectDir).replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
-  const configured = (FORGE_CONFIG && FORGE_CONFIG.ghEnvUnset && FORGE_CONFIG.ghEnvUnset[basename]) || []
+  const entries = (FORGE_CONFIG && FORGE_CONFIG.ghEnvUnset) || {}
+  const key = Object.prototype.hasOwnProperty.call(entries, basename)
+    ? basename
+    : Object.keys(entries).find(k => k && basename.startsWith(`${k}-`))
+  const configured = (key && entries[key]) || []
   return (PARAMS.ghEnvUnset || configured).map(String).filter(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
 }
 
@@ -1748,14 +1787,18 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const bodyExtra = PARAMS.prBodyExtra
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the bullets; keep that section whenever you rewrite the body. `
     : ''
-  const tail = `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const tail = `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. After the push, run ship-pr's PR checks step (section 4 step 5) and return its result line as checks. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
+  const base = LAUNCH.base
+  const baseRule = base
+    ? `The base branch is ${base}; do not run resolve-base-branch.sh; use it as <base> in every ship-pr step, including \`gh pr create --base ${base}\`. `
+    : ''
   const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
   const prompt = existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${existing.branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${existing.branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. Update the PR body after the push. ${bodyRule} ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch and stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, resolve the repository base branch. If the current branch is the base branch or detached, create branch ${planBranchName()} from origin/<base>, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? '' : 'resolve the repository base branch and '}stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? 'if' : 'resolve the repository base branch. If'} the current branch is the base branch or detached, create branch ${planBranchName()} from origin/${base || '<base>'}, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1886,10 +1929,10 @@ APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
   }
-  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
+  return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. When ship.checks in the run data below is set, end that section with one more line: \`Ship checks: <ship.checks>\`. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
 When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and after a relaunch neither the run data nor checkpoint.json holds the implementer's summary. Carry its implementer summary and smoke result into What changed and why.
 ${gateNotice}
-Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
+Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. When ship.checks in the run data starts with \`checks: failed\`, name each failed check and its link under Status. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Render the Manual QA checklist from the acceptance criteria below, one unchecked item per criterion.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
@@ -2381,7 +2424,7 @@ async function fullLane() {
     async state => {
       if (stopped(state) || !state.ship || !sandboxAllowed(configuredStage('ff_review'), PARAMS.repo, FORGE_CONFIG.repos)) return state
       phase('Bot Review')
-      if (state.ship.repo && String(state.ship.repo).toLowerCase() !== String(PARAMS.repo).toLowerCase()) {
+      if (state.ship.repo && repoName(state.ship.repo).toLowerCase() !== repoName(PARAMS.repo).toLowerCase()) {
         await decide(`Bot review skipped: ship repo ${state.ship.repo} differs from configured repo ${PARAMS.repo}.`)
         return state
       }
