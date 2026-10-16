@@ -49,6 +49,7 @@ def deep_merge(
                 ("permissions", "allow"),
                 ("permissions", "deny"),
                 ("permissions", "ask"),
+                ("sandbox", "filesystem", "denyRead"),
             }:
                 result[key] = _append_unique(result[key], value)
             else:
