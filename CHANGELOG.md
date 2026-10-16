@@ -5,6 +5,10 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-16
+- core/skills/forge/references/forge-core.js, core/skills/forge/scripts/run_context.py: a turn-capped agent no longer aborts the build lane (I-401); ghEnvUnset matches worktree folder names (I-438); Bot Review compares repo names, not owner/name with a bare name (I-326); ship prompts use the launch base branch (I-449); the smoke writer gets the gate's test templates (I-398); read-plan checks the plan path it read (I-439).
+- core/skills/ship-pr/SKILL.md, core/agents/shipper.md, forge-core.js SHIP_SCHEMA: after opening or updating a PR the shipper waits up to 10 minutes for its checks and reports failures (I-127).
+- core/skills/forge/references/implement-mode.md, core/skills/ship-pr/scripts/ship_record.py: implement-mode runs are not exempt from the ship check; only build and review lanes are, because they ship before review (I-432).
+- core/scripts/handoff.py, core/scripts/drift_report.py, modules/sandbox: drop the goal-change diff, the drift metrics files, drift_report.py and its review reminder; the handoff keeps the user log, the entry count and the section refusal, and counts `- [open ...]` questions with any suffix.
 - modules/sandbox/CLAUDE.fragment.md: `git worktree add` and `remove` run through git-net.sh, because a sandboxed checkout cannot write tracked env files (I-424). Briefs name only the global with-env.sh, since a run-dir copy stays sandboxed (I-426).
 - core/references/brief-template.md: OUTPUT paths are absolute and checked with `ls` before the final message (I-421, I-435). `gate.sh --files` takes one argument per path, quoted when needed, or one comma-separated argument (I-156).
 - core/skills/forge/references/artifacts.md, core/profile.default.json: republishing a page over 100 KB goes to a worker (I-322). codex.roles review and plan-review name gpt-6.1-sol, with plan-review at xhigh (I-410).
