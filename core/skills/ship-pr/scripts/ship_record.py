@@ -24,7 +24,8 @@ import tempfile
 from pathlib import Path
 
 RECORD_NAME = "ship-record.json"
-# Forge writes these into its run dir; forge plans and reviews its own changes.
+# Forge's build and review lanes write these into their run dir. They are exempt because they ship
+# before their own review. Implement-mode run dirs hold none of them, so those runs are not exempt.
 FORGE_MARKERS = ("phases.json", "context-gate.json", "checkpoint.json")
 
 

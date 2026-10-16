@@ -68,15 +68,23 @@ Write the PR title and body to files, never inline in the command: free text wit
 Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and remove every matching line.
 
 1. Check for an existing pull request with `gh pr view "<branch>" --json url -q .url`.
-2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and return its URL. Never create a second one.
+2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and go to step 5. Never create a second one.
 3. When it fails with a 404 or a "requires the repo scope" error, the `gh` token lacks access. Stop and report that error. `gh pr create` would fail the same way.
-4. Otherwise create a non-draft pull request with the resolved base branch: `gh pr create --base "<base>" --head "<branch>" --title "$(cat <title file>)" --body-file <body file>`.
+4. Otherwise create a non-draft pull request with the resolved base branch: `gh pr create --base "<base>" --head "<branch>" --title "$(cat <title file>)" --body-file <body file>`. Then go to step 5.
+5. Wait for the pull request's checks. This is the only step that returns from this section. Note the start time: the wait has a 10-minute deadline. `<number>` is the pull request number, the last part of its URL.
+   - Run `gh pr checks <number> --watch --fail-fast --interval 15` with the `env -u` prefix above, as one call. Set its Bash timeout to the time left before the deadline, at most 600000 ms. Each output row is tab-separated: name, state, elapsed time, link. Match the outcomes below in order; the first match wins.
+   - Exit code 0: the result line is `checks: passed`.
+   - Any row whose state is `fail` or `cancel`: the result line is `checks: failed`, followed by the name and link (columns 1 and 4) of each such row.
+   - No check rows in the output: the checks are not registered yet. Wait 30 seconds with `perl -e 'sleep 30'` and run the same command again. After 3 retries or at the deadline, whichever comes first, the result line is `checks: none reported`.
+   - Exit code 8 (checks pending) or a Bash timeout: the result line is `checks: pending after 10 min`.
+   - Any other error: the result line is `checks: error <first error line>`.
+   - No result undoes the push or the pull request. Return the pull request URL and the result line.
 
 ## 5. Report
 
 The PR body is written by the shipper on its own pushes only. Nothing refreshes a description after commits land outside ship-pr; rerun ship-pr or edit it by hand. The body holds a summary, the change list and links. No testing-results section unless the caller supplies a PR-body extra section; keep that section verbatim.
 
-When the changelog check failed, return only `NEEDS_CHANGELOG_OK`, the instruction file list and what is missing. When the ship check stopped the ship, return only `NEEDS_SHIP_CONFIRM` and the script's line. Otherwise return the pull request URL and resolved base branch. State that the attribution check printed nothing. List each unstaged approved file as `<path> - <reason>`, or say `All approved files staged.` Report any hook or authentication failure with its exact command and concise output.
+When the changelog check failed, return only `NEEDS_CHANGELOG_OK`, the instruction file list and what is missing. When the ship check stopped the ship, return only `NEEDS_SHIP_CONFIRM` and the script's line. Otherwise return the pull request URL, resolved base branch and the check result line from section 4 step 5. State that the attribution check printed nothing. List each unstaged approved file as `<path> - <reason>`, or say `All approved files staged.` Report any hook or authentication failure with its exact command and concise output.
 
 ## Edge cases
 

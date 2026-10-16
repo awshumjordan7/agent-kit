@@ -354,7 +354,7 @@ const SHIP_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     branch: { type: 'string' }, prUrl: { type: 'string' }, prNumber: { type: 'integer' }, repo: { type: 'string' },
-    skipped: { type: 'boolean' }, reason: { type: 'string' }, sha: { type: 'string' },
+    skipped: { type: 'boolean' }, reason: { type: 'string' }, sha: { type: 'string' }, checks: { type: 'string' },
     unstaged: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
@@ -1787,7 +1787,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const bodyExtra = PARAMS.prBodyExtra
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the bullets; keep that section whenever you rewrite the body. `
     : ''
-  const tail = `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const tail = `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. After the push, run ship-pr's PR checks step (section 4 step 5) and return its result line as checks. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
   const base = LAUNCH.base
   const baseRule = base
@@ -1932,7 +1932,7 @@ End handoff.md with a \`Next steps\` list whose first item is the checkpoint dec
   return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
 When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: it is the pre-ship handoff, and after a relaunch neither the run data nor checkpoint.json holds the implementer's summary. Carry its implementer summary and smoke result into What changed and why.
 ${gateNotice}
-Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
+Write these sections exactly: What changed and why; Gate results; Review scores and findings; Bot review (PR, reviewed head, bot comment count, triage verdicts, findings needing a human; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. When ship.checks in the run data starts with `checks: failed`, name each failed check and its link under Status. Judgment calls must include every entry from ${JSON.stringify(decisions)}.
 Render the Manual QA checklist from the acceptance criteria below, one unchecked item per criterion.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
