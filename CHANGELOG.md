@@ -5,6 +5,10 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-16
+- modules/sandbox/CLAUDE.fragment.md: `git worktree add` and `remove` run through git-net.sh, because a sandboxed checkout cannot write tracked env files (I-424). Briefs name only the global with-env.sh, since a run-dir copy stays sandboxed (I-426).
+- core/references/brief-template.md: OUTPUT paths are absolute and checked with `ls` before the final message (I-421, I-435). `gate.sh --files` takes one argument per path, quoted when needed, or one comma-separated argument (I-156).
+- core/skills/forge/references/artifacts.md, core/profile.default.json: republishing a page over 100 KB goes to a worker (I-322). codex.roles review and plan-review name gpt-6.1-sol, with plan-review at xhigh (I-410).
+- aisetup/merge.py: a later layer's `sandbox.filesystem.denyRead` entries are added to earlier layers' entries instead of replacing them. An overlay can block a file without dropping core's `.env` patterns (I-433).
 - aisetup/update.py: update recounts how far agent-kit is behind the required version after ai-setup moves, so one install.py update brings agent-kit up when the new ai-setup commit raises requires_agent_kit, instead of installing the new ai-setup on the old agent-kit until a second run.
 - core/scripts/doctor.py: the installed-files path check skips tokens that contain `[` or `\`, so a regex quoted in a skill (ship-pr SKILL.md's changelog patterns) no longer fails every install with "referenced path does not exist".
 - core/CLAUDE.md: before a code change outside forge, the main session asks once whether to draft a plan (recommended for more than 3 files or a behavior change), gives the change its own run dir, and always runs a code review after the change. Rapid-Fix uses that question as its confirmation.

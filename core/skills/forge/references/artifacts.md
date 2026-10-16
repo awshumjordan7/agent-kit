@@ -11,6 +11,7 @@ artifact HTML.
 - Any other artifact has no template: the worker writes the page following the `artifact-design` skill.
 - Every artifact is glanceable: a 1-3 sentence summary at the top, tables over prose, copyable
   credentials, a links section, no changelog or update prose.
+- Republishing a page over 100 KB goes to a worker. Reading a 600 KB page inline cost the main session about 150k tokens.
 - Copy buttons go only on things a person pastes: links, access-card values, users rows, command
   blocks, and fenced code blocks; inline code gets none.
 - A page that saves viewer input declares the `db` capability.
