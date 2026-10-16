@@ -4,6 +4,11 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-10-16
+- core/CLAUDE.md: before a code change outside forge, the main session asks once whether to draft a plan (recommended for more than 3 files or a behavior change), gives the change its own run dir, and always runs a code review after the change. Rapid-Fix uses that question as its confirmation.
+- core/skills/forge (scripts/build-code-review-prompt.sh, references/code-review-prompt.md, scripts/build-plan-review-prompt.sh, references/codex-wrapper.md, references/forge-core.js): a code review prompt can be built for any change outside forge for Codex or Claude reviewers; plan review works without recon.md; forge runs pass their run dir to the new ship check.
+- core/skills/ship-pr (SKILL.md, scripts/ship_record.py): the shipper checks for a plan answer and a current code review and returns NEEDS_SHIP_CONFIRM when either is missing; generic rules from ai-setup's copy (branch from origin/<base>, scoped restaging with at most 3 commit attempts, token-failure stop, gh 404 check, existing-PR body update, PR text in $TMPDIR files, edge cases) now live in core.
+
 ## 2026-10-15
 - core/skills/forge (scripts/gate.sh, references/gate-commands.md): a new optional gate key, `testFileInfixes`, makes a changed file run its same-name test file (`x.ts` runs `x.spec.ts`) for repos that keep tests next to the source.
 - aisetup (compose.py), docs/overlay.md: gate entry keys may use `{{answers...}}` and `{{layers...}}` tokens, rendered at install and update. An empty answer drops the entry. Templates now get question defaults for answers missing from the profile.
