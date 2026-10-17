@@ -1039,16 +1039,9 @@ async function changedFiles() {
   return facts
 }
 
-function noCodeCheckpoint() {
-  return { command: '', scriptWritten: false }
-}
-
 function checkpointDocument(checkpoint, implement, context, state = {}) {
-  const scriptWritten = checkpoint.scriptWritten === true
   return {
-    // With --script, checkpoint-save fills the command in from smoke.py.
-    command: scriptWritten ? '' : checkpoint.command,
-    scriptWritten,
+    command: checkpoint.command,
     implementFilesChanged: (implement && implement.filesChanged) || [],
     context,
     ...(state.phases ? { branch: state.branch || '', phases: state.phases } : {}),
@@ -1058,7 +1051,7 @@ function checkpointDocument(checkpoint, implement, context, state = {}) {
 // checkpoint.json is written by a command from small arguments and the context file the context
 // command saved.
 async function writeCheckpoint(checkpoint) {
-  const proof = checkpoint.scriptWritten ? ' --script' : checkpoint.command ? ` --command=${shellQuote(checkpoint.command)}` : ''
+  const proof = checkpoint.command ? ` --command=${shellQuote(checkpoint.command)}` : ''
   const files = checkpoint.implementFilesChanged
   // --branch makes the command read phases.json, so it is passed only for a phased run.
   const branch = checkpoint.phases ? ` --branch ${shellQuote(checkpoint.branch || '')}` : ''
@@ -1069,8 +1062,7 @@ async function writeCheckpoint(checkpoint) {
     await decide(`save-checkpoint did not write ${PARAMS.runDir}/checkpoint.json: ${saved.error || 'no error text'}`)
     return false
   }
-  const commandMatches = checkpoint.scriptWritten ? saved.hasScript === true && Boolean(saved.command) : saved.command === checkpoint.command
-  if (!commandMatches || saved.files !== files.length) {
+  if (saved.command !== checkpoint.command || saved.files !== files.length) {
     await decide(`save-checkpoint saved a different command or file count than forge passed (command ${JSON.stringify(saved.command)}, ${saved.files} files).`)
     return false
   }
@@ -2255,7 +2247,7 @@ async function fullLane() {
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      state.checkpoint = checkpointDocument(noCodeCheckpoint(), state.implement, state.context, state)
+      state.checkpoint = checkpointDocument({ command: '' }, state.implement, state.context, state)
       if (!await writeCheckpoint(state.checkpoint)) {
         state.status = 'BLOCKED'
         await decide('Pre-ship checkpoint result could not be written; shipping was stopped.')
