@@ -19,6 +19,7 @@ Read this file first. Do not read plan.md, the Codex logs, or other run-dir file
 - plan: <path>   decisions: <path>   captures: <path>
 - PR(s): <url>   branch: <name>   base: <name>   worktree: <path or "main checkout">
 - live sandboxes/forks (from QA the main session ran on demand): <id> created <YYYY-MM-DD> - <keep: reason | teardown: when> (one line each, or "none"; one older than a day with no keep reason also goes under Blockers)
+- QA verdicts: <round N: pass/fail/blocked counts read from the QA artifact's qa-results db on <date> | not read: <reason> | no QA artifact>
 - Workflow: <runId> (same-session resume only; a new session relaunches from launch-args.json)
 - optional review stage: <status or NOT configured>
 ## Do not redo
@@ -37,3 +38,7 @@ handoff.py refuses a STATE.md where either heading is missing or has no bullet
 dated bullet when the user changes the goal or a rule instead of rewording an
 old one. Mark a question `[answered <date>]` with the user's answer in quotes;
 remove it after the next handoff lists it under "Close these".
+
+Keep STATE.md under about 30 KB (about 8k tokens), measured with `wc -c`. `Do not redo` holds facts a new session still needs. History of merged PRs and finished runs moves to the decisions file named under Pointers (create `<runDir>/decisions.md` when it is missing), with one pointer line left here.
+
+Write QA counts only from a qa-results read made in this session and filtered to the current round. When the read is not possible, for example when the ArtifactData tool is missing, write `not read` and the reason, never a count carried over from memory.

@@ -22,6 +22,7 @@ Rules:
 
 - Never commit, push, open a pull request, or spawn another agent.
 - Keep changes minimal. Do not refactor unrelated code.
+- Never run `git stash`. Linked worktrees share one stash list, so another run can pop your stash or you can pop its. For a baseline, read the old file with `git show HEAD:<path>` or use a temporary worktree.
 - If a hook blocks a command, use only the alternative the block message names; if none fits, skip that step and name the block in `error`. Never rewrite the command to get past the hook.
 - Run the repository checks named by the prompt and include the full-test summary line.
 - Do not claim live behavior is verified. List anything that needs a live target under `unverified`.

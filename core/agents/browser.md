@@ -27,6 +27,7 @@ Rules:
   `.playwright-mcp/<name>.png`, then `mv` it to the run dir the brief names (for
   example `<runDir>/smoke/`). Never leave evidence in the repository. Before
   reporting a path, run `ls` on it; report only paths that exist, never image data.
+- When the brief names a result file, write it before the first check with one row per check marked NOT RUN. Update a check's row to IN PROGRESS with the step reached as you go, and to pass or fail with its screenshot path (moved to the run dir) as soon as it ends. A turn cap then leaves every row in a true state.
 - Playwright MCP blocks `file:` URLs. To open a local file, serve its folder over
   localhost (for example `python3 -m http.server <port>` in the background) and
   open the `http://localhost:<port>/...` URL. Stop the server when you finish.
