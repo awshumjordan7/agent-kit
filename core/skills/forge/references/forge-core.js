@@ -1046,7 +1046,7 @@ function noCodeCheckpoint() {
 function checkpointDocument(checkpoint, implement, context, state = {}) {
   const scriptWritten = checkpoint.scriptWritten === true
   return {
-    // checkpoint-save fills the command in when the writer wrote smoke.py.
+    // With --script, checkpoint-save fills the command in from smoke.py.
     command: scriptWritten ? '' : checkpoint.command,
     scriptWritten,
     implementFilesChanged: (implement && implement.filesChanged) || [],
@@ -1870,7 +1870,7 @@ function ffTriage(shipResult, run) {
 async function handoff(state, context) {
   const noGates = configuredGateMode() === 'none'
   const gateNotice = noGates
-    ? `State exactly \`gates: none (personal repo)\`. Cite the checkpoint smoke command from ${PARAMS.runDir}/checkpoint.json (an empty command means no smoke ran).`
+    ? `State exactly \`gates: none (personal repo)\`. Cite the smoke command ${JSON.stringify(state.checkpointSmokeCommand || '')} and its result ${JSON.stringify(smokeResult(state))} (an empty command or a null result means no smoke ran).`
     : ''
   const cleanup = usesGateCheckout()
     ? `Before anything else, run exactly this command once and continue regardless of its output: \`${gateCheckoutCleanupCommand()}\`. `
@@ -1882,7 +1882,7 @@ async function handoff(state, context) {
     },
   }
   if (state.status === 'PRE_SHIP') {
-    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: after a relaunch the data below can be empty, so keep its implementer summary and smoke result wherever the data below is empty or null. Include the implementer's summary from this data: ${JSON.stringify((state.implement && state.implement.summary) || '')}. Include the checkpoint smoke command (empty means no smoke ran; a command naming smoke.py means the writer wrote ${PARAMS.runDir}/smoke.py): ${JSON.stringify((state.checkpoint && state.checkpoint.command) || '')}. Include the smoke result (passed, exit code, log path; null means no smoke ran): ${JSON.stringify(smokeResult(state))}. ${gateNotice}
+    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: after a relaunch the data below can be empty, so keep its implementer summary and smoke result wherever the data below is empty or null. Include the implementer's summary from this data: ${JSON.stringify((state.implement && state.implement.summary) || '')}. Include the checkpoint smoke command (empty means no smoke ran): ${JSON.stringify((state.checkpoint && state.checkpoint.command) || '')}. Include the smoke result (passed, exit code, log path; null means no smoke ran): ${JSON.stringify(smokeResult(state))}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })

@@ -1523,7 +1523,10 @@ if not failures and commit_message:
     # -f stages a tracked file under an ignored folder; the filters above already skipped
     # untracked ignored paths. A folder entry gets no -f, which would stage the ignored files in it.
     def stage(paths):
-        folders = [path for path in paths if os.path.isdir(os.path.join(repo, path))]
+        folders = [
+            path for path in paths
+            if os.path.isdir(os.path.join(repo, path)) and not os.path.islink(os.path.join(repo, path))
+        ]
         file_entries = [path for path in paths if path not in folders]
         for flags, group in ((["-f"], file_entries), ([], folders)):
             if not group:
