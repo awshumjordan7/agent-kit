@@ -1507,7 +1507,7 @@ if not failures and commit_message:
             if ".envs" in parts or fnmatch.fnmatch(os.path.basename(path), "*.env*"):
                 continue
             ignored = subprocess.run(
-                ["git", "-C", repo, "check-ignore", "--quiet", "--no-index", "--", path],
+                ["git", "-C", repo, "check-ignore", "--quiet", "--", path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -1520,15 +1520,28 @@ if not failures and commit_message:
             commit_error = "no committable --files paths remain after safety filters"
     commit_paths = stage_files + head_only_files
 
+    # -f stages a tracked file under an ignored folder; the filters above already skipped
+    # untracked ignored paths. A folder entry gets no -f, which would stage the ignored files in it.
+    def stage(paths):
+        folders = [path for path in paths if os.path.isdir(os.path.join(repo, path))]
+        file_entries = [path for path in paths if path not in folders]
+        for flags, group in ((["-f"], file_entries), ([], folders)):
+            if not group:
+                continue
+            added = subprocess.run(
+                ["git", "-C", repo, "add", *flags, "--", *group],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if added.returncode != 0:
+                return added
+        return None
+
     if not commit_error and stage_files:
-        staged = subprocess.run(
-            ["git", "-C", repo, "add", "--", *stage_files],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        if staged.returncode != 0:
+        staged = stage(stage_files)
+        if staged is not None:
             commit_error = command_error("staging failed", staged)
 
     head_adopted = False
@@ -1568,14 +1581,7 @@ if not failures and commit_message:
             )
             # A pre-commit hook that rewrote files fails the first attempt; stage its edits and retry once.
             if rewritten.returncode == 1 and stage_files:
-                restaged = subprocess.run(
-                    ["git", "-C", repo, "add", "--", *stage_files],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                )
-                if restaged.returncode == 0:
+                if stage(stage_files) is None:
                     committed = subprocess.run(
                         ["git", "-C", repo, "commit", "-m", commit_message, "--", *commit_paths],
                         stdout=subprocess.PIPE,

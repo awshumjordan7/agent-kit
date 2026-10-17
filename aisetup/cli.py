@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
 import os
 import shutil
@@ -13,6 +14,8 @@ from typing import Any, Sequence
 from aisetup.compose import (
     ACTION_KEEP,
     CODEX_CONFIG_PATH,
+    COPY_IGNORE,
+    DEFAULT_DIRECTORIES,
     ComposeError,
     install_tree,
     prepare_install,
@@ -24,7 +27,7 @@ from aisetup.deps import (
     check_dependencies,
     format_missing_dependencies,
 )
-from aisetup.layers import ResolvedLayers, resolve_layers
+from aisetup.layers import Layer, ResolvedLayers, resolve_layers
 from aisetup.manifest import ManifestError, load_layer_manifest, load_module_manifest
 from aisetup.mcp import McpError, register_servers, registration_for_layers
 from aisetup.profile import (
@@ -117,6 +120,32 @@ def _print_name_warnings(profile: dict[str, Any], resolved: ResolvedLayers) -> N
         print(warning, file=sys.stderr)
 
 
+def _print_layer_replacements(resolved: ResolvedLayers) -> None:
+    suppliers: dict[str, tuple[Layer, Path]] = {}
+    for layer in resolved.layers:
+        for directory in DEFAULT_DIRECTORIES:
+            source = layer.root / directory
+            if not source.is_dir():
+                continue
+            # followlinks matches copytree, which copies the contents of linked folders.
+            for current, dirnames, filenames in os.walk(source, followlinks=True):
+                ignored = COPY_IGNORE(current, dirnames + filenames)
+                dirnames[:] = sorted(name for name in dirnames if name not in ignored)
+                for filename in sorted(filenames):
+                    if filename in ignored:
+                        continue
+                    path = Path(current) / filename
+                    relative = path.relative_to(layer.root).as_posix()
+                    earlier = suppliers.get(relative)
+                    if earlier is not None and not filecmp.cmp(earlier[1], path, shallow=False):
+                        print(
+                            f"warning: {layer.kind} {layer.name} replaces {relative} "
+                            f"from the {earlier[0].kind} layer",
+                            file=sys.stderr,
+                        )
+                    suppliers[relative] = (layer, path)
+
+
 def _print_overrides(profile: dict[str, Any]) -> None:
     for path, value, default in profile_overrides(profile):
         repo_default = (
@@ -151,6 +180,7 @@ def _install(args: argparse.Namespace) -> int:
         print(f"agent-kit: {error}", file=sys.stderr)
         return 4
     _print_name_warnings(profile, resolved)
+    _print_layer_replacements(resolved)
 
     try:
         if args.dry_run:
@@ -279,7 +309,9 @@ def _update(args: argparse.Namespace) -> int:
                 for item in items:
                     print(item.line())
             _print_overrides(profile)
-            _print_name_warnings(profile, resolve_layers(profile))
+            resolved = resolve_layers(profile)
+            _print_name_warnings(profile, resolved)
+            _print_layer_replacements(resolved)
             return 1 if any(status.behind for status in statuses) or drift_count else 0
         head_before = core_head(profile)
         update_repositories(profile)
@@ -289,6 +321,7 @@ def _update(args: argparse.Namespace) -> int:
         profile = load_profile(profile_path)
         resolved = resolve_layers(profile)
         _print_name_warnings(profile, resolved)
+        _print_layer_replacements(resolved)
         for repo, subject in commit_subjects(profile):
             print(f"{repo}: {subject}")
         update_profile_commits(profile)
