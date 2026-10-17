@@ -62,7 +62,7 @@ const PARAMS = {
   projectDir: args.projectDir,
   repo: args.repo || '',
   ticket: args.ticket || 'forge',
-  tickets: Array.isArray(args.tickets) && args.tickets.length ? args.tickets.map(String) : [args.ticket || 'forge'],
+  tickets: Array.isArray(args.tickets) && args.tickets.length ? args.tickets.map(String) : (args.ticket ? [String(args.ticket)] : []),
   criteria: Array.isArray(args.criteria)
     ? args.criteria
     : typeof args.criteria === 'string' ? args.criteria.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : [],
@@ -878,7 +878,7 @@ function planRef(phase = null) {
 }
 
 // The base branch resolved once at launch; every later diff of this run starts from it.
-let LAUNCH = { base: '', baseRef: '' }
+let LAUNCH = { base: '', baseRef: '', head: '' }
 
 // Gate-entry localOnly patterns: tracked or untracked files that are never run files.
 function localOnlyFlags() {
@@ -910,7 +910,7 @@ async function launchCheck(relaunch) {
     const ahead = facts.aheadCount ? `HEAD is ${facts.aheadCount} commit(s) ahead of ${facts.baseRef}` : ''
     throw new Error(`forge refused the launch in ${PARAMS.projectDir}: ${[dirty, ahead].filter(Boolean).join('; ')}. A fresh build run needs a clean tree at ${facts.baseRef}. Use a fresh worktree from ${facts.baseRef}, pass base=<parent branch> for a stacked branch, or relaunch an earlier run with checkpointDecision. Start a fresh run after fixing this; resumeFromRunId replays this refusal.`)
   }
-  LAUNCH = { base: facts.base, baseRef: facts.baseRef }
+  LAUNCH = { base: facts.base, baseRef: facts.baseRef, head: facts.head || '' }
 }
 
 // Scripts such as gate.sh, git-net.sh and codex-exec.sh leave the Bash sandbox only when the whole
@@ -2136,7 +2136,7 @@ async function phasedImplement(state) {
       startIndex = lastIndex + 1
       run.lastCommittedPhase = PHASES[lastIndex].id
       const rowSha = [...run.rows.slice(0, lastIndex + 1)].reverse().map(row => row.sha).find(Boolean) || null
-      run.headSha = savedIndex >= rowIndex ? (saved.headSha || rowSha) : rowSha
+      run.headSha = LAUNCH.head || (savedIndex >= rowIndex ? (saved.headSha || rowSha) : rowSha)
       if (rowIndex > savedIndex) {
         await decide(`Phase ${run.lastCommittedPhase} adopted as the last committed phase from its recorded sha ${rowSha.slice(0, 12)}; phases.json named ${saved.lastCommittedPhase ? `Phase ${saved.lastCommittedPhase}` : 'no committed phase'}.`)
       }
@@ -2151,7 +2151,13 @@ async function phasedImplement(state) {
     run.files = [...resumeFiles]
     // The final gate always runs after the loop, so a saved final gate is not queued twice.
     const requeue = gated && resumeFiles.length ? saved.pendingGates.filter(pending => pending.label !== finalLabel) : []
-    for (const pending of requeue) queuePhaseGate(run, { id: pending.id, sha: pending.sha, label: pending.label, files: resumeFiles })
+    for (const pending of requeue) {
+      const sha = LAUNCH.head || pending.sha
+      if (pending.sha && sha !== pending.sha) {
+        await decide(`Phase ${pending.id} gate re-queued at HEAD ${sha.slice(0, 12)} instead of its saved sha ${pending.sha.slice(0, 12)}.`)
+      }
+      queuePhaseGate(run, { id: pending.id, sha, label: pending.label, files: resumeFiles })
+    }
     await decide(run.lastCommittedPhase
       ? `Resuming the phase loop after Phase ${run.lastCommittedPhase}; ${requeue.length} pending or failed gate(s) re-queued.`
       : `Resuming the phase loop at Phase ${PHASES[0].id}; no phase was committed before the interruption.`)
@@ -2367,7 +2373,7 @@ async function fullLane() {
       if ((configuredRole('review') || {}).provider !== 'claude' && state.review.failures.some(failure => failure.key === 'codex')) {
         // Cross-model review is the contract; never continue Claude-only.
         state.status = 'BLOCKED'
-        await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the run is BLOCKED instead of continuing with Claude-only findings. The PR is preserved; resume once Codex is available.')
+        await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the run is BLOCKED instead of continuing with Claude-only findings. The PR is preserved. Fix the cause named in the \'Codex review did not run\' line above, then relaunch with resumeFromRunId and resumeAttempt raised by one.')
         return state
       }
       if (state.review.unresolvedDisputes.length) state.needsJudge = true
@@ -2469,7 +2475,7 @@ async function reviewLane() {
     return { status: 'BLOCKED', context, review, convergence: null, ship: null, gate: null, implement: null }
   }
   if ((configuredRole('review') || {}).provider !== 'claude' && review.failures.some(failure => failure.key === 'codex')) {
-    await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the review lane is BLOCKED instead of continuing Claude-only.')
+    await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the review lane is BLOCKED instead of continuing Claude-only. Fix the cause named in the \'Codex review did not run\' line above, then relaunch with resumeFromRunId and resumeAttempt raised by one.')
     return { status: 'BLOCKED', context, review, convergence: null, ship: null, gate: null, implement: null }
   }
   if (review.unresolvedDisputes.length) return { needsJudge: true, context, review }
