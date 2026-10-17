@@ -39,6 +39,7 @@ Rules:
   work goes, so a turn cap or a rate-limit error loses nothing.
 - Any command that may run longer than 60 seconds gets a hard timeout:
   `perl -e 'alarm shift @ARGV; exec @ARGV' <seconds> <command>`.
+- Your background jobs are killed when your turn ends. Start a long job in the background writing a done-file at a new path no earlier job used (`<cmd>; echo $? > <file>`). Then re-run one Bash call (timeout 600000) on `perl -e '$f=shift; $t=time; until (-e $f or time-$t >= 540) { sleep 10 } print((-e $f) ? "done\n" : "not yet\n")' <file>` until it prints `done`. Never wait with Monitor or a `pgrep -f` loop, and never end your turn while a job you started still runs.
 - A global permission rule denies every command containing `rm -rf`. To empty or
   remove a directory use `find <dir> -mindepth 1 -delete` then `rmdir <dir>`;
   never retry with `rm -rf`.

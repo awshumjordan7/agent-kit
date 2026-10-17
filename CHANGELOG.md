@@ -5,6 +5,9 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-16
+- core/agents/worker.md, core/agents/scout.md: the done-file wait rule now lives in the agent files, since both agents skip CLAUDE.md; scouts run only foreground commands (I-003).
+- core/agents/browser.md, core/agents/claude-implementer.md: browser writes one NOT RUN row per check before it starts and updates each row as it goes, so a turn cap keeps every finished check (I-016); implementers never run `git stash`, since linked worktrees share one stash list (I-320).
+- core/references/state-template.md: STATE.md stays under about 30 KB with finished history moved to decisions.md (I-035); a QA verdicts line comes only from a qa-results read made in the session (I-113).
 - core/skills/forge/references/forge-core.js, core/skills/forge/scripts/run_context.py: a turn-capped agent no longer aborts the build lane (I-401); ghEnvUnset matches worktree folder names (I-438); Bot Review compares repo names, not owner/name with a bare name (I-326); ship prompts use the launch base branch (I-449); the smoke writer gets the gate's test templates (I-398); read-plan checks the plan path it read (I-439).
 - core/skills/ship-pr/SKILL.md, core/agents/shipper.md, forge-core.js SHIP_SCHEMA: after opening or updating a PR the shipper waits up to 10 minutes for its checks and reports failures (I-127).
 - core/skills/forge/references/implement-mode.md, core/skills/ship-pr/scripts/ship_record.py: implement-mode runs are not exempt from the ship check; only build and review lanes are, because they ship before review (I-432).
