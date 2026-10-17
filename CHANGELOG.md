@@ -5,6 +5,10 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-16
+- core/skills/forge/scripts/gate.sh: `--commit` stages a tracked file that matches .gitignore instead of silently dropping it (I-368).
+- aisetup/cli.py: install and update warn on stderr when a later layer replaces an earlier layer's file with different content (I-122).
+- core/skills/forge/references/forge-core.js: the cross-model BLOCKED text names the cause line and the resumeAttempt relaunch (I-104); a resume gates re-queued phases and the final gate at the branch HEAD, so a manual fix is checked (I-344); a run with no ticket links no Jira ticket (I-031).
+- core/skills/forge (forge-core.js, SKILL.md, references/build-lane.md, codex-wrapper.md, cost-controls.md): remove the pre-ship smoke writer, which found 0 real defects in 12 stops; the run still pauses at PRE_SHIP, and `checkpointDecision` smoke with `smokeCommand` runs a named check.
 - core/agents/worker.md, core/agents/scout.md: the done-file wait rule now lives in the agent files, since both agents skip CLAUDE.md; scouts run only foreground commands (I-003).
 - core/agents/browser.md, core/agents/claude-implementer.md: browser writes one NOT RUN row per check before it starts and updates each row as it goes, so a turn cap keeps every finished check (I-016); implementers never run `git stash`, since linked worktrees share one stash list (I-320).
 - core/references/state-template.md: STATE.md stays under about 30 KB with finished history moved to decisions.md (I-035); a QA verdicts line comes only from a qa-results read made in the session (I-113).
