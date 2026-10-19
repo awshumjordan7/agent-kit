@@ -15,8 +15,7 @@
         {"path": "~/.ssh", "mode": "deny"},
         {"path": "~/.aws", "mode": "deny"},
         {"path": "~/.netrc", "mode": "deny"},
-        {"path": "~/.pgpass", "mode": "deny"},
-        {"path": "~/.config/gh", "mode": "deny"}
+        {"path": "~/.pgpass", "mode": "deny"}
       ]
     },
     "network": {

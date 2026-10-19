@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-10-19
+- modules/sandbox/settings.fragment.json: drop the `~/.config/gh` credentials deny, because Claude Code 2.1.304 lets it override the `allowRead` entries for config.yml and hosts.yml, so every sandboxed `gh` call failed to read its config.
+
 ## 2026-10-16
 - core/skills/forge/scripts/gate.sh: `--commit` stages a tracked file that matches .gitignore instead of silently dropping it (I-368).
 - aisetup/cli.py: install and update warn on stderr when a later layer replaces an earlier layer's file with different content (I-122).
