@@ -69,7 +69,7 @@ Write the PR title and body to files, never inline in the command: free text wit
 Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and remove every matching line.
 
 1. Check for an existing pull request with `gh pr view "<branch>" --json url -q .url`.
-2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and go to step 5. Never create a second one.
+2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and go to step 5, unless the caller says to keep the existing body; then leave it and go to step 5. Never create a second one.
 3. When it fails with a 404 or a "requires the repo scope" error, the `gh` token lacks access. Stop and report that error. `gh pr create` would fail the same way.
 4. Otherwise create a non-draft pull request with the resolved base branch: `gh pr create --base "<base>" --head "<branch>" --title "$(cat <title file>)" --body-file <body file>`. Then go to step 5.
 5. Wait for the pull request's checks. This is the only step that returns from this section. Note the start time: the wait has a 10-minute deadline. `<number>` is the pull request number, the last part of its URL.

@@ -5,6 +5,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-20
+- core/skills/forge, core/skills/ship-pr/SKILL.md: forge's `continueBranch` and `continueFrom` launch args add a build run's commits to an open PR's branch, with no new branch or PR, reviews from `continueFrom` (or the whole PR with `continueScope: "pr"`), and the PR's title and body kept.
 - core/skills/forge/SKILL.md, core/skills/brainstorming/SKILL.md: a plan carries a `## Changelog` section only in repositories that track `.github/scripts/check_changelog.py`, matching ship-pr's check, so a product-repository plan no longer adds a CHANGELOG.md.
 - core/skills/ship-pr/SKILL.md: the changelog check runs only in repositories that track `.github/scripts/check_changelog.py`, because product repositories keep no CHANGELOG.md, so a branch there that touched AGENTS.md or an agent or skill file could never ship.
 
