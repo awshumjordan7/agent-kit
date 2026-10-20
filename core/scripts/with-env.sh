@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run a command with env files loaded: with-env.sh [--dir DIR] ENV_FILE... -- COMMAND...
+# Run a command with env files loaded: with-env.sh [--dir DIR] [--done-file FILE] ENV_FILE... -- COMMAND...
 # Env files are read relative to DIR. Put overrides in the command, as
 # `-- env POSTGRES_HOST=localhost <command>`. Nothing here stops the command printing values.
 set -euo pipefail
@@ -11,14 +11,26 @@ if [ -n "${SANDBOX_RUNTIME+x}" ]; then
 fi
 
 usage() {
-  echo "usage: with-env.sh [--dir DIR] ENV_FILE... -- COMMAND..." >&2
+  echo "usage: with-env.sh [--dir DIR] [--done-file FILE] ENV_FILE... -- COMMAND..." >&2
   exit 2
 }
 
-if [[ ${1:-} == --dir ]]; then
+dir=
+done_file=
+while [[ ${1:-} == --dir || ${1:-} == --done-file ]]; do
   [[ $# -ge 2 ]] || usage
-  CDPATH= cd -- "$2" 2>/dev/null || { echo "with-env.sh: cannot enter $2" >&2; usage; }
+  if [[ $1 == --dir ]]; then dir=$2; else done_file=$2; fi
   shift 2
+done
+[[ -z $done_file || $done_file == /* ]] || usage
+
+if [[ -n $done_file ]]; then
+  # A bare call cannot end in "; echo $?", so the script writes the done-file itself.
+  trap 'echo "$?" >"$done_file"' EXIT
+fi
+
+if [[ -n $dir ]]; then
+  CDPATH= cd -- "$dir" 2>/dev/null || { echo "with-env.sh: cannot enter $dir" >&2; usage; }
 fi
 
 files=()
@@ -38,4 +50,8 @@ for file in "${files[@]}"; do
   source "$file" || { echo "with-env.sh: cannot load $file" >&2; usage; }
 done
 set +a
-exec "$@"
+if [[ -n $done_file ]]; then
+  "$@"
+else
+  exec "$@"
+fi
