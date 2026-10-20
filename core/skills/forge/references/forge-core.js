@@ -80,6 +80,9 @@ const PARAMS = {
   checkpointDecision: typeof args.checkpointDecision === 'string' ? args.checkpointDecision : null,
   smokeCommand: typeof args.smokeCommand === 'string' ? args.smokeCommand : '',
   prBodyExtra: typeof args.prBodyExtra === 'string' ? args.prBodyExtra : '',
+  continueBranch: typeof args.continueBranch === 'string' ? args.continueBranch : '',
+  continueFrom: typeof args.continueFrom === 'string' ? args.continueFrom : '',
+  continueScope: args.continueScope === 'pr' ? 'pr' : 'run',
   resumeAttempt: Number.isInteger(args.resumeAttempt) && args.resumeAttempt > 0 ? args.resumeAttempt : 0,
 }
 // Each resume-k Codex attempt counts as a spawn whether it replays from the cache or runs live.
@@ -887,7 +890,17 @@ async function decideExcluded(source, paths) {
 async function launchCheck(relaunch) {
   if (!args.base) throw new Error(`forge needs base in the launch args for ${PARAMS.projectDir}: the main session resolves it with ship-pr/scripts/resolve-base-branch.sh, asks the user if that fails, and passes it as base. Forge does not guess the base branch.`)
   const review = PARAMS.lane === 'review'
-  const base = ` --base ${shellQuote(args.base)}`
+  const { continueBranch, continueFrom, continueScope } = PARAMS
+  if (Boolean(continueBranch) !== Boolean(continueFrom)) throw new Error('forge needs both continueBranch and continueFrom, or neither.')
+  if (args.continueScope !== undefined && (!['run', 'pr'].includes(args.continueScope) || !continueBranch)) throw new Error(`forge continueScope must be "run" or "pr" and needs continueBranch; got ${JSON.stringify(args.continueScope)}.`)
+  if (continueBranch) {
+    if (review) throw new Error('continueBranch is a build-lane arg.')
+    if (!/^[0-9a-f]{40}$/.test(continueFrom)) throw new Error(`forge continueFrom must be a full 40-hex commit sha; got ${JSON.stringify(continueFrom)}.`)
+    if (['develop', 'main', 'master', args.base].includes(continueBranch)) throw new Error(`forge continueBranch must be an open PR's branch, not ${continueBranch}.`)
+  }
+  const base = continueBranch
+    ? ` --base ${shellQuote(continueFrom)} --branch ${shellQuote(continueBranch)}`
+    : ` --base ${shellQuote(args.base)}`
   const mode = review ? ' --no-check' : relaunch ? ' --relaunch' : ''
   const facts = await factsCommand('launch-facts', `python3 ~/.claude/skills/forge/scripts/run_context.py launch-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${base}${localOnlyFlags()}${mode}`,
     LAUNCH_FACTS_SCHEMA, review ? 'Review' : 'Implement')
@@ -900,9 +913,18 @@ async function launchCheck(relaunch) {
       ? `${facts.dirty.length} dirty path(s): ${facts.dirty.slice(0, 20).join(', ')}${facts.dirty.length > 20 ? ', ...' : ''}`
       : ''
     const ahead = facts.aheadCount ? `HEAD is ${facts.aheadCount} commit(s) ahead of ${facts.baseRef}` : ''
-    throw new Error(`forge refused the launch in ${PARAMS.projectDir}: ${[dirty, ahead].filter(Boolean).join('; ')}. A fresh build run needs a clean tree at ${facts.baseRef}. Use a fresh worktree from ${facts.baseRef}, pass base=<parent branch> for a stacked branch, or relaunch an earlier run with checkpointDecision. Start a fresh run after fixing this; resumeFromRunId replays this refusal.`)
+    throw new Error(`forge refused the launch in ${PARAMS.projectDir}: ${[dirty, ahead].filter(Boolean).join('; ')}. A fresh build run needs a clean tree at ${facts.baseRef}. Use a fresh worktree from ${facts.baseRef}, pass base=<parent branch> for a stacked branch, or pass continueBranch and continueFrom to add commits to an open PR's branch, or relaunch an earlier run with checkpointDecision. Start a fresh run after fixing this; resumeFromRunId replays this refusal.`)
   }
-  LAUNCH = { base: facts.base, baseRef: facts.baseRef, head: facts.head || '' }
+  if (!continueBranch) {
+    LAUNCH = { base: facts.base, baseRef: facts.baseRef, head: facts.head || '' }
+    return
+  }
+  // An open PR's base branch exists on origin, so a whole-PR scope diffs from origin/<base>.
+  LAUNCH = continueScope === 'pr'
+    ? { base: args.base, baseRef: `origin/${args.base}`, head: facts.head || '', prBase: args.base, branch: continueBranch }
+    : { base: continueFrom, baseRef: facts.baseRef, head: facts.head || '', prBase: args.base, branch: continueBranch }
+  await decide(`Continue mode: commits go on open PR branch ${continueBranch} from ${continueFrom}; review scope ${continueScope === 'pr' ? `the whole PR against ${LAUNCH.baseRef}` : `this run's commits from ${continueFrom}`}.`)
+  if (PARAMS.prBodyExtra) await decide(`prBodyExtra ${PARAMS.prBodyExtra} is not used: continue mode keeps the open PR's title and body.`)
 }
 
 // Scripts such as gate.sh, git-net.sh and codex-exec.sh leave the Bash sandbox only when the whole
@@ -1737,14 +1759,24 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const bodyExtra = PARAMS.prBodyExtra
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the bullets; keep that section whenever you rewrite the body. `
     : ''
-  const tail = `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. After the push, run ship-pr's PR checks step (section 4 step 5) and return its result line as checks. ${bodyExtra}${gateNotice} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const tailWith = extra => `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. After the push, run ship-pr's PR checks step (section 4 step 5) and return its result line as checks. ${extra} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const tail = tailWith(`${bodyExtra}${gateNotice}`)
   const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
   const base = LAUNCH.base
   const baseRule = base
     ? `The base branch is ${base}; do not run resolve-base-branch.sh; use it as <base> in every ship-pr step, including \`gh pr create --base ${base}\`. `
     : ''
   const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
-  const prompt = existing
+  const continueBranch = LAUNCH.branch || ''
+  const continueBaseRule = `The PR's base branch is ${LAUNCH.prBase}. Do not run resolve-base-branch.sh. Use it as <base> in every ship-pr step. `
+  const openGuard = `Before any commit or push, run \`gh pr view ${shellQuote(continueBranch)} --json number,url,state\`. When it exits non-zero or state is not OPEN, commit and push nothing. Return branch ${continueBranch} and repo as usual, prUrl "", prNumber 0, skipped true, and reason "NO_OPEN_PR: ${continueBranch} <state or first stderr line>". `
+  const continueTail = `${tailWith('')} Do not run \`gh pr create\`. Keep the PR's title and body as they are.`
+  const syncSteps = branch => `run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push)`
+  const prompt = existing && continueBranch
+    ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${existing.branch}. ${openGuard}Commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, ${syncSteps(existing.branch)}, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${continueTail}`
+    : continueBranch && !existing
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${continueBranch}; never create or switch branches. ${openGuard}${committedBranch ? `The branch already holds this run's phase commits. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage.` : `Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}.`} Then ${syncSteps(continueBranch)}, push the branch, and return the open PR's {branch, prUrl, prNumber, repo}. ${continueTail}`
+    : existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${existing.branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${existing.branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. Update the PR body after the push. ${bodyRule} ${tail}`
     : committedBranch
     ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? '' : 'resolve the repository base branch and '}stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a NON-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
@@ -2111,6 +2143,10 @@ async function phasedImplement(state) {
     await decide(run.lastCommittedPhase
       ? `Resuming the phase loop after Phase ${run.lastCommittedPhase}; ${requeue.length} pending or failed gate(s) re-queued.`
       : `Resuming the phase loop at Phase ${PHASES[0].id}; no phase was committed before the interruption.`)
+  }
+  if (!run.branch && LAUNCH.branch) {
+    run.branch = LAUNCH.branch
+    await decide(`Phase commits go on open PR branch ${run.branch}.`)
   }
   if (!run.branch) {
     const branch = await phaseBranch(planBranchName())
