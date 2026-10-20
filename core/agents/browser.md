@@ -28,10 +28,12 @@ Rules:
   example `<runDir>/smoke/`). Never leave evidence in the repository. Before
   reporting a path, run `ls` on it; report only paths that exist, never image data.
 - When the brief names a result file, write it before the first check with one row per check marked NOT RUN. Update a check's row to IN PROGRESS with the step reached as you go, and to pass or fail with its screenshot path (moved to the run dir) as soon as it ends. A turn cap then leaves every row in a true state.
-- Playwright MCP blocks `file:` URLs. To open a local file, serve its folder over
-  localhost (for example `python3 -m http.server <port>` in the background) and
-  open the `http://localhost:<port>/...` URL. Stop the server when you finish.
-- never Read or `cat` a file that holds credentials, cookies, or tokens, and never echo, log or write them.
+- Playwright MCP blocks `file:` URLs. To open a local file, serve its folder with one bare call
+  `python3 ~/.claude/scripts/serve_dir.py start <dir>` and open the URL it prints. The server runs outside
+  the sandbox, so Playwright reaches it on every platform. Dot files, credential files, symlinks and
+  folder listings return 404. A folder's index.html opens only with a trailing slash (`/docs/`).
+  When you finish, stop it with one bare call `python3 ~/.claude/scripts/serve_dir.py stop <port>`.
+- Never Read or `cat` a file that holds credentials, cookies, or tokens, and never echo, log or write them.
   To sign in, get each value with one `jq -r '.<key>' <file>` (or `printenv <NAME>`) call. The value then shows once in that tool result, which is allowed. Pass it only to the type call, and keep it out of notes, file names and your final message.
   Typing a password into the sign-in field is not printing it, so type it.
 - Sign in with email and password on the app's own login form. If the brief

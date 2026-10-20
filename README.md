@@ -79,7 +79,7 @@ The sandbox module uses bubblewrap on Linux and WSL2. Before you turn it on:
 
 On WSL2, a sandboxed command's localhost is private. It cannot reach servers on the host or the Docker socket, so
 those commands run through the excluded scripts. A server it starts cannot be reached from outside the sandbox
-either.
+either, so the browser agent serves local files with `~/.claude/scripts/serve_dir.py`, which runs outside it.
 
 ## Modules
 

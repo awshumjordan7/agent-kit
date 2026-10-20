@@ -10,6 +10,7 @@ When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELO
 - core/scripts/with-env.sh, core/agents/worker.md: `--done-file` writes the exit code, since a bare call cannot end in `; echo $?` (here-0632).
 - core/references/brief-template.md: briefs mark every excluded-script call as bare (here-0616) and check servers by port on macOS, not with pgrep or ps (here-0617).
 - core/agents/browser.md: credentials are read one value at a time with jq or printenv, never with Read or cat (here-0614).
+- core/scripts/serve_dir.py, core/agents/browser.md, core/references/brief-template.md, modules/sandbox/settings.fragment.json, README.md: local previews are served by an excluded script on 127.0.0.1, so Playwright MCP reaches them on Linux and WSL2 too (PR #93 review).
 - core/skills/forge/scripts/run_context.py, core/skills/forge/scripts/gate.sh, core/skills/forge/references/gate-commands.md: `--base` prefers `origin/<base>` only for a remote branch name, so `--base HEAD` (and in run_context.py `HEAD~n` or a sha) diffs from that commit instead of the whole branch (here-0610, -0612, -0613, -0618).
 - core/skills/forge/scripts/build-code-review-prompt.sh, core/skills/forge/references/codex-wrapper.md: say what each `--base` form reviews, and give the `git show --cc --format=` merge-review recipe.
 - core/skills/forge/scripts/codex-exec.sh: `--inline-diff` accepts a combined merge diff that starts with `diff --cc` (here-0627).
