@@ -387,7 +387,7 @@ def check_claude_md_size(ctx: Context) -> list[Finding]:
         return []
     return [finding(
         "WARN", "claude-md-size", ctx, source,
-        f"CLAUDE.md is {n} lines (guideline 200, warn above {maximum}); run a prove-value pass before adding rules",
+        f"CLAUDE.md is {n} lines (warn above {maximum}); run a prove-value pass before adding rules",
     )]
 
 def expected_code_standards(ctx: Context) -> tuple[str | None, str | None]:
