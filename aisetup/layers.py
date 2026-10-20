@@ -15,6 +15,7 @@ from aisetup.manifest import (
     load_layer_manifest,
     load_module_manifest,
     load_overlay_manifest,
+    platform_name,
     validate_dependencies,
 )
 
@@ -45,7 +46,8 @@ class ResolvedLayers:
         for layer in self.layers:
             if layer.module is None:
                 continue
-            for requirement in layer.module.requires:
+            platform_requirements = layer.module.requires_platform.get(platform_name(), ())
+            for requirement in (*layer.module.requires, *platform_requirements):
                 if requirement not in names:
                     names.append(requirement)
         return tuple(names)

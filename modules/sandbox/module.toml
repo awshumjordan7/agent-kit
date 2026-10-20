@@ -1,8 +1,11 @@
 name = "sandbox"
-description = "Claude Code sandbox for Bash on macOS"
+description = "Claude Code sandbox for Bash on macOS, Linux and WSL2"
 default = false
 depends = []
 requires = []
-platforms = ["darwin"]
+platforms = ["darwin", "linux"]
 claude_md_fragment = "CLAUDE.fragment.md"
 settings_fragment = "settings.fragment.json"
+
+[requires_platform]
+linux = ["bwrap", "socat"]

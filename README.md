@@ -46,9 +46,9 @@ servers, and runs doctor.
 
 ## Windows 10 and 11 (WSL2)
 
-agent-kit runs inside WSL2, not in PowerShell. Use Ubuntu 24.04; Ubuntu 22.04 ships Python 3.10, below the 3.11
-floor. Keep the clone and `~/.claude` in the Linux home directory, not under `/mnt/c`. The terminal module is
-macOS-only and skips itself on Linux.
+agent-kit runs inside WSL2, not in PowerShell. install.py stops with a message when it runs on native Windows. Use
+Ubuntu 24.04; Ubuntu 22.04 ships Python 3.10, below the 3.11 floor. Keep the clone and `~/.claude` in the Linux
+home directory, not under `/mnt/c`. The terminal module is macOS-only and skips itself on Linux.
 
 ```sh
 wsl --install -d Ubuntu-24.04
@@ -65,6 +65,22 @@ python3 install.py doctor --selfcheck --json
 claude mcp list
 ```
 
+### Sandbox module on WSL2
+
+The sandbox module uses bubblewrap on Linux and WSL2. Before you turn it on:
+
+1. `sudo apt install -y bubblewrap socat`.
+2. Run `sysctl kernel.apparmor_restrict_unprivileged_userns`. If it prints 1, add the bwrap AppArmor profile from
+   https://code.claude.com/docs/en/sandboxing and run `sudo systemctl reload apparmor`.
+3. Optional: `npm install -g @anthropic-ai/sandbox-runtime` for the seccomp filter, which also blocks starting
+   Windows programs from sandboxed commands.
+4. In PowerShell, check that `wsl -l -v` shows version 2.
+5. Restart `claude` and run `/sandbox`. A Dependencies-only tab means something is missing.
+
+On WSL2, a sandboxed command's localhost is private. It cannot reach servers on the host or the Docker socket, so
+those commands run through the excluded scripts. A server it starts cannot be reached from outside the sandbox
+either.
+
 ## Modules
 
 | Module | Default | Purpose |
@@ -76,7 +92,7 @@ claude mcp list
 | github | off | GitHub CLI and MCP tools |
 | marketing | off | market research and content workflows |
 | terminal | off | Ghostty defaults on macOS |
-| sandbox | off | Claude Code sandbox for Bash on macOS |
+| sandbox | off | Claude Code sandbox for Bash (macOS, Linux and WSL2) |
 
 See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](docs/overlay.md) for private layers.
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook

@@ -19,6 +19,16 @@ def _check_python_version() -> None:
         raise SystemExit(3)
 
 
+def _check_platform() -> None:
+    if sys.platform == "win32":
+        print(
+            "agent-kit runs inside WSL2 (Ubuntu 24.04), not in native Windows or PowerShell. "
+            'See README.md, "Windows 10 and 11 (WSL2)".',
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+
+
 def _check_sandbox() -> None:
     # Claude Code sets SANDBOX_RUNTIME only in sandboxed Bash calls; any value counts.
     if "SANDBOX_RUNTIME" in os.environ:
@@ -31,6 +41,7 @@ def _check_sandbox() -> None:
         raise SystemExit(86)
 
 
+_check_platform()
 _check_sandbox()
 _check_python_version()
 

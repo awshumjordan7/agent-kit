@@ -5,6 +5,11 @@ import sys
 
 CORE_DEPENDENCIES = ("python3", "claude", "git", "bash", "jq")
 
+SANDBOX_HINT = (
+    "Install bubblewrap and socat for the sandbox module: sudo apt-get install bubblewrap socat "
+    '(README, "Windows 10 and 11 (WSL2)").'
+)
+
 INSTALL_HINTS = {
     "claude": "Install Claude Code and sign in: https://docs.anthropic.com/en/docs/claude-code",
     "git": "Install Git with Xcode Command Line Tools or your system package manager.",
@@ -13,6 +18,8 @@ INSTALL_HINTS = {
     "node": "Install Node.js from https://nodejs.org or your system package manager.",
     "codex": "Install the Codex CLI before enabling the codex module.",
     "gh": "Install GitHub CLI from https://cli.github.com.",
+    "bwrap": SANDBOX_HINT,
+    "socat": SANDBOX_HINT,
 }
 
 
