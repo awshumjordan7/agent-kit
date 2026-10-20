@@ -19,7 +19,8 @@ Arrays merge as whole values, except arrays at `permissions.allow`, `permissions
 
 When the merge changes nothing, the file is not touched. Otherwise the old file is copied to
 `~/.ai-setup/backups/<timestamp>/home/.codex/config.toml` and the merged data is written. Backup folders older than
-30 days are deleted after a successful install. The rewrite does not keep blank lines or custom formatting.
+30 days are deleted after a successful install, except the newest 10.
+The rewrite does not keep blank lines or custom formatting.
 
 The merge is skipped, and the whole-file rule applies instead, in two cases:
 
