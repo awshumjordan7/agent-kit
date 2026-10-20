@@ -34,7 +34,7 @@ answers use the `overlay.<question id>` key in profiles and `answers.overlay.<qu
 Missing `answers.overlay.<question id>` values use the question default. If no default exists, profile validation
 fails and install exits with status 4.
 
-Overlay data may supply `forge.thresholds` (`quickReviewThreshold`, `fixCap`), path-regex strings under
+Overlay data may supply `forge.thresholds` (`fixCap`), path-regex strings under
 `forge.lenses` (`security`, `design`), a `forge.ticketUrl` template containing `<KEY>`, and repository basenames
 under `forge.repos` (`frontend`, `backend`). Stage-specific instructions can be provided at
 `references/stages/<stage>.md`, allowing private behavior without replacing the core workflow implementation.

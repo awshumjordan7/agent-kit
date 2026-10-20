@@ -30,7 +30,7 @@
         "plan-review": {"provider": "claude", "model": "opus", "effort": "xhigh"}
       },
       "stages": {"ff_review": false},
-      "thresholds": {"quickReviewThreshold": 8},
+      "thresholds": {},
       "lenses": {
         "security": "(auth|permission|identity|rbac|token|session)",
         "design": "\\.tsx?$"

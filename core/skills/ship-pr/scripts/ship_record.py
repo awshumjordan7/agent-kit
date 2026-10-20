@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -163,6 +164,14 @@ def _verdict(entry: object) -> str | None:
     return None
 
 
+def _approving(verdict: str | None) -> bool:
+    if verdict is None:
+        return False
+    text = re.sub(r"^review:\s*", "", verdict.strip(), flags=re.IGNORECASE).lower()
+    match = re.match(r"[a-z_]+", text)
+    return match is not None and match.group(0) in ("approve", "pass")
+
+
 def cmd_check(args: argparse.Namespace, repo: Path) -> int:
     record: dict = {}
     if args.run_dir:
@@ -184,7 +193,7 @@ def cmd_check(args: argparse.Namespace, repo: Path) -> int:
             current = isinstance(recorded_sha, str) and recorded_sha == files_sha(repo, args.files)
         except (OSError, subprocess.CalledProcessError):
             current = False
-    if current and (plan == "declined" or (plan == "yes" and plan_review != "missing")):
+    if current and _approving(review) and (plan == "declined" or (plan == "yes" and plan_review != "missing")):
         print("SHIP_RECORD_OK")
         return 0
     review_text = "missing" if review is None else (review if current else "stale")

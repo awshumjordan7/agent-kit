@@ -5,6 +5,9 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-20
+- core/skills/ship-pr/scripts/ship_record.py: the ship check passes only when the recorded code-review verdict approves (`approve` or `pass`, with an optional `REVIEW:` prefix), so a `request_changes` review no longer reads as ready to ship.
+- core/skills/forge, aisetup/profile.py, core/profile.default.json, docs/overlay.md: forge picks `quick-impl` from `fullySpecified` alone and drops the planned-source-file count and its `quickReviewThreshold` setting, which changed the role in 1 of 49 past plans.
+- core/skills/forge: the launch check refuses a launch whose `forgeConfig.gate` differs from the forge.config.json that gate.sh reads, so the gate forge plans for is the gate that runs.
 - aisetup/compose.py, README.md, docs/modules/codex.md: backup pruning also keeps the newest 10 runs (restic-style keep-last OR keep-within), so an install after more than 30 days without one no longer deletes every restore point.
 - core/CLAUDE.md, core/skills/forge/references/code-standards.md, modules/playwright: rules stated twice are merged into one statement each (17 installed lines, no rule dropped), and the playwright fragment's rule moves into core's web-and-browser line.
 - core/scripts/doctor.py, core/templates/doctor.toml.tmpl: a `claude-md-size` WARN when the installed CLAUDE.md passes `thresholds.claude_md_max_lines` (default 250).

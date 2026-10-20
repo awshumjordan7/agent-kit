@@ -12,7 +12,7 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 | Confirm | user | The user confirms the plan, and separately approves the test table, before the run starts. On approval of a plan with `## Changelog`, the main session writes `<runDir>/user-ok.md` with the quoted approval and date; ship-pr's changelog check needs it. |
 | Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, parallel Codex and Claude review plus lenses, triage, the capped fix loop (at most `MAX_FIX_ROUNDS` (2) rounds, each gate-failure round re-running the full gate and each review-fix round running lint, typecheck and Semgrep when a gate is configured and, when review items changed, re-checked by a scoped Claude verifier; one full gate runs on the final state when review fixes were applied, and a failing final gate runs up to 2 more fix rounds with a full gate each), handoff. |
 
-`quick-impl` is selected only when `fullySpecified` is true and the plan names no more source files than `quickReviewThreshold`; otherwise Forge uses `impl`. Tests and documentation do not count as source files.
+`quick-impl` is selected when `fullySpecified` is true; otherwise Forge uses `impl`.
 
 ## Phase loop
 

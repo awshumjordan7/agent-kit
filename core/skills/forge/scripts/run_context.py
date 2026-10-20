@@ -174,6 +174,29 @@ def _checked(facts: dict) -> dict:
     return {"facts": facts, "canonLength": len(canon), "fnv1a": _fnv1a(canon)}
 
 
+def _gate_error(expected: str) -> str:
+    # gate.sh reads this same file, so forge must plan with the gate settings it holds.
+    path = Path(
+        os.environ.get("GATE_CONFIG")
+        or Path(__file__).resolve().parent.parent / "forge.config.json"
+    )
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError) as exc:
+        return f"{path}: {exc}"
+    if not isinstance(config, dict):
+        return f"{path}: the top level is not a JSON object"
+    canon = _canonical(config.get("gate", {}))
+    if f"{len(canon)}:{_fnv1a(canon)}" == expected:
+        return ""
+    return (
+        f"the gate settings in forgeConfig differ from {path}, which gate.sh reads. "
+        "Edit that file, or pass its contents unchanged as forgeConfig, then start a fresh run"
+    )
+
+
 # The plan patterns below follow JavaScript regex rules for whitespace, line ends and ASCII-only
 # case folding, so a plan parses the same as in earlier forge versions. Python's \s, ".", "$",
 # \b and re.IGNORECASE all differ from those rules, so the sets are spelled out.
@@ -190,7 +213,6 @@ _LINE_START = f"(?:\\A|(?<=[{_LINE_END}]))"
 _LINE_STOP = f"(?=[{_LINE_END}]|\\Z)"
 _PHASE_WORD = "[Pp][Hh][Aa][Ss][Ee]"
 _PHASES_WORD = _PHASE_WORD + "[Ss]"
-_ASCII_LOWER = {code: code + 32 for code in range(ord("A"), ord("Z") + 1)}
 
 _H1 = re.compile(f"{_LINE_START}#{_S}+({_DOT}+){_LINE_STOP}")
 _PHASES_LINE = re.compile(f"##{_S}+{_PHASES_WORD}{_S}*\\Z")
@@ -200,13 +222,6 @@ _SUB_HEADING_LINE = re.compile(f"###{_S}")
 _PHASE_HEADING = re.compile(
     f"###{_S}+Phase{_S}+([A-Za-z]*[0-9]+):{_S}*({_NOT_S}{_DOT}*?){_S}*\\Z"
 )
-_PHASES_SECTION = re.compile(f"{_LINE_START}(#{{2,}}){_S}*{_PHASES_WORD}{_S}*{_LINE_STOP}")
-_PLAN_PATH = re.compile(r"`([^`\n]+\.[A-Za-z0-9]+)`")
-_SOURCE_EXTENSION = re.compile(
-    r"\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs"
-    r"|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)\Z"
-)
-_NAME_EXTENSION = re.compile(r"\.[a-z0-9]+\Z")
 
 
 def _plan_phases(plan: str) -> tuple[list[dict], str]:
@@ -233,18 +248,6 @@ def _plan_phases(plan: str) -> tuple[list[dict], str]:
                 return [], f"Plan phase id {match.group(1)} appears twice under ## Phases"
             phases.append({"id": match.group(1), "title": match.group(2)})
     return phases, ""
-
-
-def _is_source_path(path: str) -> bool:
-    normalized = path.replace("\\", "/").lower()
-    name = normalized.split("/")[-1]
-    return (
-        not normalized.startswith("tests/")
-        and "/tests/" not in normalized
-        and not name.startswith("test_")
-        and not name.endswith(("_test.py", ".md", ".json"))
-        and bool(_NAME_EXTENSION.search(name))
-    )
 
 
 _INSTRUCTION_DIRS = frozenset({"agents", "skills", "references", "commands", "hooks"})
@@ -276,25 +279,6 @@ def _file_class(path: str) -> str:
     return "code"
 
 
-def _planned_source_files(plan: str) -> int:
-    section = _PHASES_SECTION.search(plan)
-    if not section:
-        return 0
-    after = plan[section.end() :]
-    # The section ends at the next heading of its own level or higher, except a "Phase" heading.
-    next_heading = re.search(
-        f"{_LINE_START}#{{2,{len(section.group(1))}}}{_S}+(?!{_PHASE_WORD}(?![A-Za-z0-9_]))",
-        after,
-    )
-    body = after[: next_heading.start()] if next_heading else after
-    paths = [
-        path
-        for path in _PLAN_PATH.findall(body)
-        if "/" in path or "\\" in path or _SOURCE_EXTENSION.search(path.translate(_ASCII_LOWER))
-    ]
-    return len({path for path in paths if _is_source_path(path)})
-
-
 def _read_plan(plan_file: Path) -> tuple[bytes, str, str]:
     # Bytes, not read_text: universal newlines would turn CRLF and a lone CR into LF.
     try:
@@ -321,7 +305,6 @@ def plan_facts(plan_file: str) -> dict:
         {
             "h1": heading.group(1) if heading else "",
             "phases": phases,
-            "plannedSourceFiles": _planned_source_files(plan),
             "hasContract": bool(_section(plan, "Public API contract")),
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest() if raw else "",
@@ -584,6 +567,7 @@ def launch_facts(
     relaunch: bool = False,
     no_check: bool = False,
     branch: str | None = None,
+    gate_digest: str | None = None,
 ) -> dict:
     if not base:
         return _checked(
@@ -619,6 +603,8 @@ def launch_facts(
     error = "" if merge_base else f"no merge-base between {base_ref} and HEAD in {repo}"
     if branch and not error and not no_check:
         error = _branch_error(repo, base, branch)
+    if gate_digest is not None and not error:
+        error = _gate_error(gate_digest)
     relaunch = relaunch or bool(marker)
     clean = not dirty and ahead == 0
     return _checked(
@@ -923,6 +909,7 @@ def main() -> None:
     launch_facts_parser.add_argument("--relaunch", action="store_true")
     launch_facts_parser.add_argument("--no-check", action="store_true")
     launch_facts_parser.add_argument("--branch")
+    launch_facts_parser.add_argument("--gate-digest")
     ship_facts_parser = subparsers.add_parser("ship-facts")
     ship_facts_parser.add_argument("--repo", type=Path, required=True)
     ship_facts_parser.add_argument("--run-dir", type=Path, required=True)
@@ -986,6 +973,7 @@ def main() -> None:
             args.relaunch,
             args.no_check,
             args.branch,
+            args.gate_digest,
         )
     elif args.command == "ship-facts":
         result = ship_facts(args.repo, args.run_dir, args.exclude)
