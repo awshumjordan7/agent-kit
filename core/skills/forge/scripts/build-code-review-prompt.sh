@@ -81,3 +81,11 @@ echo "DIFF $DIFF"
 echo "BRIEF $BRIEF"
 echo "FILES $CONTEXT_JSON"
 echo "PROVIDER $PROVIDER"
+# A start without --inline-diff sends Codex a prompt that promises a diff it never gets.
+if [ "$PROVIDER" = "codex" ]; then
+    LOG="$RUN_DIR/codex-review-$LABEL.jsonl"
+    FINAL="$RUN_DIR/codex-review-$LABEL-final.md"
+    printf 'START bash ~/.claude/skills/forge/scripts/codex-exec.sh start --role review --thread-file %q --prompt-file %q --inline-diff %q --cd %q --sandbox read-only --log %q --out %q\n' \
+        "$RUN_DIR/codex-review-$LABEL.thread" "$OUT" "$DIFF" "$REPO_DIR" "$LOG" "$FINAL"
+    printf 'WATCH bash ~/.claude/skills/forge/scripts/codex-exec.sh watch --log %q --out %q\n' "$LOG" "$FINAL"
+fi
