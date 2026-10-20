@@ -913,15 +913,22 @@ async function launchCheck(relaunch) {
       ? `${facts.dirty.length} dirty path(s): ${facts.dirty.slice(0, 20).join(', ')}${facts.dirty.length > 20 ? ', ...' : ''}`
       : ''
     const ahead = facts.aheadCount ? `HEAD is ${facts.aheadCount} commit(s) ahead of ${facts.baseRef}` : ''
+    if (continueBranch) throw new Error(`forge refused the launch in ${PARAMS.projectDir}: ${[dirty, ahead].filter(Boolean).join('; ')}. A continue run needs a clean tree on ${continueBranch} at continueFrom ${continueFrom}. Commit or stash local changes, or pull and set continueFrom to the output of \`git -C <projectDir> rev-parse HEAD\`. Start a fresh run after fixing this; resumeFromRunId replays this refusal.`)
     throw new Error(`forge refused the launch in ${PARAMS.projectDir}: ${[dirty, ahead].filter(Boolean).join('; ')}. A fresh build run needs a clean tree at ${facts.baseRef}. Use a fresh worktree from ${facts.baseRef}, pass base=<parent branch> for a stacked branch, or pass continueBranch and continueFrom to add commits to an open PR's branch, or relaunch an earlier run with checkpointDecision. Start a fresh run after fixing this; resumeFromRunId replays this refusal.`)
   }
   if (!continueBranch) {
     LAUNCH = { base: facts.base, baseRef: facts.baseRef, head: facts.head || '' }
     return
   }
-  // An open PR's base branch exists on origin, so a whole-PR scope diffs from origin/<base>.
+  let prBaseRef = ''
+  if (continueScope === 'pr') {
+    const prFacts = await factsCommand('launch-facts-pr', `python3 ~/.claude/skills/forge/scripts/run_context.py launch-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)} --base ${shellQuote(args.base)}${localOnlyFlags()} --no-check`, LAUNCH_FACTS_SCHEMA, 'Implement')
+    if (!prFacts) throw new Error(`forge launch check returned no result for ${PARAMS.projectDir}`)
+    if (prFacts.error) throw new Error(`forge launch check failed: ${prFacts.error}`)
+    prBaseRef = prFacts.baseRef
+  }
   LAUNCH = continueScope === 'pr'
-    ? { base: args.base, baseRef: `origin/${args.base}`, head: facts.head || '', prBase: args.base, branch: continueBranch }
+    ? { base: args.base, baseRef: prBaseRef, head: facts.head || '', prBase: args.base, branch: continueBranch }
     : { base: continueFrom, baseRef: facts.baseRef, head: facts.head || '', prBase: args.base, branch: continueBranch }
   await decide(`Continue mode: commits go on open PR branch ${continueBranch} from ${continueFrom}; review scope ${continueScope === 'pr' ? `the whole PR against ${LAUNCH.baseRef}` : `this run's commits from ${continueFrom}`}.`)
   if (PARAMS.prBodyExtra) await decide(`prBodyExtra ${PARAMS.prBodyExtra} is not used: continue mode keeps the open PR's title and body.`)
@@ -1771,7 +1778,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const continueBaseRule = `The PR's base branch is ${LAUNCH.prBase}. Do not run resolve-base-branch.sh. Use it as <base> in every ship-pr step. `
   const openGuard = `Before any commit or push, run \`gh pr view ${shellQuote(continueBranch)} --json number,url,state\`. When it exits non-zero or state is not OPEN, commit and push nothing. Return branch ${continueBranch} and repo as usual, prUrl "", prNumber 0, skipped true, and reason "NO_OPEN_PR: ${continueBranch} <state or first stderr line>". `
   const continueTail = `${tailWith('')} Do not run \`gh pr create\`. Keep the PR's title and body as they are.`
-  const syncSteps = branch => `run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push)`
+  const syncSteps = branch => `run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${shellQuote(branch)}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${shellQuote(branch)}\` before pushing (automation such as a docs(map) job may have pushed; never force-push)`
   const prompt = existing && continueBranch
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${existing.branch}. ${openGuard}Commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, ${syncSteps(existing.branch)}, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${continueTail}`
     : continueBranch && !existing
