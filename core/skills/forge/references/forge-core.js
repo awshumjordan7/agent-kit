@@ -565,6 +565,7 @@ const dryRunJournal = []
 const __test = {
   partitionTriage,
   pickImplRole,
+  inlineGateDigest,
   savedCheckpointProblem,
   sandboxAllowed,
   dryRunJournal,
@@ -895,7 +896,7 @@ async function launchCheck(relaunch) {
     ? ` --base ${shellQuote(continueFrom)} --branch ${shellQuote(continueBranch)}`
     : ` --base ${shellQuote(args.base)}`
   const mode = review ? ' --no-check' : relaunch ? ' --relaunch' : ''
-  const facts = await factsCommand('launch-facts', `python3 ~/.claude/skills/forge/scripts/run_context.py launch-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${base}${localOnlyFlags()}${mode}`,
+  const facts = await factsCommand('launch-facts', `python3 ~/.claude/skills/forge/scripts/run_context.py launch-facts --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)}${base} --gate-digest ${inlineGateDigest()}${localOnlyFlags()}${mode}`,
     LAUNCH_FACTS_SCHEMA, review ? 'Review' : 'Implement')
   if (!facts) throw new Error(`forge launch check returned no result for ${PARAMS.projectDir}`)
   await decideExcluded('Launch check', facts.excluded)
@@ -1109,6 +1110,13 @@ function canonicalJson(value) {
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${canonicalJson(key)}:${canonicalJson(value[key])}`).join(',')}}`
   if (typeof value === 'string') return JSON.stringify(value).replace(/[\u007f-\uffff]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)
   return JSON.stringify(value)
+}
+
+// Digests the raw launch arg, not the merged FORGE_CONFIG, so run_context.py can compare it with
+// the forge.config.json that gate.sh reads. Python's _canonical must give the same text.
+function inlineGateDigest() {
+  const canon = canonicalJson((PARAMS.forgeConfig && PARAMS.forgeConfig.gate) || {})
+  return `${canon.length}:${fnv1a(canon)}`
 }
 
 function restorePhaseRow(row) {

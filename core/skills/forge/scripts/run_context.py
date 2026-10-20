@@ -174,6 +174,29 @@ def _checked(facts: dict) -> dict:
     return {"facts": facts, "canonLength": len(canon), "fnv1a": _fnv1a(canon)}
 
 
+def _gate_error(expected: str) -> str:
+    # gate.sh reads this same file, so forge must plan with the gate settings it holds.
+    path = Path(
+        os.environ.get("GATE_CONFIG")
+        or Path(__file__).resolve().parent.parent / "forge.config.json"
+    )
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError) as exc:
+        return f"{path}: {exc}"
+    if not isinstance(config, dict):
+        return f"{path}: the top level is not a JSON object"
+    canon = _canonical(config.get("gate", {}))
+    if f"{len(canon)}:{_fnv1a(canon)}" == expected:
+        return ""
+    return (
+        f"the gate settings in forgeConfig differ from {path}, which gate.sh reads. "
+        "Edit that file, or pass its contents unchanged as forgeConfig, then start a fresh run"
+    )
+
+
 # The plan patterns below follow JavaScript regex rules for whitespace, line ends and ASCII-only
 # case folding, so a plan parses the same as in earlier forge versions. Python's \s, ".", "$",
 # \b and re.IGNORECASE all differ from those rules, so the sets are spelled out.
@@ -544,6 +567,7 @@ def launch_facts(
     relaunch: bool = False,
     no_check: bool = False,
     branch: str | None = None,
+    gate_digest: str | None = None,
 ) -> dict:
     if not base:
         return _checked(
@@ -579,6 +603,8 @@ def launch_facts(
     error = "" if merge_base else f"no merge-base between {base_ref} and HEAD in {repo}"
     if branch and not error and not no_check:
         error = _branch_error(repo, base, branch)
+    if gate_digest is not None and not error:
+        error = _gate_error(gate_digest)
     relaunch = relaunch or bool(marker)
     clean = not dirty and ahead == 0
     return _checked(
@@ -883,6 +909,7 @@ def main() -> None:
     launch_facts_parser.add_argument("--relaunch", action="store_true")
     launch_facts_parser.add_argument("--no-check", action="store_true")
     launch_facts_parser.add_argument("--branch")
+    launch_facts_parser.add_argument("--gate-digest")
     ship_facts_parser = subparsers.add_parser("ship-facts")
     ship_facts_parser.add_argument("--repo", type=Path, required=True)
     ship_facts_parser.add_argument("--run-dir", type=Path, required=True)
@@ -946,6 +973,7 @@ def main() -> None:
             args.relaunch,
             args.no_check,
             args.branch,
+            args.gate_digest,
         )
     elif args.command == "ship-facts":
         result = ship_facts(args.repo, args.run_dir, args.exclude)
