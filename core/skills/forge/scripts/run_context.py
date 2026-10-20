@@ -190,7 +190,6 @@ _LINE_START = f"(?:\\A|(?<=[{_LINE_END}]))"
 _LINE_STOP = f"(?=[{_LINE_END}]|\\Z)"
 _PHASE_WORD = "[Pp][Hh][Aa][Ss][Ee]"
 _PHASES_WORD = _PHASE_WORD + "[Ss]"
-_ASCII_LOWER = {code: code + 32 for code in range(ord("A"), ord("Z") + 1)}
 
 _H1 = re.compile(f"{_LINE_START}#{_S}+({_DOT}+){_LINE_STOP}")
 _PHASES_LINE = re.compile(f"##{_S}+{_PHASES_WORD}{_S}*\\Z")
@@ -200,13 +199,6 @@ _SUB_HEADING_LINE = re.compile(f"###{_S}")
 _PHASE_HEADING = re.compile(
     f"###{_S}+Phase{_S}+([A-Za-z]*[0-9]+):{_S}*({_NOT_S}{_DOT}*?){_S}*\\Z"
 )
-_PHASES_SECTION = re.compile(f"{_LINE_START}(#{{2,}}){_S}*{_PHASES_WORD}{_S}*{_LINE_STOP}")
-_PLAN_PATH = re.compile(r"`([^`\n]+\.[A-Za-z0-9]+)`")
-_SOURCE_EXTENSION = re.compile(
-    r"\.(?:bash|c|cc|cpp|cs|css|cxx|go|h|hpp|html|java|js|jsx|kt|kts|less|mjs|php|py|rb|rs"
-    r"|scala|scss|sh|sql|svelte|swift|toml|ts|tsx|vue|yaml|yml|zsh)\Z"
-)
-_NAME_EXTENSION = re.compile(r"\.[a-z0-9]+\Z")
 
 
 def _plan_phases(plan: str) -> tuple[list[dict], str]:
@@ -233,18 +225,6 @@ def _plan_phases(plan: str) -> tuple[list[dict], str]:
                 return [], f"Plan phase id {match.group(1)} appears twice under ## Phases"
             phases.append({"id": match.group(1), "title": match.group(2)})
     return phases, ""
-
-
-def _is_source_path(path: str) -> bool:
-    normalized = path.replace("\\", "/").lower()
-    name = normalized.split("/")[-1]
-    return (
-        not normalized.startswith("tests/")
-        and "/tests/" not in normalized
-        and not name.startswith("test_")
-        and not name.endswith(("_test.py", ".md", ".json"))
-        and bool(_NAME_EXTENSION.search(name))
-    )
 
 
 _INSTRUCTION_DIRS = frozenset({"agents", "skills", "references", "commands", "hooks"})
@@ -276,25 +256,6 @@ def _file_class(path: str) -> str:
     return "code"
 
 
-def _planned_source_files(plan: str) -> int:
-    section = _PHASES_SECTION.search(plan)
-    if not section:
-        return 0
-    after = plan[section.end() :]
-    # The section ends at the next heading of its own level or higher, except a "Phase" heading.
-    next_heading = re.search(
-        f"{_LINE_START}#{{2,{len(section.group(1))}}}{_S}+(?!{_PHASE_WORD}(?![A-Za-z0-9_]))",
-        after,
-    )
-    body = after[: next_heading.start()] if next_heading else after
-    paths = [
-        path
-        for path in _PLAN_PATH.findall(body)
-        if "/" in path or "\\" in path or _SOURCE_EXTENSION.search(path.translate(_ASCII_LOWER))
-    ]
-    return len({path for path in paths if _is_source_path(path)})
-
-
 def _read_plan(plan_file: Path) -> tuple[bytes, str, str]:
     # Bytes, not read_text: universal newlines would turn CRLF and a lone CR into LF.
     try:
@@ -321,7 +282,6 @@ def plan_facts(plan_file: str) -> dict:
         {
             "h1": heading.group(1) if heading else "",
             "phases": phases,
-            "plannedSourceFiles": _planned_source_files(plan),
             "hasContract": bool(_section(plan, "Public API contract")),
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest() if raw else "",

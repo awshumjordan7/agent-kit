@@ -397,11 +397,11 @@ const PLAN_FACTS_SCHEMA = factsSchema({
         required: ['id', 'title'],
       },
     },
-    plannedSourceFiles: { type: 'integer' }, hasContract: { type: 'boolean' },
+    hasContract: { type: 'boolean' },
     bytes: { type: 'integer' }, sha256: { type: 'string' }, error: { type: 'string' },
     criteria: { type: 'array', items: { type: 'string' } }, planFile: { type: 'string' },
   },
-  required: ['h1', 'phases', 'plannedSourceFiles', 'hasContract', 'bytes', 'sha256', 'error', 'criteria', 'planFile'],
+  required: ['h1', 'phases', 'hasContract', 'bytes', 'sha256', 'error', 'criteria', 'planFile'],
 })
 const CHECKPOINT_FACTS_SCHEMA = factsSchema(CHECKPOINT_FILE_SCHEMA)
 const PHASES_FACTS_SCHEMA = factsSchema(PHASES_FILE_SCHEMA)
@@ -451,15 +451,8 @@ const LENSES = [
   { key: 'design-audit', configKey: 'design', skill: 'design-audit' },
 ]
 
-function quickReviewThreshold() {
-  const value = FORGE_CONFIG && FORGE_CONFIG.thresholds && FORGE_CONFIG.thresholds.quickReviewThreshold
-  return Number.isInteger(value) && value >= 1 ? value : 8
-}
-
-function pickImplRole(lane, fullySpecified, plannedSourceFileCount, threshold = 8) {
-  return fullySpecified && plannedSourceFileCount <= threshold
-    ? 'quick-impl'
-    : 'impl'
+function pickImplRole(lane, fullySpecified) {
+  return fullySpecified ? 'quick-impl' : 'impl'
 }
 
 function repoName(repo) {
@@ -545,7 +538,7 @@ const STUBS = {
     : opts.schema === SHIP_FACTS_SCHEMA
     ? dryRunFacts({ ok: true, dirty: [], excluded: [] })
     : opts.schema === PLAN_FACTS_SCHEMA
-    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
+    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed', changedPaths: [] }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
@@ -591,7 +584,7 @@ function journal(label) {
 
 function configRoleForTier(tierRole) {
   const mapped = ROLE_MAP[tierRole] || []
-  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
+  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified)
   return mapped[0] || null
 }
 
@@ -776,7 +769,7 @@ function fnv1a(text) {
   return hash
 }
 
-const EMPTY_PLAN_FACTS = { h1: '', phases: [], plannedSourceFiles: 0, hasContract: false, bytes: 0, sha256: '', error: '', criteria: [], planFile: '' }
+const EMPTY_PLAN_FACTS = { h1: '', phases: [], hasContract: false, bytes: 0, sha256: '', error: '', criteria: [], planFile: '' }
 let PLAN_FACTS = EMPTY_PLAN_FACTS
 
 // The plan stays on disk: the script takes only these facts, and every agent that needs the plan reads it by path.
@@ -799,7 +792,7 @@ async function loadForgeConfig() {
   const result = FORGE_CONFIG
   const defaults = {
     roles: {}, stages: { ff_review: false },
-    thresholds: { quickReviewThreshold: 8 }, lenses: DEFAULT_LENSES,
+    thresholds: {}, lenses: DEFAULT_LENSES,
     ticketUrl: '', repos: { frontend: '', backend: '' }, ghEnvUnset: {}, gate: {},
   }
   FORGE_CONFIG = {
@@ -2226,8 +2219,8 @@ async function phasedImplement(state) {
 
 async function fullLane() {
   phase('Implement')
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified, PLAN_FACTS.plannedSourceFiles, quickReviewThreshold())
-  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (${PLAN_FACTS.plannedSourceFiles} planned source files; threshold ${quickReviewThreshold()}).`)
+  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified)
+  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (fullySpecified ${PARAMS.fullySpecified}).`)
   if (PHASED && !PARAMS.checkpointDecision) {
     await decide(configuredGateMode() === 'none'
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`

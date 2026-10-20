@@ -149,7 +149,7 @@ def validate_profile(profile: dict[str, Any]) -> None:
         raise ProfileError("profile.forge.stages values must be booleans")
     _table(forge.get("gate"), "profile.forge.gate")
     thresholds = _table(forge.get("thresholds"), "profile.forge.thresholds")
-    _unknown(thresholds, {"quickReviewThreshold", "fixCap"}, "profile.forge.thresholds")
+    _unknown(thresholds, {"fixCap"}, "profile.forge.thresholds")
     if not all(isinstance(value, int) and value >= 1 for value in thresholds.values()):
         raise ProfileError("profile.forge.thresholds values must be positive integers")
     lenses = _table(forge.get("lenses"), "profile.forge.lenses")
