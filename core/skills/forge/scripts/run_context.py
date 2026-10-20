@@ -356,10 +356,13 @@ def _review_brief(plan: str, references: Path) -> str:
     return "".join(f"## {heading}\n\n{body.strip()}\n\n" for heading, body in parts)
 
 
-def _ref_exists(repo: Path, ref: str) -> bool:
+def _is_remote_branch(repo: Path, base: str) -> bool:
+    # refs/remotes/origin/HEAD exists in most clones, so HEAD needs its own test.
+    if base == "HEAD":
+        return False
     return (
         subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base}"],
             check=False,
             capture_output=True,
         ).returncode
@@ -368,9 +371,9 @@ def _ref_exists(repo: Path, ref: str) -> bool:
 
 
 def _merge_base(repo: Path, base: str) -> tuple[str, str]:
-    # origin/<base> comes first so a stale local base branch cannot widen the diff. The sha is ""
-    # when the two have no merge-base.
-    ref = f"origin/{base}" if _ref_exists(repo, f"origin/{base}") else base
+    # origin/<base> comes first for a remote branch name, so a stale local base branch cannot widen the diff.
+    # The sha is "" when the two have no merge-base.
+    ref = f"origin/{base}" if _is_remote_branch(repo, base) else base
     completed = subprocess.run(
         ["git", "-C", str(repo), "merge-base", ref, "HEAD"],
         check=False,

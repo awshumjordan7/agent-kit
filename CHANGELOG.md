@@ -5,6 +5,9 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-19
+- core/skills/forge/scripts/run_context.py, core/skills/forge/scripts/gate.sh, core/skills/forge/references/gate-commands.md: `--base` prefers `origin/<base>` only for a remote branch name, so `--base HEAD` (and in run_context.py `HEAD~n` or a sha) diffs from that commit instead of the whole branch (here-0610, -0612, -0613, -0618).
+- core/skills/forge/scripts/build-code-review-prompt.sh, core/skills/forge/references/codex-wrapper.md: say what each `--base` form reviews, and give the `git show --cc --format=` merge-review recipe.
+- core/skills/forge/scripts/codex-exec.sh: `--inline-diff` accepts a combined merge diff that starts with `diff --cc` (here-0627).
 - modules/sandbox/settings.fragment.json: drop the `~/.config/gh` credentials deny, because Claude Code 2.1.304 lets it override the `allowRead` entries for config.yml and hosts.yml, so every sandboxed `gh` call failed to read its config.
 
 ## 2026-10-16
