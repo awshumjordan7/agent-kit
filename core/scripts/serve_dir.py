@@ -33,9 +33,10 @@ PRIVATE_DIRS = {".aws", ".config", ".gnupg", ".ssh"}
 
 
 def private_root(root: Path) -> bool:
+    # A private name can hide behind a symlink, and macOS file names ignore case.
+    names = {part.lower() for part in (*root.absolute().parts, *root.resolve().parts)}
     return any(
-        part in PRIVATE_DIRS or part.startswith(".env") or "credential" in part.lower()
-        for part in root.resolve().parts
+        name in PRIVATE_DIRS or name.startswith(".env") or "credential" in name for name in names
     )
 
 
@@ -48,7 +49,10 @@ def _open_at(dir_fd: int, name: str) -> int:
 
 def open_file(root: Path, request_path: str) -> tuple[BufferedReader, str] | None:
     """Open the requested regular file under root without following a symlink; None when refused."""
-    path = urlsplit(request_path).path
+    try:
+        path = urlsplit(request_path).path
+    except ValueError:
+        return None
     if not path.startswith("/"):
         return None
     names = [name for name in unquote(path).split("/") if name]
@@ -57,7 +61,7 @@ def open_file(root: Path, request_path: str) -> tuple[BufferedReader, str] | Non
     if path.endswith("/"):
         names.append("index.html")
     try:
-        fd = os.open(root, os.O_RDONLY)
+        fd = os.open(root, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
         for name in names:
             fd = _open_at(fd, name)
     except (OSError, ValueError):
