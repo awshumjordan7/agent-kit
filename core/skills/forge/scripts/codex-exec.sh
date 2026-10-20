@@ -454,8 +454,9 @@ if [ -n "$INLINE_DIFF" ] && [ ! -f "$INLINE_DIFF" ]; then
 fi
 if [ -n "$INLINE_DIFF" ] && [ ! -s "$INLINE_DIFF" ]; then
     fail 65 "CODEX_DIFF_INVALID: diff must be non-empty: $INLINE_DIFF"
-elif [ -n "$INLINE_DIFF" ] && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --git" ]; then
-    fail 65 "CODEX_DIFF_INVALID: non-empty diff must begin with diff --git: $INLINE_DIFF"
+elif [ -n "$INLINE_DIFF" ] && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --git" ] \
+    && [ "$(head -c 10 "$INLINE_DIFF")" != "diff --cc " ]; then
+    fail 65 "CODEX_DIFF_INVALID: non-empty diff must begin with diff --git or diff --cc: $INLINE_DIFF"
 fi
 
 # Checked before the session lock is taken, so a logged-out run holds no lock.

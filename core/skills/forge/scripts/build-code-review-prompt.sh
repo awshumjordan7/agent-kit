@@ -2,6 +2,8 @@
 # Build a code-review prompt for a change made outside forge. It never runs the review.
 # Usage: build-code-review-prompt.sh --run-dir <runDir> --repo-dir <repo> [--label change]
 #        [--plan <file>] [--base <ref>]
+# Without --base the diff is the uncommitted change against HEAD. --base <branch> diffs the whole branch
+# from its merge-base with origin/<branch>; any other base (HEAD~1, a sha) diffs from its merge-base with HEAD.
 # The plan defaults to <runDir>/plan.md; a missing plan file means the change has no plan.
 
 set -euo pipefail

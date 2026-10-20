@@ -33,8 +33,8 @@ files, the whole folder runs, because a folder target covers the files inside it
 instead of `--repo` in place. The checkout is created once per run and moved between SHAs so installed dependencies
 persist; the repository's `worktree` overrides apply there, Semgrep compares against the merge-base of the base
 ref and the SHA (`<sha>^` without `--base`), and failure paths are reported relative to the repository.
-`gate.sh --base <branch>` starts `gate-<label>.diff` at the merge-base of `origin/<branch>` (or `<branch>` when no
-origin ref exists) and HEAD; without it the diff starts at HEAD. Forge's gate and phase-commit calls pass `--base` from the launch's required `base`; gate.sh never resolves or guesses a base itself. Without `--sha`, the gate runs in place. `--no-stages` runs
+`gate.sh --base <branch>` starts `gate-<label>.diff` at the merge-base of `origin/<branch>` (or `<branch>` as written
+when it is `HEAD` or no `origin/<branch>` branch exists) and HEAD; without it the diff starts at HEAD. Forge's gate and phase-commit calls pass `--base` from the launch's required `base`; gate.sh never resolves or guesses a base itself. Without `--sha`, the gate runs in place. `--no-stages` runs
 no stage and is used with `--commit` for phase commits; `--commit` restages and retries once when a pre-commit hook
 rewrites files. A run without `--sha` or `--no-stages` runs no stage when a `gate-*.json` in the same run dir passed
 with the same `head`, `baseSha` (the merge-base sha), `diffSha256`, `configSha256`, `filesSha256` and

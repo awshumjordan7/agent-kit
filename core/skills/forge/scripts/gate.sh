@@ -366,11 +366,11 @@ while IFS= read -r -d '' pattern; do
   exclude_args+=(--exclude "$pattern")
 done < <(python3 -c 'import json, sys; sys.stdout.write("".join(p + "\0" for p in json.loads(sys.argv[1])))' "$local_only")
 
-# origin/<base> comes first so a stale local base branch cannot widen the diff, as in run_context.py.
+# origin/<base> comes first for a remote branch name other than HEAD, so a stale local base branch cannot widen the diff, as in run_context.py.
 base_ref=''
 base_sha=''
 if [[ -n $base ]]; then
-  if git -C "$repo" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null 2>&1; then
+  if [[ $base != HEAD ]] && git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$base"; then
     base_ref="origin/$base"
   else
     base_ref=$base
