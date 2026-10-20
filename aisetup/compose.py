@@ -129,6 +129,7 @@ BACKUPS_DIRNAME = "backups"
 BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 BACKUP_RUN_NAME = re.compile(r"\d{8}_\d{6}(\.\d+)?")
 BACKUP_RETENTION = timedelta(days=30)
+BACKUP_KEEP_LAST = 10
 
 
 def _is_compiled_artifact(path: Path) -> bool:
@@ -404,8 +405,10 @@ def _prune_backup_runs(layers_root: Path) -> None:
     except OSError as error:
         sys.stderr.write(f"warning: cannot list backups in {backups}: {error}\n")
         return
+    runs: list[tuple[datetime, int, Path]] = []
     for entry in entries:
-        if not BACKUP_RUN_NAME.fullmatch(entry.name):
+        match = BACKUP_RUN_NAME.fullmatch(entry.name)
+        if not match:
             continue
         if entry.is_symlink() or not entry.is_dir():
             continue
@@ -413,6 +416,12 @@ def _prune_backup_runs(layers_root: Path) -> None:
             created = datetime.strptime(entry.name[:15], BACKUP_TIMESTAMP_FORMAT)
         except ValueError:
             continue
+        suffix = int(match.group(1)[1:]) if match.group(1) else 0
+        runs.append((created, suffix, entry))
+    # A run survives if it is one of the newest or inside the window (restic's keep-last OR
+    # keep-within), so a long gap between installs never deletes every restore point.
+    runs.sort(key=lambda run: run[:2])
+    for created, _suffix, entry in runs[:-BACKUP_KEEP_LAST]:
         if created >= cutoff:
             continue
         try:

@@ -29,7 +29,8 @@ and your value wins a conflict. The home stays in place: only changed files are 
 never moved. Each file the kit replaces or retires is moved to `~/.ai-setup/backups/<timestamp>/claude/<path>`, and
 each replaced file outside the Claude home (such as `~/.codex/config.toml`) to `.../<timestamp>/home/<path under your
 home>`. A run that replaces nothing prints `no files replaced` and creates no folder. After a successful install,
-backup folders older than 30 days are deleted. If a swap fails, the files already swapped are put back. When
+backup folders older than 30 days are deleted, except the newest 10.
+If a swap fails, the files already swapped are put back. When
 `--home` is not the default `~/.claude`, install and update skip MCP registration because the Claude CLI always writes
 user-scoped servers to the default home. `update` fetches configured layer repositories, replays the profile, and
 runs doctor.

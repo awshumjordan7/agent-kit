@@ -5,6 +5,7 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-20
+- aisetup/compose.py, README.md, docs/modules/codex.md: backup pruning also keeps the newest 10 runs (restic-style keep-last OR keep-within), so an install after more than 30 days without one no longer deletes every restore point.
 - core/CLAUDE.md, core/skills/forge/references/code-standards.md, modules/playwright: rules stated twice are merged into one statement each (17 installed lines, no rule dropped), and the playwright fragment's rule moves into core's web-and-browser line.
 - core/scripts/doctor.py, core/templates/doctor.toml.tmpl: a `claude-md-size` WARN when the installed CLAUDE.md passes `thresholds.claude_md_max_lines` (default 250).
 - core/skills/forge, core/skills/ship-pr/SKILL.md: forge's `continueBranch` and `continueFrom` launch args add a build run's commits to an open PR's branch, with no new branch or PR, reviews from `continueFrom` (or the whole PR with `continueScope: "pr"`), and the PR's title and body kept.
