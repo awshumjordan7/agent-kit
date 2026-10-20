@@ -552,6 +552,30 @@ def _relaunch_marker(run_dir: Path) -> str:
     return ""
 
 
+def _is_ancestor(repo: Path, ancestor: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, "HEAD"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _branch_error(repo: Path, base: str, branch: str) -> str:
+    # A run that adds commits to an existing branch must start on it, contain its base commit,
+    # and hold every commit already pushed to it, or ship would push onto a stale or wrong branch.
+    current = str(_git(repo, "branch", "--show-current")).strip()
+    if current != branch:
+        return f"current branch is {current or 'detached'}, not {branch}"
+    if not _is_ancestor(repo, base):
+        return f"{base} is not an ancestor of HEAD on {branch}"
+    if _is_remote_branch(repo, branch) and not _is_ancestor(repo, f"refs/remotes/origin/{branch}"):
+        return f"{branch} is behind origin/{branch}; pull before launch"
+    return ""
+
+
 def launch_facts(
     repo: Path,
     run_dir: Path,
@@ -559,6 +583,7 @@ def launch_facts(
     patterns: list[str] | None = None,
     relaunch: bool = False,
     no_check: bool = False,
+    branch: str | None = None,
 ) -> dict:
     if not base:
         return _checked(
@@ -592,6 +617,8 @@ def launch_facts(
         else 0
     )
     error = "" if merge_base else f"no merge-base between {base_ref} and HEAD in {repo}"
+    if branch and not error and not no_check:
+        error = _branch_error(repo, base, branch)
     relaunch = relaunch or bool(marker)
     clean = not dirty and ahead == 0
     return _checked(
@@ -895,6 +922,7 @@ def main() -> None:
     launch_facts_parser.add_argument("--exclude", action="append")
     launch_facts_parser.add_argument("--relaunch", action="store_true")
     launch_facts_parser.add_argument("--no-check", action="store_true")
+    launch_facts_parser.add_argument("--branch")
     ship_facts_parser = subparsers.add_parser("ship-facts")
     ship_facts_parser.add_argument("--repo", type=Path, required=True)
     ship_facts_parser.add_argument("--run-dir", type=Path, required=True)
@@ -951,7 +979,13 @@ def main() -> None:
         return
     elif args.command == "launch-facts":
         result = launch_facts(
-            args.repo, args.run_dir, args.base, args.exclude, args.relaunch, args.no_check
+            args.repo,
+            args.run_dir,
+            args.base,
+            args.exclude,
+            args.relaunch,
+            args.no_check,
+            args.branch,
         )
     elif args.command == "ship-facts":
         result = ship_facts(args.repo, args.run_dir, args.exclude)
