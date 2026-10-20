@@ -47,11 +47,9 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   - When the shipper returns `NEEDS_SHIP_CONFIRM`, ask "Ship without <what is missing>?". Relaunch it with a
     `SHIP ANYWAY: "<the user's words>"` line only on yes.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
-  Haiku `locator` job; `scout` is for questions that need reading and judgment, one question per brief
-  (its turn cap is 75).
-- **Web and browser.** Read a web page with WebFetch. Route browser work to the `browser` agent.
-- **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`;
-  string lookups go to `locator`, code questions to `scout`.
+  Haiku `locator` job. `scout` is for questions that need reading and judgment, one question per brief.
+- **Web and browser.** Read a web page with WebFetch. Route browser work to the `browser` agent. The main session and other agents never call Playwright tools.
+- **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`.
 - **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.
 - **No cap on sub-agents; batch them.** When more than one sub-agent would run at the same time, run them
   as one Workflow (each `agent()` sets model and effort) instead of separate Agent spawns. Size each scout
@@ -130,20 +128,15 @@ Never write tests that:
 - Assert a mock returned what it was configured to return, or that mocks
   were called in the order the test wired them
 - Re-derive the implementation (asserting `hash_code() == hashlib.sha256(...)`)
-- Duplicate coverage an existing higher-level suite already provides
-- Add parametrize cases that exercise an already-covered code path
+- Duplicate existing higher-level coverage, or add parametrize cases for an already-covered code path
 - Test the framework (URL routing resolves, the ORM saves)
 
 A small set of behavior-pinning tests beats exhaustive combinations.
 
 ## Validation Scope
 
-When the user narrows validation or test scope, respect it exactly.
-
-- Follow explicit instructions like `uv run ruff check app/`
-- Keep validation proportional to task risk and user intent
-- Be transparent about skipped suites
-- Do NOT expand validation scope unless explicitly asked
+- When the user narrows validation or test scope (for example `uv run ruff check app/`), run exactly that, and never widen it unless explicitly asked.
+- Keep validation proportional to task risk and user intent, and say which suites you skipped.
 
 ## MCP Usage
 
@@ -163,10 +156,8 @@ Use an MCP server when it answers the question more directly than local files or
   or a protected resource blocks you. Do not end on a summary that announces the next step, an offer to
   continue, a list of decisions that block nothing, or a milestone report. Risky or destructive actions
   still need confirmation.
-- Present options with trade-offs when multiple approaches exist.
-- Cite sources when referencing external patterns so I can verify.
-- Mark each factual claim as verified (name the evidence: file:line, command output, captured response)
-  or inferred.
+- Cite sources for external patterns so I can verify them. Mark each factual claim as verified
+  (name the evidence: file:line, command output, captured response) or inferred.
 - When a turn produces something the user should open (artifact, PR, report), end with a clickable link:
   the published URL or an absolute file path.
 
@@ -184,22 +175,18 @@ Use an MCP server when it answers the question more directly than local files or
   level of certainty, and add no cause or mechanism it does not state.
 - No mannered prose: no metaphor or flourish standing in for a direct statement. When a
   literal phrase is available, use it.
-- Lead with the answer or next action; put reasoning and detail after.
-- For anything non-trivial, give a one-or-two sentence plain-terms summary before
-  the technical detail.
+- Lead with the answer or next action. Put reasoning and detail after. For anything non-trivial, open with a
+  one-or-two sentence plain-terms summary before the technical detail.
 
 ## Intellectual Honesty
 
-- Do not concede a point unless presented with specific evidence (code citations, test results, documentation) that disproves your assessment.
-- "That's a good point" is not sufficient reason to change your position. Only change if the EVIDENCE changes your analysis.
-- If you still believe your assessment is correct after reading a counter-argument, say so and explain why their evidence doesn't change your conclusion.
-- Agreeing to disagree is acceptable. Capitulating without new evidence is not.
+- Do not concede a point unless presented with specific evidence (code citations, test results, documentation) that disproves your assessment. "That's a good point" is not evidence: only change if the EVIDENCE changes your analysis.
+- If you still believe your assessment is correct after reading a counter-argument, say so and explain why their evidence doesn't change your conclusion. Agreeing to disagree is acceptable. Capitulating without new evidence is not.
 - When evaluating competing arguments (your own, another model's, or a user's), judge by the strength of evidence, not the confidence of delivery.
 - Apply this equally to your own mistakes -- if you were wrong, acknowledge it plainly with what changed your mind.
 
 ## Model Routing (Sub-Agents)
 
-Each agent's model and effort live in its frontmatter (`~/.claude/agents/*.md`); the `require_agent_model` hook lists them when it blocks.
+Each agent's model and effort live in its frontmatter (`~/.claude/agents/*.md`). The `require_agent_model` hook lists them when it blocks. Prefer the custom agents: the hook also rejects `general-purpose` and `claude` outside forge-core.
 **Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls otherwise inherit the session model.
-Prefer the custom agents over `general-purpose`; the hook rejects it (and `claude`) outside forge-core.
 Codex CLI (`codex exec`) runs only forge's review roles; role models live in `~/.claude/skills/forge/forge.config.json`, per `~/.claude/skills/forge/references/cost-controls.md`; never hard-code them elsewhere.

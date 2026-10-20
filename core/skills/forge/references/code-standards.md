@@ -58,8 +58,7 @@ Never write tests that:
 - Assert a mock returned what it was configured to return, or that mocks
   were called in the order the test wired them
 - Re-derive the implementation (asserting `hash_code() == hashlib.sha256(...)`)
-- Duplicate coverage an existing higher-level suite already provides
-- Add parametrize cases that exercise an already-covered code path
+- Duplicate existing higher-level coverage, or add parametrize cases for an already-covered code path
 - Test the framework (URL routing resolves, the ORM saves)
 
 A small set of behavior-pinning tests beats exhaustive combinations.
