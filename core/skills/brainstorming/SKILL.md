@@ -89,7 +89,8 @@ forge's plan shape:
 - Tests
 - Acceptance criteria
 - Run settings
-- Changelog, only when the plan changes instruction files (CLAUDE.md, CLAUDE.fragment.md, AGENTS.md, `agents/*.md`,
+- Changelog, only in a repository that tracks `.github/scripts/check_changelog.py` and only when the
+  plan changes instruction files (CLAUDE.md, CLAUDE.fragment.md, AGENTS.md, `agents/*.md`,
   `skills/**/*.md`, `references/*.md`): `## Changelog` with one `- <paths or area>: <reason>` line
   per change. The plan's last phase adds those lines to CHANGELOG.md, and forge records the
   user's approval in `<runDir>/user-ok.md`.

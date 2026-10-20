@@ -39,7 +39,7 @@ CODEX_AGENTS_MD = "~/.codex/AGENTS.md"
 DEFAULT_CONFIG: dict[str, Any] = {
     "models": {"codex_version": "6.1", "claude_tiers": ["haiku", "sonnet", "opus", "fable"]},
     "ignore": {"globs": ["skills/synced/**"]},
-    "thresholds": {"agent_max_lines": 60},
+    "thresholds": {"agent_max_lines": 60, "claude_md_max_lines": 250},
     "repos": {"roots": []},
     # Codex reads its global AGENTS.md on every run as an unattended, read-only reviewer, so it
     # gets only the listed CLAUDE.md sections; exclude_* apply only when include_sections is empty.
@@ -376,6 +376,20 @@ def check_agent_defers(ctx: Context) -> list[Finding]:
             ))
     return findings
 
+# 200 lines is a guideline, so the warning starts above it and fires on real growth only.
+def check_claude_md_size(ctx: Context) -> list[Finding]:
+    source = ctx.root / "CLAUDE.md"
+    if not source.is_file():
+        return []
+    maximum = int(ctx.config.get("thresholds", {}).get("claude_md_max_lines", 250))
+    n = len(ctx.read(source).splitlines())
+    if n <= maximum:
+        return []
+    return [finding(
+        "WARN", "claude-md-size", ctx, source,
+        f"CLAUDE.md is {n} lines (warn above {maximum}); run a prove-value pass before adding rules",
+    )]
+
 def expected_code_standards(ctx: Context) -> tuple[str | None, str | None]:
     source = ctx.root / "CLAUDE.md"
     try:
@@ -612,6 +626,7 @@ CHECKS: list[tuple[str, Check]] = [
     ("explicit-model", check_explicit_model),
     ("builtin-agents", check_builtin_agents),
     ("agent-defers", check_agent_defers),
+    ("claude-md-size", check_claude_md_size),
     ("code-standards-sync", check_code_standards_sync),
     ("codex-agents-sync", check_codex_agents_sync),
     ("overrides-exist", check_overrides_exist),

@@ -33,6 +33,7 @@ Use this skill only after implementation and validation are complete and the use
 - Run every `git commit` as `bash ~/.claude/scripts/git-net.sh -C <repo> commit ...`, one bare call: under the Bash sandbox a plain commit fails in repos whose pre-commit hooks need tracked files the sandbox hides.
 - After staging, compare the approved list with `git diff --cached --name-only`. Record every approved path that is not staged (hook or permission refusal, ignored, missing, unchanged) with its reason. Do not work around a block. A path already staged as a deletion (`git diff --cached --name-only --diff-filter=D`) and absent from the working tree needs no `git add`; skip it. If any `git add` fails, stop before committing and report the path and the error.
 - Changelog check, after staging and before any commit or push, even when nothing is left to commit. You verify; you never write CHANGELOG.md.
+  0. Run this check only in a repository whose CI checks its changelog: `git -C <repo> ls-files --error-unmatch .github/scripts/check_changelog.py` exits 0. In any other repository, skip the whole check.
   1. List the branch's changed files, committed and staged: `git diff --cached --name-only --no-renames "$(git merge-base origin/<base> HEAD)"`.
   2. Its instruction files are the paths matching `(^|/)CLAUDE(\.fragment)?\.md$`, `(^|/)AGENTS\.md$`, `(^|/)agents/[^/]+\.md$`, `(^|/)skills/.+\.md$` or `(^|/)references/[^/]+\.md$` (the same patterns as `.github/scripts/check_changelog.py`). With none, skip the rest of this check.
   3. With any, both are required: (a) CHANGELOG.md is in that list and `git diff --cached "$(git merge-base origin/<base> HEAD)" -- CHANGELOG.md` adds at least one line starting `- `; (b) the user's OK is on record, as a `USER OK: "<the user's words>"` line in the brief or a `user-ok.md` file in the run dir the brief names.
@@ -68,7 +69,7 @@ Write the PR title and body to files, never inline in the command: free text wit
 Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and remove every matching line.
 
 1. Check for an existing pull request with `gh pr view "<branch>" --json url -q .url`.
-2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and go to step 5. Never create a second one.
+2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and go to step 5, unless the caller says to keep the existing body; then leave it and go to step 5. Never create a second one.
 3. When it fails with a 404 or a "requires the repo scope" error, the `gh` token lacks access. Stop and report that error. `gh pr create` would fail the same way.
 4. Otherwise create a non-draft pull request with the resolved base branch: `gh pr create --base "<base>" --head "<branch>" --title "$(cat <title file>)" --body-file <body file>`. Then go to step 5.
 5. Wait for the pull request's checks. This is the only step that returns from this section. Note the start time: the wait has a 10-minute deadline. `<number>` is the pull request number, the last part of its URL.
