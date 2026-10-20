@@ -18,11 +18,11 @@ usage() {
 dir=
 done_file=
 while [[ ${1:-} == --dir || ${1:-} == --done-file ]]; do
-  [[ $# -ge 2 ]] || usage
+  [[ $# -ge 2 && -n $2 ]] || usage
   if [[ $1 == --dir ]]; then dir=$2; else done_file=$2; fi
   shift 2
 done
-[[ -z $done_file || $done_file == /* ]] || usage
+[[ -z $done_file || $done_file == /* ]] || { echo "with-env.sh: --done-file needs an absolute path: $done_file" >&2; usage; }
 
 if [[ -n $done_file ]]; then
   # A bare call cannot end in "; echo $?", so the script writes the done-file itself.

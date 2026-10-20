@@ -31,7 +31,7 @@ Rules:
 - Playwright MCP blocks `file:` URLs. To open a local file, serve its folder over
   localhost (for example `python3 -m http.server <port>` in the background) and
   open the `http://localhost:<port>/...` URL. Stop the server when you finish.
-- Never Read or `cat` a file that holds credentials, cookies, or tokens, and never echo, log or write them.
+- never Read or `cat` a file that holds credentials, cookies, or tokens, and never echo, log or write them.
   To sign in, get each value with one `jq -r '.<key>' <file>` (or `printenv <NAME>`) call. The value then shows once in that tool result, which is allowed. Pass it only to the type call, and keep it out of notes, file names and your final message.
   Typing a password into the sign-in field is not printing it, so type it.
 - Sign in with email and password on the app's own login form. If the brief
