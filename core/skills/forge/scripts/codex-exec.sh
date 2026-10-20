@@ -523,11 +523,13 @@ rm -f "$OUT" "$LOG.status"
 
 if [ "$FOREGROUND" != "true" ]; then
     SELF_PATH="$SKILL_DIR/scripts/codex-exec.sh"
+    # The sandbox exclusion matches only the ~/.claude spelling, so the printed watch command uses it.
+    case "$SELF_PATH" in "$HOME"/*) WATCH_PATH="~${SELF_PATH#"$HOME"}" ;; *) WATCH_PATH=$SELF_PATH ;; esac
     # Run a copy: a fix round may edit this script while a session is still running.
     LAUNCH_COPY="$LOG.launcher.sh"
     cp "$SELF_PATH" "$LAUNCH_COPY"
     FORGE_CODEX_EXEC_SKILL_DIR="$SKILL_DIR" nohup bash "$LAUNCH_COPY" "${ORIGINAL_ARGS[@]}" --foreground </dev/null >"$LOG.launcher" 2>&1 &
-    echo "CODEX_STARTED mode=$MODE role=$ROLE log=$LOG out=$OUT watch=\"bash $SELF_PATH watch --log $LOG --out $OUT --max-wait 2400\""
+    echo "CODEX_STARTED mode=$MODE role=$ROLE log=$LOG out=$OUT watch=\"bash $WATCH_PATH watch --log $LOG --out $OUT --max-wait 2400\""
     exit 0
 fi
 

@@ -59,6 +59,7 @@ class ModuleManifest:
     mcp: tuple[McpServer, ...]
     files: tuple[FileCopy, ...]
     templates: tuple[Template, ...]
+    requires_platform: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def supports_current_platform(self) -> bool:
@@ -92,6 +93,7 @@ MODULE_KEYS = {
     "depends",
     "requires",
     "platforms",
+    "requires_platform",
     "claude_md_fragment",
     "settings_fragment",
     "questions",
@@ -273,6 +275,9 @@ def load_module_manifest(path: Path) -> ModuleManifest:
 
     questions = _questions(data.get("questions", []), path)
     servers = _mcp_servers(data.get("mcp", []), path)
+    platform_requirements = data.get("requires_platform", {})
+    if not isinstance(platform_requirements, dict):
+        raise ManifestError(f"{path}: requires_platform must be a table of arrays")
 
     return ModuleManifest(
         name,
@@ -287,6 +292,10 @@ def load_module_manifest(path: Path) -> ModuleManifest:
         servers,
         _copies(data.get("files", []), "files", path),
         _templates(data.get("templates", []), path),
+        requires_platform={
+            name: _strings(value, f"requires_platform.{name}", path)
+            for name, value in platform_requirements.items()
+        },
     )
 
 

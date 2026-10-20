@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from aisetup.layers import ResolvedLayers
+from aisetup.manifest import platform_name
 from aisetup.paths import is_default_claude_home
 
 
@@ -56,6 +57,32 @@ def _agent_owner(resolved_layers: ResolvedLayers, filename: str) -> str:
         if (layer.root / "agents" / filename).is_file():
             return layer.name
     return "unknown"
+
+
+def _sandbox_dependencies(home: Path) -> Capability:
+    if platform_name() != "linux":
+        return _skip("sandbox_deps", "not Linux")
+    settings_path = home / "settings.json"
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return _skip("sandbox_deps", f"{settings_path}: {error}")
+    sandbox = settings.get("sandbox") if isinstance(settings, dict) else None
+    if not isinstance(sandbox, dict) or sandbox.get("enabled") is not True:
+        return _skip("sandbox_deps", "sandbox not enabled")
+    problems: list[str] = []
+    missing = [name for name in ("bwrap", "socat") if shutil.which(name) is None]
+    if missing:
+        problems.append(f"missing: {', '.join(missing)} (sudo apt-get install bubblewrap socat)")
+    try:
+        restricted = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip() == "1"
+    except OSError:
+        restricted = False
+    if restricted and not Path("/etc/apparmor.d/bwrap").is_file():
+        problems.append('AppArmor blocks bwrap: add /etc/apparmor.d/bwrap (README, "Windows 10 and 11 (WSL2)")')
+    if problems:
+        return _result("sandbox_deps", False, "bwrap, socat, AppArmor", "; ".join(problems))
+    return _result("sandbox_deps", True, "bwrap, socat, AppArmor")
 
 
 def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
@@ -268,6 +295,7 @@ def run_selfcheck(home: Path, layers_root: Path) -> list[Capability]:
         )
     )
     results.append(_json_file("forge_config_valid", home / "skills/forge/forge.config.json"))
+    results.append(_sandbox_dependencies(home))
     return results
 
 
