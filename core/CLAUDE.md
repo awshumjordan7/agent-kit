@@ -35,17 +35,20 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   - With either answer, the change gets its own run dir: `<workflow dir>/<YYYY-MM-DD>-<slug>/`. `<workflow dir>` is the
     `.workflow/` folder that holds the session's own run dir, or `<repo>/.workflow/` when the session has none.
     Create it with an empty `decisions.md` before any worker starts, and name it in every brief for the change.
-  - Record the answer with `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py answer --repo <repo> --run-dir <run dir> --plan yes|no`.
+  - Record the answer with `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py answer --repo <repo> --run-dir <run dir> --plan yes|no --label <label>`.
+    Pick the label once per change (default `change`). A follow-up in the same run dir takes a new label.
+    The review command, every ship_record call and the shipper brief name that label.
   - With Yes: write `<run dir>/plan.md`, run `~/.claude/skills/forge/scripts/build-plan-review-prompt.sh` and the
-    `plan-review` role. Record that verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage plan-review
+    `plan-review` role. Record that verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage plan-review --label <label>
     --provider <p> --model <m> --verdict <v>`. Then wait for the user's go. When the plan has a `## Changelog` section,
     write `<run dir>/user-ok.md` with the user's approval quoted word for word and the date, as forge does (forge SKILL.md step 4).
-  - With either answer: after the change, run `~/.claude/skills/forge/scripts/build-code-review-prompt.sh` and the `review`
+  - With either answer: after the change, run `~/.claude/skills/forge/scripts/build-code-review-prompt.sh --label <label>` and the `review`
     role. Record the verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage review --label <label>
     --provider <p> --model <m> --verdict <v>`.
   - The role's provider decides who reviews: `codex` runs `codex-exec.sh`, and `claude` runs the `reviewer` agent with the printed paths.
-  - When the shipper returns `NEEDS_SHIP_CONFIRM`, ask "Ship without <what is missing>?". Relaunch it with a
-    `SHIP ANYWAY: "<the user's words>"` line only on yes.
+  - When the shipper returns `NEEDS_SHIP_CONFIRM`, ask "Ship without <what is missing>?". Only on yes, relaunch it with a
+    new brief file that holds a `SHIP ANYWAY: "<the user's words>"` line. Briefs are not edited after a spawn (see the brief
+    rule below), and ship-pr reads that line only from the brief.
 - **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
   Haiku `locator` job. `scout` is for questions that need reading and judgment, one question per brief.
 - **Web and browser.** Read a web page with WebFetch. Route browser work to the `browser` agent. The main session and other agents never call Playwright tools.

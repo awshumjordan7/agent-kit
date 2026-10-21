@@ -509,7 +509,7 @@ const STUBS = {
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
     const items = String(opts.label).startsWith('decide-fix-gate') ? gateItems : dryFindings().map(finding => ({ ...finding, source: 'review' }))
-    return { items: items.map(item => ({ id: findingKey(item), source: item.source, action: 'fix', reason: 'dry-run decision', files: [item.file].filter(Boolean), change: item.fix_hint, check: 'dry-run check' })), cannotDecide: [], notes: 'dry-run spec', diffStat: ' 1 file changed', applied: false, apply: null }
+    return { items: items.map((item, index) => ({ id: deciderId(index), source: item.source, action: 'fix', reason: 'dry-run decision', files: [item.file].filter(Boolean), change: item.fix_hint, check: 'dry-run check' })), cannotDecide: [], notes: 'dry-run spec', diffStat: ' 1 file changed', applied: false, apply: null }
   },
   applier: opts => STUBS.implementer(opts),
   lens: () => ({ verdict: 'approve', score: 5, findings: [] }),
@@ -1300,6 +1300,11 @@ function triageId(index) {
   return `F${index + 1}`
 }
 
+// The decider sees open items as D1..Dn in array order, so ids map back by position.
+function deciderId(index) {
+  return `D${index + 1}`
+}
+
 function partitionTriage(findings, verdicts) {
   const fix = []
   const disputes = []
@@ -1531,7 +1536,7 @@ Small-fix rule: when the whole fix set of this round is at most about 20 changed
 Respect the public API contract. Do not widen scope, redesign, commit, push, run tests or other checks, or delegate. Put what the next reader should know in notes.
 
 OPEN ITEMS
-${JSON.stringify(open.map(item => ({ id: findingKey(item), source: item.source, ruling: item.ruling || null, finding: item })))}
+${JSON.stringify(open.map((item, index) => ({ id: deciderId(index), source: item.source, ruling: item.ruling || null, finding: item })))}
 
 GATE OUTPUT
 ${gateExcerpt}
@@ -1598,7 +1603,8 @@ async function fixLoop(opts) {
       break
     }
     if (spec.notes) deciderNotes.push(`Round ${round}: ${spec.notes}`)
-    const openById = new Map(open.map(item => [findingKey(item), item]))
+    const openById = new Map(open.map((item, index) => [deciderId(index), item]))
+    const keyOf = id => findingKey(openById.get(id))
     const cannotDecide = new Set((spec.cannotDecide || []).filter(id => openById.has(id)))
     const fixItems = []
     const seen = new Set()
@@ -1617,17 +1623,17 @@ async function fixLoop(opts) {
       } else if (item.source === 'gate') {
         await decide(`${label} round ${round}: the decider chose ${entry.action} for gate item ${item.claim.slice(0, 200)}; only a passing gate closes it. ${String(entry.reason || '').slice(0, 300)}`)
       } else {
-        reviewOpen.delete(entry.id)
-        disputes.push({ id: entry.id, finding: item, reason: `decider ${entry.action}: ${entry.reason || '(no reason given)'}` })
+        reviewOpen.delete(findingKey(item))
+        disputes.push({ id: findingKey(item), finding: item, reason: `decider ${entry.action}: ${entry.reason || '(no reason given)'}` })
       }
     }
     for (const id of cannotDecide) {
       const item = openById.get(id)
-      disputes.push({ id, finding: item, reason: 'decider could not decide from current evidence' })
-      reviewOpen.delete(id)
+      disputes.push({ id: findingKey(item), finding: item, reason: 'decider could not decide from current evidence' })
+      reviewOpen.delete(findingKey(item))
     }
     const listed = new Set((spec.items || []).map(entry => entry.id))
-    const unlisted = open.filter(item => !listed.has(findingKey(item)) && !cannotDecide.has(findingKey(item)))
+    const unlisted = open.filter((item, index) => !listed.has(deciderId(index)) && !cannotDecide.has(deciderId(index)))
     if (unlisted.length) await decide(`${label} round ${round}: the decider left ${unlisted.length} open item(s) unlisted; they stay open.`)
     let fix = null
     let appliedBy = null
@@ -1635,6 +1641,7 @@ async function fixLoop(opts) {
       appliedBy = 'decider'
       fix = spec.apply || { fixed: [], couldNotFix: [], touchedFiles: [], diff: '', notes: 'decider reported applied=true without an apply result', results: [] }
       if (!spec.apply) await decide(`${label} round ${round}: the decider reported applied=true without an apply result.`)
+      fix = { ...fix, fixed: (fix.fixed || []).filter(id => openById.has(id)).map(keyOf), couldNotFix: (fix.couldNotFix || []).filter(id => openById.has(id)).map(keyOf), results: (fix.results || []).filter(entry => openById.has(entry.id)).map(entry => ({ ...entry, id: keyOf(entry.id) })) }
     } else if (fixItems.length) {
       appliedBy = 'applier'
       const threadFile = round === 1 ? opts.threadFile : `${opts.threadFile}-${round}`
@@ -1696,8 +1703,10 @@ async function fixLoop(opts) {
     }
     history.push({
       round, appliedBy,
-      spec: (spec.items || []).map(entry => ({ id: entry.id, action: entry.action, change: entry.change, reason: entry.reason })),
-      cannotDecide: [...cannotDecide],
+      spec: (spec.items || []).filter(entry => openById.has(entry.id)).map(entry => ({ id: keyOf(entry.id), action: entry.action, change: entry.change, reason: entry.reason })),
+      unknownIds: (spec.items || []).filter(entry => !openById.has(entry.id)).map(entry => String(entry.id).slice(0, 200)),
+      unknownApplyIds: [...new Set([...(spec.apply?.fixed || []), ...(spec.apply?.couldNotFix || []), ...(spec.apply?.results || []).map(entry => entry.id)])].filter(id => !openById.has(id)).map(id => String(id).slice(0, 200)),
+      cannotDecide: [...cannotDecide].map(keyOf),
       gatePassed: record.gatePassed,
       stillOpen: [...reviewOpen.keys()],
       gateFailures: gateOpen.map(item => item.claim.slice(0, 300)),

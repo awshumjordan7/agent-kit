@@ -29,6 +29,7 @@
       "bash ~/.claude/skills/forge/scripts/gate.sh *",
       "bash ~/.claude/skills/forge/scripts/codex-exec.sh *",
       "python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run *",
+      "python3 ~/.claude/skills/forge/scripts/workflow_carry.py *",
       "bash ~/.claude/skills/ship-pr/scripts/resolve-base-branch.sh *",
       "python3 ~/.claude/scripts/handoff.py *",
       "python3 */agent-kit/install.py *"

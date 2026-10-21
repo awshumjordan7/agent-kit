@@ -17,11 +17,11 @@ Use this skill only after implementation and validation are complete and the use
 ## 2. Branch and commit
 
 - When the current branch is the base branch, create a short kebab-case branch named for what changed (from `git diff` and `git status`, not file names). Restrict the name to `[a-z0-9-]`: strip or replace every other character before it reaches a command, because it can come from free text.
-- Fetch the base and branch from it, so the branch does not start from a stale local copy. Run the fetch as one bare call (no cd prefix, pipe, redirect, `;` or `&&`):
+- Fetch the base and branch from it, so the branch does not start from a stale local copy. Run the fetch and the checkout each as one bare call (no cd prefix, pipe, redirect, `;` or `&&`):
 
   ```bash
   bash ~/.claude/scripts/git-net.sh -C <repo> fetch origin "<base>"
-  git -C <repo> checkout -b "<branch>" "origin/<base>"
+  bash ~/.claude/scripts/git-net.sh -C <repo> checkout -b "<branch>" "origin/<base>"
   ```
 
   Between the fetch and the checkout, run `git -C <repo> log --oneline "origin/<base>..HEAD"`. When it prints any commit, the base branch holds unpushed local commits that a branch from `origin/<base>` would leave out. Create no branch, and stop and report those commits.
@@ -38,7 +38,7 @@ Use this skill only after implementation and validation are complete and the use
   2. Its instruction files are the paths matching `(^|/)CLAUDE(\.fragment)?\.md$`, `(^|/)AGENTS\.md$`, `(^|/)agents/[^/]+\.md$`, `(^|/)skills/.+\.md$` or `(^|/)references/[^/]+\.md$` (the same patterns as `.github/scripts/check_changelog.py`). With none, skip the rest of this check.
   3. With any, both are required: (a) CHANGELOG.md is in that list and `git diff --cached "$(git merge-base origin/<base> HEAD)" -- CHANGELOG.md` adds at least one line starting `- `; (b) the user's OK is on record, as a `USER OK: "<the user's words>"` line in the brief or a `user-ok.md` file in the run dir the brief names.
   4. If either is missing, commit and push nothing and return `NEEDS_CHANGELOG_OK` with the instruction file list and which of (a) and (b) is missing. Leave the staging as it is.
-- Ship check, after staging and the Ruff fixes and before any commit or push. Run `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py check --repo <repo> --files <approved files>` as one bare call, adding `--run-dir <run dir>` when the brief names one. It hashes the working tree, which matches the staging for the approved files at this point.
+- Ship check, after staging and the Ruff fixes and before any commit or push. Run `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py check --repo <repo> --files <approved files>` as one bare call, adding `--run-dir <run dir>` and `--label <label>` when the brief names them. It hashes the working tree, which matches the staging for the approved files at this point.
   - `SHIP_RECORD_OK` or `SHIP_RECORD_EXEMPT`: continue.
   - `NEEDS_SHIP_CONFIRM`: unless the brief has a `SHIP ANYWAY: "<the user's words>"` line, commit and push nothing, leave the staging as it is, and return `NEEDS_SHIP_CONFIRM` with the script's line.
   - Files a hook rewrites during a commit retry are not checked again.

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Build a code-review prompt for a change made outside forge. It never runs the review.
 # Usage: build-code-review-prompt.sh --run-dir <runDir> --repo-dir <repo> [--label change]
-#        [--plan <file>] [--base <ref>]
+#        [--plan <file>] [--base <ref>] [--exclude <glob>]...
 # Without --base the diff is the uncommitted change against HEAD. --base <branch> diffs the whole branch
 # from its merge-base with origin/<branch>; any other base (HEAD~1, a sha) diffs from its merge-base with HEAD.
 # The plan defaults to <runDir>/plan.md; a missing plan file means the change has no plan.
 
 set -euo pipefail
 
-RUN_DIR="" REPO_DIR="" LABEL="change" PLAN_FILE="" BASE=""
+RUN_DIR="" REPO_DIR="" LABEL="change" PLAN_FILE="" BASE="" EXCLUDES=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --run-dir) RUN_DIR="$2"; shift 2 ;;
@@ -16,11 +16,12 @@ while [ $# -gt 0 ]; do
         --label) LABEL="$2"; shift 2 ;;
         --plan) PLAN_FILE="$2"; shift 2 ;;
         --base) BASE="$2"; shift 2 ;;
+        --exclude) EXCLUDES+=("$2"); shift 2 ;;
         *) echo "error: unknown flag: $1" >&2; exit 64 ;;
     esac
 done
 [ -n "$RUN_DIR" ] && [ -n "$REPO_DIR" ] || {
-    echo "usage: build-code-review-prompt.sh --run-dir <d> --repo-dir <r> [--label change] [--plan <f>] [--base <ref>]" >&2
+    echo "usage: build-code-review-prompt.sh --run-dir <d> --repo-dir <r> [--label change] [--plan <f>] [--base <ref>] [--exclude <glob>]..." >&2
     exit 64
 }
 [[ "$LABEL" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "error: --label must match [A-Za-z0-9_-]+" >&2; exit 64; }
@@ -43,6 +44,7 @@ OUT="$RUN_DIR/code-review-prompt-$LABEL.md"
 
 context_args=(context --run-dir "$RUN_DIR" --repo "$REPO_DIR" --plan-file "$PLAN_FILE" --label "$LABEL")
 [ -z "$BASE" ] || context_args+=(--base "$BASE")
+for pattern in ${EXCLUDES[@]+"${EXCLUDES[@]}"}; do context_args+=(--exclude "$pattern"); done
 facts="$(python3 "$SCRIPT_DIR/run_context.py" "${context_args[@]}")"
 error="$(jq -r '.facts.error // ""' <<<"$facts")"
 [ -z "$error" ] || { echo "error: run_context.py context: $error" >&2; exit 1; }
