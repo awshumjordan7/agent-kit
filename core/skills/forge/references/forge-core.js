@@ -327,14 +327,13 @@ const BRANCH_SCHEMA = {
 const CHECKPOINT_FILE_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
-    command: { type: 'string' },
     implementFilesChanged: { type: 'array', items: { type: 'string' } },
     context: CONTEXT_SCHEMA,
     error: { type: 'string' },
     branch: { type: 'string' },
     phases: { type: 'array', items: PHASE_ROW_SCHEMA },
   },
-  required: ['command', 'implementFilesChanged', 'context', 'error', 'branch', 'phases'],
+  required: ['implementFilesChanged', 'context', 'error', 'branch', 'phases'],
 }
 const SMOKE_RUN_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -409,9 +408,9 @@ const CHECKPOINT_SAVE_SCHEMA = factsSchema({
   type: 'object', additionalProperties: false,
   properties: {
     written: { type: 'boolean' }, path: { type: 'string' }, sha256: { type: 'string' },
-    hasScript: { type: 'boolean' }, command: { type: 'string' }, files: { type: 'integer' }, error: { type: 'string' },
+    files: { type: 'integer' }, error: { type: 'string' },
   },
-  required: ['written', 'path', 'sha256', 'hasScript', 'command', 'files', 'error'],
+  required: ['written', 'path', 'sha256', 'files', 'error'],
 })
 const PHASES_SAVE_SCHEMA = factsSchema({
   type: 'object', additionalProperties: false,
@@ -530,7 +529,7 @@ const STUBS = {
   changedFiles: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : opts.schema === CHECKPOINT_SAVE_SCHEMA
-    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), hasScript: false, command: '', files: 1, error: '' })
+    ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), files: 1, error: '' })
     : opts.schema === PHASES_SAVE_SCHEMA
     ? dryRunFacts({ written: true, phases: 0, error: '' })
     : opts.schema === LAUNCH_FACTS_SCHEMA
@@ -542,7 +541,7 @@ const STUBS = {
     : opts.schema === SMOKE_RUN_SCHEMA
     ? { passed: true, exitCode: 0, timedOut: false, command: 'true', logPath: `${PARAMS.runDir}/smoke.log`, summary: 'smoke command passed', changedPaths: [] }
     : opts.schema === CHECKPOINT_FACTS_SCHEMA
-    ? dryRunFacts({ command: 'true', implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, error: '', branch: '', phases: [] })
+    ? dryRunFacts({ implementFilesChanged: ['auth/api/client.py'], context: { files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }, error: '', branch: '', phases: [] })
     : opts.schema === PHASES_FACTS_SCHEMA
     ? dryRunFacts({ ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' })
     : opts.schema === BRANCH_SCHEMA
@@ -1066,9 +1065,8 @@ async function changedFiles() {
   return facts
 }
 
-function checkpointDocument(checkpoint, implement, context, state = {}) {
+function checkpointDocument(implement, context, state = {}) {
   return {
-    command: checkpoint.command,
     implementFilesChanged: (implement && implement.filesChanged) || [],
     context,
     ...(state.phases ? { branch: state.branch || '', phases: state.phases } : {}),
@@ -1078,27 +1076,25 @@ function checkpointDocument(checkpoint, implement, context, state = {}) {
 // checkpoint.json is written by a command from small arguments and the context file the context
 // command saved.
 async function writeCheckpoint(checkpoint) {
-  const proof = checkpoint.command ? ` --command=${shellQuote(checkpoint.command)}` : ''
   const files = checkpoint.implementFilesChanged
   // --branch makes the command read phases.json, so it is passed only for a phased run.
   const branch = checkpoint.phases ? ` --branch ${shellQuote(checkpoint.branch || '')}` : ''
-  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)}${proof}${branch} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
+  const saved = await factsCommand('save-checkpoint', `python3 ~/.claude/skills/forge/scripts/run_context.py checkpoint-save --run-dir ${shellQuote(PARAMS.runDir)}${branch} --files${files.map(file => ` ${shellQuote(file)}`).join('')}`,
     CHECKPOINT_SAVE_SCHEMA, 'Checkpoint')
   if (!saved) return false
   if (!saved.written) {
     await decide(`save-checkpoint did not write ${PARAMS.runDir}/checkpoint.json: ${saved.error || 'no error text'}`)
     return false
   }
-  if (saved.command !== checkpoint.command || saved.files !== files.length) {
-    await decide(`save-checkpoint saved a different command or file count than forge passed (command ${JSON.stringify(saved.command)}, ${saved.files} files).`)
+  if (saved.files !== files.length) {
+    await decide(`save-checkpoint saved a different file count than forge passed (${saved.files} of ${files.length} files).`)
     return false
   }
-  checkpoint.command = saved.command
   return true
 }
 
 function savedCheckpointProblem(saved) {
-  if (!saved) return 'the file could not be read'
+  if (!saved) return 'the load-checkpoint facts read failed on both attempts (a digest miss or no result; see the load-checkpoint lines in decisions.md), so the file was not checked'
   if (saved.error) return saved.error
   if (contextFailed(saved.context)) return 'context.commandSucceeded is not true'
   if (!String(saved.context.diffPath || '').endsWith('.diff')) return `context.diffPath does not end in .diff (${saved.context.diffPath || 'empty'})`
@@ -1929,7 +1925,7 @@ async function handoff(state, context) {
     },
   }
   if (state.status === 'PRE_SHIP') {
-    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: after a relaunch the data below can be empty, so keep its implementer summary and smoke result wherever the data below is empty or null. Include the implementer's summary from this data: ${JSON.stringify((state.implement && state.implement.summary) || '')}. Include the checkpoint smoke command (empty means no smoke ran): ${JSON.stringify((state.checkpoint && state.checkpoint.command) || '')}. Include the smoke result (passed, exit code, log path; null means no smoke ran): ${JSON.stringify(smokeResult(state))}. ${gateNotice}
+    return agentT('handoff', `${cleanup}Write a short pre-ship handoff at ${PARAMS.runDir}/handoff.md stating that the checkpoint completed and shipping is paused for a human decision. When ${PARAMS.runDir}/handoff.md already exists, read it first, before you overwrite it: after a relaunch the data below can be empty, so keep its implementer summary and smoke result wherever the data below is empty or null. Include the implementer's summary from this data: ${JSON.stringify((state.implement && state.implement.summary) || '')}. Include the checkpoint smoke command (empty means no smoke ran): ${JSON.stringify(state.checkpointSmokeCommand || '')}. Include the smoke result (passed, exit code, log path; null means no smoke ran): ${JSON.stringify(smokeResult(state))}. ${gateNotice}
 APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}.
 End handoff.md with a \`Next steps\` list whose first item is the checkpoint decision, then a \`Pointers\` list: plan (${PLAN}), ${PARAMS.runDir}/decisions.md, ${PARAMS.runDir}/checkpoint.json, the PR, and the branch (write "none" for a pointer that does not exist yet). Do not create or modify ${PARAMS.runDir}/STATE.md. Return the handoff path.`,
     { label: 'handoff', phase: 'Handoff', schema: HANDOFF_SCHEMA })
@@ -2296,7 +2292,7 @@ async function fullLane() {
       if (stopped(state) || PARAMS.noShip) return state
       if (PARAMS.checkpointDecision) {
         const command = PARAMS.checkpointDecision === 'smoke'
-          ? (PARAMS.smokeCommand || state.checkpoint.command)
+          ? PARAMS.smokeCommand
           : ''
         return followCheckpoint(state, PARAMS.checkpointDecision, command)
       }
@@ -2306,10 +2302,10 @@ async function fullLane() {
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      state.checkpoint = checkpointDocument({ command: '' }, state.implement, state.context, state)
+      state.checkpoint = checkpointDocument(state.implement, state.context, state)
       if (!await writeCheckpoint(state.checkpoint)) {
         state.status = 'BLOCKED'
-        await decide('Pre-ship checkpoint result could not be written; shipping was stopped.')
+        await decide('Pre-ship checkpoint was not confirmed: the save-checkpoint step failed (see the save-checkpoint lines above and checkpoint.json); shipping was stopped.')
         return state
       }
       await decide(`Pre-ship checkpoint: ${(state.context.files || []).length} changed files. Forge writes no smoke check; to run one, relaunch with checkpointDecision smoke and smokeCommand.`)
@@ -2525,7 +2521,7 @@ return {
   unstaged: state.unstaged || [],
   uncommitted: state.uncommitted,
   uncommittedError: state.uncommittedError || null,
-  command: (state.checkpoint && state.checkpoint.command) || '',
+  command: state.checkpointSmokeCommand || '',
   checkpointPath: state.checkpoint ? `${PARAMS.runDir}/checkpoint.json` : '',
   planSha256: PLAN_FACTS.sha256,
   ...(state.checkpointSmoke ? { smoke: smokeResult(state) } : {}),

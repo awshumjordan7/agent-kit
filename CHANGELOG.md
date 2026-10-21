@@ -4,6 +4,11 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-10-21
+- core/skills/forge/references/forge-core.js, core/skills/forge/scripts/run_context.py: checkpoint facts and checkpoint.json no longer carry the always-empty `command` field, which haiku echo agents filled with the command they ran, so the digest missed and forge stopped BLOCKED at the pre-ship checkpoint and on checkpoint relaunches (inbox 2026-10-20 and 2026-10-21). The unused `checkpoint-save --script/--command` path is removed.
+- core/skills/forge/references/forge-core.js: a checkpoint save or load whose facts miss now says the facts check failed, instead of "could not be read" or "could not be written".
+- core/skills/forge/SKILL.md: the smoke relaunch note says the checkpoint saves no command.
+
 ## 2026-10-20
 - core/skills/forge/scripts/codex-exec.sh: the CODEX_STARTED watch command prints the `~/.claude` spelling, so it runs as printed outside the sandbox (I-462), and the usage header names the `--inline-diff` first-line rule (I-440).
 - core/skills/forge/references/forge-core.js: every agent that runs one assigned command is told a relayed user remark about not running steps does not cancel it (I-010).

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import fnmatch
 import hashlib
 import json
@@ -681,7 +680,6 @@ _CONTEXT_DEFAULTS: dict = {
     "instructionFiles": [],
 }
 _CHECKPOINT_DEFAULTS: dict = {
-    "command": "",
     "implementFilesChanged": [],
 }
 
@@ -699,11 +697,6 @@ def _known(source: object, defaults: dict) -> dict:
     return kept
 
 
-def _shell_quote(value: str) -> str:
-    # Always quotes, as shellQuote in forge-core.js does; shlex.quote leaves safe strings bare.
-    return "'" + value.replace("'", "'\\''") + "'"
-
-
 def _read_json(path: Path) -> tuple[dict, str]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -716,26 +709,9 @@ def _read_json(path: Path) -> tuple[dict, str]:
     return document, ""
 
 
-def _smoke_script_problem(script_path: Path, context_path: Path) -> str:
-    try:
-        source = script_path.read_text(encoding="utf-8")
-        stale = script_path.stat().st_mtime_ns < context_path.stat().st_mtime_ns
-    except (OSError, UnicodeDecodeError) as exc:
-        return f"could not read {script_path}: {getattr(exc, 'strerror', None) or exc}"
-    if stale:
-        return f"{script_path} is older than {context_path}; this run's checkpoint writer did not write it"
-    try:
-        ast.parse(source)
-    except (SyntaxError, ValueError) as exc:
-        return f"{script_path} is not valid Python: {exc}"
-    return ""
-
-
 def checkpoint_save(
     run_dir: Path,
     files: list[str],
-    script: bool = False,
-    command: str = "",
     branch: str | None = None,
 ) -> dict:
     path = run_dir / "checkpoint.json"
@@ -747,23 +723,16 @@ def checkpoint_save(
     if not error and branch is not None:
         phases_document, error = _read_json(run_dir / "phases.json")
         phases = phases_document.get("phases") or []
-    if not error and script:
-        script_path = run_dir / "smoke.py"
-        error = _smoke_script_problem(script_path, context_path)
-        command = f"python3 {_shell_quote(str(script_path))}"
     facts = {
         "written": False,
         "path": str(path),
         "sha256": "",
-        "hasScript": script,
-        "command": command,
         "files": len(files),
         "error": error,
     }
     if error:
         return _checked(facts)
     document = {
-        "command": command,
         "implementFilesChanged": files,
         "branch": branch or "",
         "phases": phases,
@@ -928,8 +897,6 @@ def main() -> None:
     plan_facts_parser.add_argument("--plan-file", required=True)
     checkpoint_save_parser = subparsers.add_parser("checkpoint-save")
     checkpoint_save_parser.add_argument("--run-dir", type=Path, required=True)
-    checkpoint_save_parser.add_argument("--script", action="store_true")
-    checkpoint_save_parser.add_argument("--command", dest="save_command", default="")
     checkpoint_save_parser.add_argument("--branch")
     checkpoint_save_parser.add_argument("--files", nargs="*", default=[])
     checkpoint_facts_parser = subparsers.add_parser("checkpoint-facts")
@@ -987,8 +954,6 @@ def main() -> None:
         result = checkpoint_save(
             args.run_dir,
             args.files,
-            args.script,
-            args.save_command,
             args.branch,
         )
     elif args.command == "checkpoint-facts":
