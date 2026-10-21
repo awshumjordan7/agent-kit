@@ -5,6 +5,12 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-10-20
+- core/skills/forge/scripts/codex-exec.sh: the CODEX_STARTED watch command prints the `~/.claude` spelling, so it runs as printed outside the sandbox (I-462), and the usage header names the `--inline-diff` first-line rule (I-440).
+- core/skills/forge/references/forge-core.js: every agent that runs one assigned command is told a relayed user remark about not running steps does not cancel it (I-010).
+- core/skills/forge/references/forge-core.js, core/skills/forge/SKILL.md: triage always sees the full finding list, so on a replayed rulings resume a prior drop holds unless a ruling names that finding (I-052).
+- core/skills/forge/references/forge-core.js: the built-in design lens default matches `.tsx` only (I-468).
+- core/scripts/handoff.py, core/references/state-template.md: handoff.py moves Next entries tagged `(superseded by ...)` to STATE-archive.md and warns past 30 KB. The template keeps Goal to standing rules and tags summary lines verified or inferred (I-035, I-474). handoff.py's DONE close list now reads `## Next (...)` headings too.
+- .github: a CI workflow parses every Workflow script as the runtime does, because `node --check` passes a broken forge-core.js (I-021).
 - core/skills/forge/scripts/build-code-review-prompt.sh, core/skills/forge/references/codex-wrapper.md: with `PROVIDER codex` the script also prints the exact `codex-exec.sh` start and watch calls, so a manual review no longer starts without `--inline-diff` and wastes a Codex turn on a missing diff (inbox 2026-10-19 and 2026-10-20, entries with no I-xxx id).
 - core/skills/ship-pr/scripts/ship_record.py: the ship check passes only when the recorded code-review verdict approves (`approve` or `pass`, with an optional `REVIEW:` prefix), so a `request_changes` review no longer reads as ready to ship.
 - core/skills/forge, aisetup/profile.py, core/profile.default.json, docs/overlay.md: forge picks `quick-impl` from `fullySpecified` alone and drops the planned-source-file count and its `quickReviewThreshold` setting, which changed the role in 1 of 49 past plans.
