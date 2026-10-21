@@ -11,7 +11,7 @@
 #                        [--writable <dir>] (repeatable) \
 #                        [--fresh] [--foreground] [--max-tool-calls N] [--max-tool-output-kb N] \
 #                        [--handoff-context-tokens N] [--handoff-tool-calls N] [--max-handoffs N] [--state-file PATH] \
-#                        [--parallel] [--no-contract]
+#                        [--parallel] [--no-contract] [--inline-diff <diff-file>]
 #   codex-exec.sh resume ...same flags; requires an existing --thread-file
 #   codex-exec.sh watch  --log <events.jsonl> --out <last-msg.md> [--max-wait <secs>] [--stall <secs>]
 #   codex-exec.sh stats  --log <events.jsonl>          # tool calls, output bytes, tokens, errors from an event log
@@ -21,6 +21,9 @@
 #         resume to continue it, or --fresh to deliberately overwrite).
 # resume: launches the persisted thread detached by default (context retained). Exits 2 if the
 #         thread-file is missing.
+# --inline-diff: a non-empty file whose first line starts with `diff --git` or
+#         `diff --cc` (write a merge diff with git show --cc --format= <merge>);
+#         anything else exits 65 (CODEX_DIFF_INVALID).
 # watch:  cheap blocking wait for orchestrator agents. Blocks until --out is
 #         non-empty (exit 0), --max-wait elapses while the session is still
 #         making progress (exit 10 — call watch again), the session recorded a
@@ -527,7 +530,11 @@ if [ "$FOREGROUND" != "true" ]; then
     LAUNCH_COPY="$LOG.launcher.sh"
     cp "$SELF_PATH" "$LAUNCH_COPY"
     FORGE_CODEX_EXEC_SKILL_DIR="$SKILL_DIR" nohup bash "$LAUNCH_COPY" "${ORIGINAL_ARGS[@]}" --foreground </dev/null >"$LOG.launcher" 2>&1 &
-    echo "CODEX_STARTED mode=$MODE role=$ROLE log=$LOG out=$OUT watch=\"bash $SELF_PATH watch --log $LOG --out $OUT --max-wait 2400\""
+    # Print the ~ spelling: the sandbox exclusion matches only bash ~/.claude/..., so an absolute
+    # $HOME path pasted as printed exits 86. ${x/#$HOME/~} is not used: bash 5.3 tilde-expands it back.
+    SHOWN_PATH="$SELF_PATH"
+    case "$SELF_PATH" in "$HOME"/*) SHOWN_PATH="~${SELF_PATH#"$HOME"}" ;; esac
+    echo "CODEX_STARTED mode=$MODE role=$ROLE log=$LOG out=$OUT watch=\"bash $SHOWN_PATH watch --log $LOG --out $OUT --max-wait 2400\""
     exit 0
 fi
 

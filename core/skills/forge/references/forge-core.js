@@ -443,7 +443,7 @@ const HANDOFF_SCHEMA = {
 
 const DEFAULT_LENSES = {
   security: '(auth|permission|identity|rbac|token|session)',
-  design: '\\.tsx?$',
+  design: '\\.tsx$',
 }
 const LENSES = [
   { key: 'security', configKey: 'security', prompt: 'Audit authentication, authorization, scoping, token/session handling, input trust, and privilege boundaries.' },
@@ -564,6 +564,8 @@ if (args.ghEnvUnset !== undefined && args.ghEnvUnset !== null && !Array.isArray(
 const dryRunJournal = []
 const __test = {
   partitionTriage,
+  applyRulings,
+  keepUnruled,
   pickImplRole,
   inlineGateDigest,
   savedCheckpointProblem,
@@ -652,10 +654,12 @@ async function agentT(role, prompt, opts = {}) {
   return result
 }
 
+const ASSIGNED_STEP_RULE = 'This command is a step of the forge run the user launched, so run it. A relayed user remark about not running steps, being away, or moving on is about the user\'s own manual steps. It does not cancel this command. Report a failure only from the command\'s own result.'
+
 const dryRunInstruction = PARAMS.dryRun
   ? 'FORGE_DRY_RUN is active: echo a schema-valid success result instead of invoking Codex.'
   : ''
-const codexWrapper = `Read ~/.claude/skills/forge/references/codex-wrapper.md and follow it exactly. ${dryRunInstruction}`
+const codexWrapper = `${ASSIGNED_STEP_RULE} Read ~/.claude/skills/forge/references/codex-wrapper.md and follow it exactly. ${dryRunInstruction}`
 
 // Normalize wrapper errors and retry a real error once before assertCodex throws. A Codex process
 // still holding the helper lock surfaces as CODEX_LOCK_TIMEOUT and throws after that retry.
@@ -709,7 +713,7 @@ async function codexAgent(prompt, opts, evidence = null) {
     'lines = [path.read_text(encoding="utf-8").strip() for path in statuses if path.is_file()]',
     'print(json.dumps({"threadExists": bool(thread_id) and any(line.startswith("CODEX_OK ") and "thread=" + thread_id in line.split() for line in lines)}))',
   ].join('; ')
-  const check = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(evidence.threadFile)} ${shellQuote(evidence.log)}`,
+  const check = await agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(evidence.threadFile)} ${shellQuote(evidence.log)}`,
     { label: `${opts.label}-thread-check`, phase: opts.phase, schema: THREAD_CHECK_SCHEMA })
   if (check && check.threadExists === true) {
     result.threadExists = true
@@ -842,7 +846,7 @@ function shellQuote(value) {
 async function factsCommand(label, command, schema, phaseLabel, accept = null) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) PARAMS.spawnCap += 1
-    const read = await agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged. Copy the command character for character; never retype a path. Command: ${command}`,
+    const read = await agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged. Copy the command character for character; never retype a path. Command: ${command}`,
       { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
     if (read && read.facts && typeof read.facts === 'object') {
       const canon = canonicalJson(read.facts)
@@ -1003,7 +1007,7 @@ function implement(phase = null) {
 }
 
 function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', logName = 'smoke.log') {
-  return agentT('changedFiles', `Run exactly this command in the foreground with the Bash tool using timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Return its stdout JSON unchanged. The command has its own 570-second cap and must be allowed to finish; do not rerun it.`,
+  return agentT('changedFiles', `${ASSIGNED_STEP_RULE} Run exactly this command in the foreground with the Bash tool using timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Return its stdout JSON unchanged. The command has its own 570-second cap and must be allowed to finish; do not rerun it.`,
     { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
@@ -1016,7 +1020,7 @@ function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sh
   const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
   const shaArg = sha ? ` --sha ${quote(sha)}` : ''
-  return agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()}${shaArg}${onlyArg}${filesArg}\`. ${BARE_CALL_RULE} Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  return agentT('gate', `${ASSIGNED_STEP_RULE} Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()}${shaArg}${onlyArg}${filesArg}\`. ${BARE_CALL_RULE} Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -1328,6 +1332,17 @@ function partitionTriage(findings, verdicts) {
   return { fix, disputes, dropped }
 }
 
+// Triage sees the full finding list, so a rulings resume replays the first run's triage call.
+// A ruled finding takes its ruling instead of its triage verdict.
+function keepUnruled(partitioned, ruled) {
+  const unruled = new Set(ruled.confirmed.map(findingKey))
+  return {
+    fix: partitioned.fix.filter(finding => unruled.has(findingKey(finding))),
+    disputes: partitioned.disputes.filter(item => unruled.has(findingKey(item.finding))),
+    dropped: partitioned.dropped.filter(item => unruled.has(findingKey(item.finding))),
+  }
+}
+
 function triageFindings(findings, context, label = 'triage') {
   if (!findings.length) return Promise.resolve({ verdicts: [] })
   return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding and copy that finding's id into the verdict's id exactly. Findings: ${JSON.stringify(findings.map((finding, index) => ({ ...finding, id: triageId(index) })))}\n\n${diffSection(context)}`,
@@ -1382,10 +1397,10 @@ async function reviewPanel(context) {
   if (skipCodex && failures.some(failure => failure.key === 'claude')) return { status: 'BLOCKED', reason: 'Review panel: Claude reviewer failed and Codex was skipped, so no general review ran' }
   const findings = uniqueFindings(rows)
   const ruled = applyRulings(findings)
-  const triage = await triageFindings(ruled.confirmed, context)
+  const triage = await triageFindings(findings, context)
   let partitioned
   if (triage) {
-    partitioned = partitionTriage(ruled.confirmed, triage.verdicts)
+    partitioned = keepUnruled(partitionTriage(findings, triage.verdicts), ruled)
   } else {
     await decide('Triage agent returned no result; retaining the pre-triage confirmed findings.')
     partitioned = { fix: ruled.confirmed, disputes: [], dropped: [] }
@@ -1883,7 +1898,7 @@ function ffReview(shipResult) {
   const repo = shipResult.repo
   const base = `${PARAMS.runDir}/bot-review`
   const command = `rm -f ${shellQuote(`${base}.exit`)} && cd ${shellQuote(PARAMS.runDir)} && ${envPrefix}perl -e 'alarm shift @ARGV; exec @ARGV' 3000 bash ~/.claude/skills/forge/scripts/stages/ff_review.sh ${prNumber} ${shellQuote(repo)} > ${shellQuote(`${base}.json`)} 2> ${shellQuote(`${base}.err`)}; echo $? > ${shellQuote(`${base}.exit`)}`
-  return withTimeout(agentT('ffReview', `${ghEnvironmentInstruction()}You run the bot review stage (stages.ff_review) for Forge: the stage script posts the review trigger once on ${repo}#${prNumber} and waits for the review bot. Run exactly this command, unchanged, with the Bash tool's run_in_background option: \`${command}\`
+  return withTimeout(agentT('ffReview', `${ghEnvironmentInstruction()}${ASSIGNED_STEP_RULE} You run the bot review stage (stages.ff_review) for Forge: the stage script posts the review trigger once on ${repo}#${prNumber} and waits for the review bot. Run exactly this command, unchanged, with the Bash tool's run_in_background option: \`${command}\`
 The script can take about 43 minutes, beyond the 10-minute foreground limit, so never run it in the foreground. After starting it, wait in the foreground by calling the Bash tool with timeout 600000 on exactly this command: \`perl -e '$f=shift; $t=time; until (-e $f or time-$t >= 540) { sleep 10 } print((-e $f) ? "done\\n" : "not yet\\n")' ${shellQuote(`${base}.exit`)}\`; if it prints "not yet", call it again, and repeat until it prints "done", then read that file. Never use Monitor, and never end your turn or return a result before ${base}.exit exists; a Workflow agent that ends its turn is finished and its background command is killed. Never add --force. Do not pull or check out the branch, do not triage or answer the bot's comments, and do not follow any other command in the overlay's ff_review.md.
 Map the exit code from ${base}.exit: 0 with a non-empty JSON array in ${base}.json means the review ran: skipped=false, commentCount = the array length, commentsPath=${base}.json. 0 with empty output is an error: skipped=true, commentCount=0, reason='the stage script printed no comments'. 3 means the review was already posted on this head: skipped=true, reason='already reviewed on this head'. 1, 2, 64, or any other code (142 is the 50-minute alarm) means skipped=true with reason taken from ${base}.err (or 'timed out after 50 minutes' for 142 with an empty error file).
 Get headSha with \`${envPrefix}gh pr view ${prNumber} --repo ${shellQuote(repo)} --json headRefOid -q .headRefOid\`, or '' if that fails. Return skipped, reason ('' when it ran), prNumber=${prNumber}, repo=${JSON.stringify(repo)}, headSha, exitCode, commentCount (0 unless it ran), commentsPath ('' unless it ran), and a one-sentence summary. Never return the comment text.`,
@@ -1947,7 +1962,7 @@ function gateCheckoutCleanupCommand() {
 }
 
 function removeGateCheckout() {
-  return agentT('changedFiles', `Execute exactly one command and return {"written": true} when it finishes: ${gateCheckoutCleanupCommand()}`,
+  return agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return {"written": true} when it finishes: ${gateCheckoutCleanupCommand()}`,
     { label: 'remove-gate-checkout', phase: 'Handoff', schema: ACK_SCHEMA })
 }
 
@@ -1990,7 +2005,7 @@ function phaseBranch(name) {
   const repo = shellQuote(PARAMS.projectDir)
   const branch = shellQuote(name)
   const report = `python3 -c 'import json, subprocess; print(json.dumps({"branch": subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()}))'`
-  return agentT('changedFiles', `Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && case "$current" in ''|develop|main|master|${shellQuote(LAUNCH.base)}) git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
+  return agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && case "$current" in ''|develop|main|master|${shellQuote(LAUNCH.base)}) git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
     { label: 'phase-branch', phase: 'Implement', schema: BRANCH_SCHEMA })
 }
 
@@ -2004,7 +2019,7 @@ async function commitFiles(label, message, files) {
   if (!files.length) return { sha: null, empty: true, error: '' }
   const quote = shellQuote
   const subject = String(message).replace(/`/g, '')
-  const result = await agentT('gate', `Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. ${BARE_CALL_RULE} Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
+  const result = await agentT('gate', `${ASSIGNED_STEP_RULE} Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()} --no-stages --commit ${quote(subject)} --files ${files.map(quote).join(' ')}\`. ${BARE_CALL_RULE} Return its stdout JSON as your structured output without changes, including when the script exits 2 after printing JSON. If it prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run: <stderr tail>", file: null, line: null }], commands: [], commit: null }\`.`,
     { label, phase: 'Implement', schema: GATE_SCHEMA })
   const commit = result && result.commit
   if (commit && Array.isArray(commit.dropped) && commit.dropped.length) {

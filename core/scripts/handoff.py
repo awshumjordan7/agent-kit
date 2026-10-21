@@ -23,6 +23,8 @@ USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>] [--transcript <path
 POLL_INTERVAL_SECONDS = 1
 START_TIMEOUT_SECONDS = 20
 STATE_MAX_AGE_SECONDS = 120
+STATE_SIZE_WARN_BYTES = 30 * 1024
+ARCHIVE_NAME = "STATE-archive.md"
 GOAL_HEADING = "## Goal and standing rules"
 QUESTIONS_HEADING = "## Open questions to the user"
 NEXT_HEADING = "## Next"
@@ -37,6 +39,8 @@ SANDBOX_STOP = (
 LOG_HEADER = re.compile(r"^### (\S+) (\S+) (\S+) (\S+)(.*)$")
 RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
 ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
+NEXT_ENTRY_START = re.compile(r"^([0-9A-Za-z]+)[.)] ")
+SUPERSEDED_TAG = "(superseded by "
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -142,6 +146,139 @@ def _sections(state_text: str) -> dict[str, list[str]]:
         elif current is not None:
             sections[current].append(stripped)
     return sections
+
+
+def _is_next_heading(heading: str) -> bool:
+    return heading == NEXT_HEADING or heading.startswith(NEXT_HEADING + " ")
+
+
+def _next_sections(sections: dict[str, list[str]]) -> list[str]:
+    """Return every Next heading, including forms such as `## Next (session 14 starts here)`."""
+    return [heading for heading in sections if _is_next_heading(heading)]
+
+
+def _superseded_entries(state_text: str) -> list[tuple[int, int]]:
+    """Return [start, end) line ranges of Next entries whose first line carries the superseded tag.
+
+    An entry starts at a column-0 `<id>. ` or `<id>) ` line and runs to the next entry start
+    or heading. Lines inside ``` or ~~~ fences never start an entry or end one.
+    Indexes count lines as str.splitlines does.
+    """
+    lines = state_text.splitlines()
+    entries: list[tuple[int, int]] = []
+    start: int | None = None
+    in_next = False
+    in_fence = False
+
+    def close(end: int) -> None:
+        if start is not None and SUPERSEDED_TAG in lines[start].lower():
+            entries.append((start, end))
+
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        stripped = line.rstrip()
+        if re.match(r"^#+ ", stripped):
+            close(index)
+            start = None
+            if re.match(r"^#{1,2} ", stripped):
+                in_next = stripped.startswith("## ") and _is_next_heading(stripped)
+        elif in_next and NEXT_ENTRY_START.match(line):
+            close(index)
+            start = index
+    close(len(lines))
+    return entries
+
+
+def _archive_superseded(state_path: Path, state_text: str, dry_run: bool) -> str:
+    """Move tagged Next entries to STATE-archive.md and return the STATE.md text left.
+
+    The archive is appended before STATE.md is rewritten, so a failed append loses nothing.
+    Lines are cut from the file's own strictly decoded text, so every kept byte is unchanged.
+    """
+    if not _superseded_entries(state_text):
+        return state_text
+    try:
+        text = state_path.read_bytes().decode("utf-8")
+    except OSError as error:
+        sys.stderr.write(f"handoff.py: superseded entries not archived: cannot read {state_path}: {error}\n")
+        return state_text
+    except UnicodeDecodeError as error:
+        sys.stderr.write(
+            f"handoff.py: superseded entries not archived: {state_path} is not valid UTF-8: {error}\n"
+        )
+        return state_text
+    ranges = _superseded_entries(text)
+    if not ranges:
+        return state_text
+    lines = text.splitlines(keepends=True)
+    moved_indexes = {index for start, end in ranges for index in range(start, end)}
+    moved = "".join(lines[index] for index in sorted(moved_indexes))
+    kept = "".join(line for index, line in enumerate(lines) if index not in moved_indexes)
+    moved_bytes = len(moved.encode("utf-8"))
+    archive_path = state_path.parent / ARCHIVE_NAME
+    if dry_run:
+        sys.stdout.write(
+            f"handoff.py: would move {len(ranges)} superseded entries ({moved_bytes} bytes) "
+            f"to {ARCHIVE_NAME}\n"
+        )
+        return state_text
+    newline = "\r\n" if lines[ranges[0][0]].endswith("\r\n") else "\n"
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    block = f"{newline}## {timestamp} moved from STATE.md by handoff.py{newline}{newline}{moved}"
+    if not moved.endswith(("\n", "\r")):
+        block += newline
+    try:
+        with archive_path.open("a", encoding="utf-8", newline="") as archive:
+            archive.write(block)
+    except OSError as error:
+        sys.stderr.write(
+            f"handoff.py: superseded entries not archived: failed to append to {archive_path}: "
+            f"{error}; STATE.md left unchanged\n"
+        )
+        return state_text
+    temporary = state_path.with_name(state_path.name + ".tmp")
+    try:
+        temporary.write_bytes(kept.encode("utf-8"))
+        temporary.replace(state_path)
+    except OSError as error:
+        sys.stderr.write(
+            f"handoff.py: entries were appended to {archive_path}, but rewriting {state_path} "
+            f"failed: {error}; delete the tagged entries from STATE.md by hand\n"
+        )
+        return state_text
+    sys.stdout.write(
+        f"handoff.py: moved {len(ranges)} superseded entries ({moved_bytes} bytes) to {archive_path}\n"
+    )
+    return kept
+
+
+def _size_warning(state_text: str, sections: dict[str, list[str]]) -> str | None:
+    """Return a warning when STATE.md is over STATE_SIZE_WARN_BYTES; never refuses."""
+    size = len(state_text.encode("utf-8", errors="replace"))
+    if size <= STATE_SIZE_WARN_BYTES:
+        return None
+    section_bytes = sorted(
+        (
+            (
+                len(heading.encode("utf-8", errors="replace")) + 1
+                + sum(len(line.encode("utf-8", errors="replace")) + 1 for line in lines),
+                heading,
+            )
+            for heading, lines in sections.items()
+        ),
+        reverse=True,
+    )
+    largest = ", ".join(f"{heading} ({count} bytes)" for count, heading in section_bytes[:2])
+    tagged = len(_superseded_entries(state_text))
+    return (
+        f"handoff.py: STATE.md is {size} bytes, over the {STATE_SIZE_WARN_BYTES}-byte limit. "
+        f"Largest sections: {largest or 'none'}. Tagged Next entries left: {tagged}. "
+        "Trim it as ~/.claude/references/state-template.md says.\n"
+    )
 
 
 def _bullets(lines: list[str]) -> list[str]:
@@ -259,7 +396,8 @@ def _mow_list(sections: dict[str, list[str]], checkpoint: dict) -> str | None:
     stale = [question for question in _answered_questions(sections) if question in seen]
     done = [
         line.strip()
-        for line in sections.get(NEXT_HEADING, [])
+        for heading in _next_sections(sections)
+        for line in sections[heading]
         if re.search(r"\bDONE\b", line)
     ]
     if not stale and not done:
@@ -346,6 +484,8 @@ def _run_handoff(
     if refusal:
         sys.stderr.write(refusal)
         return 1
+    state_text = _archive_superseded(state_path, state_text, dry_run)
+    sections = _sections(state_text)
     question_bullets = _bullets(sections[QUESTIONS_HEADING])
     record["open_questions"] = sum(bullet.startswith("- [open") for bullet in question_bullets)
     run_dir = state_path.parent
@@ -356,6 +496,9 @@ def _run_handoff(
     mow = _mow_list(sections, checkpoint)
     if mow:
         sys.stdout.write(mow)
+    size_warning = _size_warning(state_text, sections)
+    if size_warning:
+        sys.stdout.write(size_warning)
     prompt = (
         f"Read {state_path} and continue from it. "
         "Read only that file to start; it points at everything else. "
