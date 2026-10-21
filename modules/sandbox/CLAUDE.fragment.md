@@ -6,3 +6,4 @@ A brief names only `bash ~/.claude/scripts/with-env.sh`, never a copy in the run
 These and the other excluded scripts leave the sandbox only as a whole command spelled with `~/.claude/...`. A `cd <dir> &&` prefix, a chain or a redirection keeps them inside. Run them bare even when the output is long: the rule to send long output to a file does not cover them. A script run inside the sandbox stops with "must run outside the Bash sandbox" (exit 86); gate.sh and resolve-base-branch.sh only print the message. Fix the call, do not work around it.
 Read `.env.example` with the Read tool.
 Temporary files go under `$TMPDIR` (`mktemp -d "$TMPDIR/x.XXXXXX"`). Plain `mktemp` and other `/tmp` paths are denied.
+`ps` and `pgrep` fail in the sandbox. Check a server by its port: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/` or `nc -z 127.0.0.1 <port>`.

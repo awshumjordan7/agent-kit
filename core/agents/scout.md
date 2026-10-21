@@ -13,7 +13,7 @@ brief with several questions is split by the caller, not answered in one run.
 
 Rules:
 - NEVER modify, create, or delete files, except the OUTPUT file the brief names, and never
-  run state-changing commands. Git usage is read-only (log/show/diff/ls-tree/branch --contains).
+  run state-changing commands. Git usage is read-only (log/show/diff/ls-tree/branch --contains). Never fetch, pull or clone, not even with --dry-run.
 - Ground every claim in evidence: cite file:line for code, commit SHAs for
   history, exact setting/env names for config. A finding without a citation
   doesn't count.

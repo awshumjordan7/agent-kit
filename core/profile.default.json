@@ -33,7 +33,7 @@
       "thresholds": {},
       "lenses": {
         "security": "(auth|permission|identity|rbac|token|session)",
-        "design": "\\.tsx?$"
+        "design": "\\.tsx$"
       },
       "ticketUrl": "",
       "repos": {"frontend": "", "backend": ""},

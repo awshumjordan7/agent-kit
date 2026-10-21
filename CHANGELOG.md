@@ -9,6 +9,12 @@ When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELO
 - core/skills/ship-pr/scripts/ship_record.py: the ship check passes only when the recorded code-review verdict approves (`approve` or `pass`, with an optional `REVIEW:` prefix), so a `request_changes` review no longer reads as ready to ship.
 - core/skills/forge, aisetup/profile.py, core/profile.default.json, docs/overlay.md: forge picks `quick-impl` from `fullySpecified` alone and drops the planned-source-file count and its `quickReviewThreshold` setting, which changed the role in 1 of 49 past plans.
 - core/skills/forge: the launch check refuses a launch whose `forgeConfig.gate` differs from the forge.config.json that gate.sh reads, so the gate forge plans for is the gate that runs.
+- core/CLAUDE.md: AskUserQuestion hides text written before it in the same turn, so findings and answers go out in their own turn first (I-475).
+- modules/sandbox/CLAUDE.fragment.md: `ps` and `pgrep` fail in the sandbox, so a server is checked by its port with curl or nc (I-441).
+- core/agents/scout.md: scouts never fetch, pull or clone, `--dry-run` included, after a scout ran `git fetch --dry-run` (I-461).
+- core/agents/worker.md: a `with-env.sh` job puts the done-file chain inside its quoted `bash -c` argument, and the wait also stops on the exit line when with-env.sh fails first (I-463).
+- core/skills/forge/SKILL.md: a passing pre-ship smoke goes straight on to ship and review, and a failing one stops BLOCKED (I-451).
+- core/profile.default.json: the design lens default matches `.tsx` only, so backend `.ts` changes no longer start a design audit (I-468).
 - aisetup/compose.py, README.md, docs/modules/codex.md: backup pruning also keeps the newest 10 runs (restic-style keep-last OR keep-within), so an install after more than 30 days without one no longer deletes every restore point.
 - core/CLAUDE.md, core/skills/forge/references/code-standards.md, modules/playwright: rules stated twice are merged into one statement each (17 installed lines, no rule dropped), and the playwright fragment's rule moves into core's web-and-browser line.
 - core/scripts/doctor.py, core/templates/doctor.toml.tmpl: a `claude-md-size` WARN when the installed CLAUDE.md passes `thresholds.claude_md_max_lines` (default 250).
