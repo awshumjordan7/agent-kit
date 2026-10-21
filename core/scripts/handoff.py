@@ -161,18 +161,25 @@ def _superseded_entries(state_text: str) -> list[tuple[int, int]]:
     """Return [start, end) line ranges of Next entries whose first line carries the superseded tag.
 
     An entry starts at a column-0 `<id>. ` or `<id>) ` line and runs to the next entry start
-    or heading. Indexes count lines as str.splitlines does.
+    or heading. Lines inside ``` or ~~~ fences never start an entry or end one.
+    Indexes count lines as str.splitlines does.
     """
     lines = state_text.splitlines()
     entries: list[tuple[int, int]] = []
     start: int | None = None
     in_next = False
+    in_fence = False
 
     def close(end: int) -> None:
         if start is not None and SUPERSEDED_TAG in lines[start].lower():
             entries.append((start, end))
 
     for index, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         stripped = line.rstrip()
         if re.match(r"^#+ ", stripped):
             close(index)
