@@ -1705,6 +1705,7 @@ async function fixLoop(opts) {
       round, appliedBy,
       spec: (spec.items || []).filter(entry => openById.has(entry.id)).map(entry => ({ id: keyOf(entry.id), action: entry.action, change: entry.change, reason: entry.reason })),
       unknownIds: (spec.items || []).filter(entry => !openById.has(entry.id)).map(entry => String(entry.id).slice(0, 200)),
+      unknownApplyIds: [...new Set([...(spec.apply?.fixed || []), ...(spec.apply?.couldNotFix || []), ...(spec.apply?.results || []).map(entry => entry.id)])].filter(id => !openById.has(id)).map(id => String(id).slice(0, 200)),
       cannotDecide: [...cannotDecide].map(keyOf),
       gatePassed: record.gatePassed,
       stillOpen: [...reviewOpen.keys()],
