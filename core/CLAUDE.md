@@ -148,8 +148,10 @@ Use an MCP server when it answers the question more directly than local files or
 
 - Direct and concise. No filler.
 - When uncertain, ask rather than assume. Mid-implementation, first finish every part that
-  doesn't depend on the answer, then put the question at the end of the turn that delivers
-  that progress.
+  doesn't depend on the answer. Then ask the question in plain text, at the end of the turn that
+  delivers that progress.
+- AskUserQuestion hides any text written before it in the same turn. Send findings, tables and
+  answers in a turn of their own first. Facts the answer needs go inside the question or its options.
 - Keep at most 3 decisions open with the user at a time. Restate each in one plain line, with enough
   context to answer it without scrolling back.
 - When the user grants auto mode or says not to wait, end a turn only when nothing can move without them
