@@ -1,0 +1,13 @@
+name: workflow-js
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Workflow scripts parse as async function bodies
+        run: node .github/scripts/check_workflow_js.mjs
