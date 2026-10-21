@@ -2,13 +2,14 @@
 """Record the plan answer and review verdicts for a change made outside forge, and check them at ship time.
 
 Usage:
-  ship_record.py answer --repo <repo> --run-dir <d> --plan yes|no [--plan-path <p>]
+  ship_record.py answer --repo <repo> --run-dir <d> --plan yes|no [--plan-path <p>] [--label <l>]
   ship_record.py snapshot --repo <repo> --run-dir <d> --label <l> --files-json <context json>
   ship_record.py verdict --repo <repo> --run-dir <d> --stage plan-review|review
                  --provider <p> --model <m> --verdict <v> [--label <l>]
-  ship_record.py check --repo <repo> [--run-dir <d>] --files <path>...
+  ship_record.py check --repo <repo> [--run-dir <d>] [--label <l>] --files <path>...
 
-The record is <run-dir>/ship-record.json. `check` prints one line and exits 0:
+The record is <run-dir>/ship-record.json, with one slot per --label (default "change") under "labels".
+`check` prints one line and exits 0:
 SHIP_RECORD_EXEMPT, SHIP_RECORD_OK, or NEEDS_SHIP_CONFIRM with what is missing.
 Exit codes for the other subcommands: 0 written, 1 a file could not be hashed, 2 bad input.
 """
@@ -28,6 +29,8 @@ RECORD_NAME = "ship-record.json"
 # Forge's build and review lanes write these into their run dir. They are exempt because they ship
 # before their own review. Implement-mode run dirs hold none of them, so those runs are not exempt.
 FORGE_MARKERS = ("phases.json", "context-gate.json", "checkpoint.json")
+# Before per-label slots these keys sat at the top level, for one change per run dir.
+LEGACY_KEYS = ("planAnswer", "planPath", "planReview", "review")
 
 
 def _run_dir(value: str) -> Path:
@@ -42,6 +45,25 @@ def _load(run_dir: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _slots(record: dict) -> dict:
+    """Return record["labels"], moving a pre-label record's top-level keys into the slot its review names."""
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    legacy = {key: record.pop(key) for key in LEGACY_KEYS if key in record}
+    if legacy:
+        review = legacy.get("review")
+        label = review.get("label") if isinstance(review, dict) and isinstance(review.get("label"), str) else "change"
+        labels.setdefault(label, legacy)
+    record["labels"] = labels
+    return labels
+
+
+def _slot(record: dict, label: str) -> dict:
+    labels = _slots(record)
+    slot = labels.get(label) if isinstance(labels.get(label), dict) else {}
+    labels[label] = slot
+    return slot
 
 
 def _save(run_dir: Path, record: dict) -> None:
@@ -102,11 +124,12 @@ def files_sha(repo: Path, files: list[str]) -> str:
 def cmd_answer(args: argparse.Namespace, repo: Path) -> int:
     run_dir = _run_dir(args.run_dir)
     record = _load(run_dir)
-    record["planAnswer"] = args.plan
+    slot = _slot(record, args.label)
+    slot["planAnswer"] = args.plan
     if args.plan_path:
-        record["planPath"] = str(Path(args.plan_path).expanduser().resolve())
+        slot["planPath"] = str(Path(args.plan_path).expanduser().resolve())
     else:
-        record["planPath"] = str(run_dir / "plan.md") if args.plan == "yes" else None
+        slot["planPath"] = str(run_dir / "plan.md") if args.plan == "yes" else None
     _save(run_dir, record)
     return 0
 
@@ -143,8 +166,9 @@ def cmd_verdict(args: argparse.Namespace, repo: Path) -> int:
         "model": _one_line(args.model),
         "verdict": _one_line(args.verdict),
     }
+    slot = _slot(record, args.label)
     if args.stage == "plan-review":
-        record["planReview"] = entry
+        slot["planReview"] = entry
     else:
         snapshots = record.get("snapshots") if isinstance(record.get("snapshots"), dict) else {}
         snapshot = snapshots.get(args.label)
@@ -153,7 +177,7 @@ def cmd_verdict(args: argparse.Namespace, repo: Path) -> int:
             entry.update(files=snapshot.get("files", []), filesSha=snapshot["filesSha"], stale=False)
         else:
             entry.update(files=[], filesSha=None, stale=True)
-        record["review"] = entry
+        slot["review"] = entry
     _save(run_dir, record)
     return 0
 
@@ -181,10 +205,11 @@ def cmd_check(args: argparse.Namespace, repo: Path) -> int:
             return 0
         if run_dir.is_dir():
             record = _load(run_dir)
-    plan_answer = record.get("planAnswer")
+    slot = _slot(record, args.label)
+    plan_answer = slot.get("planAnswer")
     plan = {"yes": "yes", "no": "declined"}.get(plan_answer, "not asked")
-    plan_review = _verdict(record.get("planReview")) or "missing"
-    review_entry = record.get("review")
+    plan_review = _verdict(slot.get("planReview")) or "missing"
+    review_entry = slot.get("review")
     review = _verdict(review_entry)
     current = False
     if review is not None:
@@ -208,6 +233,7 @@ def main() -> int:
     answer = sub.add_parser("answer")
     answer.add_argument("--plan", required=True, choices=("yes", "no"))
     answer.add_argument("--plan-path")
+    answer.add_argument("--label", default="change")
 
     snapshot = sub.add_parser("snapshot")
     snapshot.add_argument("--label", required=True)
@@ -222,6 +248,7 @@ def main() -> int:
 
     check = sub.add_parser("check")
     check.add_argument("--files", required=True, nargs="+")
+    check.add_argument("--label", default="change")
 
     for name, command in sub.choices.items():
         command.add_argument("--repo", required=True)
