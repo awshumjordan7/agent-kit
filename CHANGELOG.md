@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-10-28
+- core/skills/forge/scripts/codex-exec.sh, core/skills/forge/references/cost-controls.md, core/skills/forge/references/codex-wrapper.md: `--inline-diff` inlines the whole review diff instead of silently cutting it at 160,000 characters, which left Codex reviewing part of a large change while reporting success. A diff over the role's `maxInlineDiffChars` (default 750,000) stops with `CODEX_DIFF_INVALID` before Codex starts (inbox 2026-10-28).
+
 ## 2026-10-21
 - core/skills/forge/references/forge-core.js, core/skills/forge/scripts/run_context.py: checkpoint facts and checkpoint.json no longer carry the always-empty `command` field, which haiku echo agents filled with the command they ran, so the digest missed and forge stopped BLOCKED at the pre-ship checkpoint and on checkpoint relaunches (inbox 2026-10-20 and 2026-10-21). The unused `checkpoint-save --script/--command` path is removed.
 - core/skills/forge/references/forge-core.js: a checkpoint save or load whose facts miss now says the facts check failed, instead of "could not be read" or "could not be written".
