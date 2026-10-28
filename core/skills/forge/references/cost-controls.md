@@ -26,8 +26,12 @@ never as a silent hang.
   `file:line` the recon cites (capped, default 60 KB). The main session adds numbered checks, each
   a claim with a `file:line`. The configured reviewer verifies; it does not explore.
 - Code review writes the uncapped diff to the run directory. `codex-exec.sh --inline-diff`
-  validates and inlines up to 160,000 characters for Codex; Claude reviewers read the file in
-  ranges of at most 2,000 lines.
+  validates the diff and inlines all of it for Codex, up to the role's `maxInlineDiffChars`
+  (default 750,000 characters, about 278,000 tokens at 2.7 characters per token, which leaves
+  room for the brief, output and tool reads in gpt-6.1-sol's 475,000 usable tokens). A larger
+  diff stops with `CODEX_DIFF_INVALID` before Codex starts; review it in parts. The limit is per
+  send: a resumed review thread already holds its earlier prompts. Claude reviewers read the
+  file in ranges of at most 2,000 lines.
 - Sessions run one at a time (`.state/session.lock`); `--parallel` only when the user asks.
 - The "out of credits" error kills that session at once with `CODEX_NO_CREDITS`; after billing
   is fixed, a later start can retry normally.
