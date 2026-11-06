@@ -6,6 +6,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -41,6 +42,10 @@ RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
 ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
 NEXT_ENTRY_START = re.compile(r"^([0-9A-Za-z]+)[.)] ")
 SUPERSEDED_TAG = "(superseded by "
+APP_ENV = ("WORKFLOW_MAXXING_SOCKET", "WORKFLOW_MAXXING_PTY", "WORKFLOW_MAXXING_TOKEN")
+APP_DEADLINE_SECONDS = 5
+# The app refuses these session names only after it has replied ok, so check them before sending.
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -97,6 +102,71 @@ def _open_ghostty_tab(cwd: Path, input_text: str) -> subprocess.CompletedProcess
         capture_output=True,
         text=True,
     )
+
+
+def _app_env() -> tuple[str, str, str] | None:
+    values = tuple(os.environ.get(name, "") for name in APP_ENV)
+    return values if all(values) else None
+
+
+def _app_launch_refusal(session_name: str, cwd: Path) -> str | None:
+    if not session_name or session_name.startswith("-") or CONTROL_CHARS.search(session_name):
+        return (
+            f"handoff.py: workflow-maxxing cannot start a session named {session_name!r}: "
+            "it is empty, starts with '-' or has control characters; pick another name\n"
+        )
+    if not cwd.is_absolute() or not cwd.is_dir():
+        return f"handoff.py: workflow-maxxing needs an existing absolute folder as cwd, not {cwd}\n"
+    return None
+
+
+def _remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError(f"no reply within {APP_DEADLINE_SECONDS}s")
+    return left
+
+
+def _open_in_app(app: tuple[str, str, str], session_name: str, cwd: Path, prompt: str) -> str | None:
+    """Ask the workflow-maxxing app to start the successor in this pane; return the error, or None on ok."""
+    socket_path, pty, token = app
+    request = {
+        "v": 1,
+        "type": "open-successor",
+        "pty": pty,
+        "token": token,
+        "name": session_name,
+        "cwd": str(cwd),
+        "prompt": prompt,
+        "permissionMode": "bypassPermissions",
+    }
+    deadline = time.monotonic() + APP_DEADLINE_SECONDS
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(_remaining(deadline))
+            client.connect(socket_path)
+            client.settimeout(_remaining(deadline))
+            client.sendall((json.dumps(request) + "\n").encode())
+            reply = b""
+            while b"\n" not in reply:
+                client.settimeout(_remaining(deadline))
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                reply += chunk
+    except OSError as error:
+        return str(error) or type(error).__name__
+    if not reply.strip():
+        return "the app closed the socket without a reply"
+    try:
+        answer = json.loads(reply.split(b"\n", 1)[0])
+    except ValueError as error:
+        return f"unreadable reply: {error}"
+    if isinstance(answer, dict) and answer.get("ok") is True:
+        return None
+    if isinstance(answer, dict) and isinstance(answer.get("error"), str):
+        return answer["error"]
+    return f"unexpected reply: {reply.decode(errors='replace').strip()}"
 
 
 def _open_windows_terminal_tab(
@@ -516,7 +586,8 @@ def _run_handoff(
     run_yourself = f"run this command yourself: {manual_command}"
     distro = os.environ.get("WSL_DISTRO_NAME", "")
     on_wsl = sys.platform == "linux" and bool(distro) and shutil.which("wt.exe") is not None
-    if sys.platform != "darwin" and not on_wsl:
+    app = _app_env()
+    if app is None and sys.platform != "darwin" and not on_wsl:
         sys.stderr.write(f"handoff.py: no terminal tab opener for this platform; {run_yourself}\n")
         return 1
     try:
@@ -530,7 +601,18 @@ def _run_handoff(
             f"(pids {sorted(existing_pids)}); pick a new name or stop that session\n"
         )
         return 1
-    if sys.platform == "darwin":
+    if app is not None:
+        refusal = _app_launch_refusal(session_name, cwd)
+        if refusal:
+            sys.stderr.write(refusal)
+            return 1
+        error = _open_in_app(app, session_name, cwd, prompt)
+        if error:
+            sys.stderr.write(
+                f"handoff.py: workflow-maxxing did not open the successor: {error}; {run_yourself}\n"
+            )
+            return 1
+    elif sys.platform == "darwin":
         if _screen_locked():
             sys.stderr.write(
                 "handoff.py: the screen is locked, so Ghostty cannot open a tab; "

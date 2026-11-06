@@ -1,0 +1,100 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/workflow_maxxing_status.py",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}
