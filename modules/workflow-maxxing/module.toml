@@ -5,7 +5,3 @@ depends = []
 requires = []
 platforms = ["darwin"]
 settings_fragment = "settings.fragment.json"
-
-[[files]]
-src = "hooks/workflow_maxxing_status.py"
-dest = "~/.claude/hooks/workflow_maxxing_status.py"

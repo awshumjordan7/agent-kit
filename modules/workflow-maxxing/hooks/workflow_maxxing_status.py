@@ -49,9 +49,9 @@ def main() -> int:
     token = os.environ.get("WORKFLOW_MAXXING_TOKEN")
     if not socket_path or not pty or not token:
         return 0
-    deadline = time.monotonic() + DEADLINE_SECONDS
     try:
         payload = json.load(sys.stdin)
+        deadline = time.monotonic() + DEADLINE_SECONDS
         if not isinstance(payload, dict):
             return 0
         event = _text(payload, "hook_event_name")
