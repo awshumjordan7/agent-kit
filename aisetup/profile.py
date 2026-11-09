@@ -47,13 +47,14 @@ FORGE_KEYS = {
     "repos",
     "ghEnvUnset",
 }
+# Forge reads only provider; model and effort stay valid so older profiles still load.
 ROLE_KEYS = {"provider", "model", "effort"}
 # Forge ignores sandbox and qa_login; they stay valid so older profiles still load.
 STAGE_KEYS = {"sandbox", "ff_review", "qa_login"}
 DOCTOR_KEYS = {"repo_roots", "codex", "known_repos", "metrics"}
 CODEX_DOCTOR_KEYS = {"agents_md", "include_sections", "exclude_sections", "exclude_bullets"}
 METRICS_KEYS = {"since", "until", "timezone", "transcripts"}
-FORGE_ROLE_NAMES = ("impl", "quick-impl", "review", "plan-review")
+FORGE_ROLE_NAMES = ("review", "plan-review")
 OVERRIDE_KEYS = ("agents", "forge")
 # Saved without layer defaults so a later data change is not shadowed by an old saved copy.
 PRUNED_KEYS = (*OVERRIDE_KEYS, "doctor")
@@ -134,15 +135,12 @@ def validate_profile(profile: dict[str, Any]) -> None:
     for name, value in roles.items():
         role = _table(value, f"profile.forge.roles.{name}")
         _unknown(role, ROLE_KEYS, f"profile.forge.roles.{name}")
-        if not all(isinstance(role.get(key), str) for key in ROLE_KEYS):
+        if not isinstance(role.get("provider"), str) or not all(
+            isinstance(field, str) for field in role.values()
+        ):
             raise ProfileError(f"profile.forge.roles.{name} fields must be strings")
         if role["provider"] not in {"claude", "codex"}:
             raise ProfileError(f"profile.forge.roles.{name}.provider must be claude or codex")
-        if name in ("impl", "quick-impl") and role["provider"] != "claude":
-            raise ProfileError(
-                f"profile.forge.roles.{name}: Codex implementation was removed; "
-                f"set roles.{name}.provider to claude"
-            )
     stages = _table(forge.get("stages"), "profile.forge.stages")
     _unknown(stages, STAGE_KEYS, "profile.forge.stages")
     if not all(isinstance(key, str) and isinstance(value, bool) for key, value in stages.items()):

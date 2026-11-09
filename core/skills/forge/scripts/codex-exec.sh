@@ -344,21 +344,15 @@ if [ -z "$ROLE" ]; then
     ROLE="$(resolve_config '.codex.defaultRole')"
     ROLE="${ROLE:-review}"
 fi
+# Codex settings live in codex.roles.<role> only; top-level roles.<role> holds just the provider.
 role_cfg() { resolve_config ".codex.roles[\"$ROLE\"].$1"; }
-# Top-level roles.<role> holds Codex settings only when its provider is codex; a Claude-provider
-# role (plan-review) carries a Claude model name there, so its Codex settings live in codex.roles.
 ROLE_PROVIDER="$(resolve_config ".roles[\"$ROLE\"].provider")"
-if [ "$ROLE_PROVIDER" = codex ]; then
-    role_runtime_cfg() { resolve_config ".roles[\"$ROLE\"].$1"; }
-else
-    role_runtime_cfg() { role_cfg "$1"; }
-fi
 if [ -n "$ROLE_PROVIDER" ] && [ "$ROLE_PROVIDER" != codex ] && [ -z "$(resolve_config ".codex.roles[\"$ROLE\"] | objects | \"y\"")" ]; then
     echo "error: role '$ROLE' has provider $ROLE_PROVIDER and no codex.roles entry in $CONFIG_FILE" >&2
     exit 65
 fi
-[ -n "$MODEL" ]  || MODEL="$(role_runtime_cfg model)"
-[ -n "$EFFORT" ] || EFFORT="$(role_runtime_cfg effort)"
+[ -n "$MODEL" ]  || MODEL="$(role_cfg model)"
+[ -n "$EFFORT" ] || EFFORT="$(role_cfg effort)"
 [ -n "$MAX_TOOL_CALLS" ] || MAX_TOOL_CALLS="$(role_cfg maxToolCalls)"
 [ -n "$MAX_TOOL_OUTPUT_KB" ] || MAX_TOOL_OUTPUT_KB="$(role_cfg maxToolOutputKB)"
 [ -n "$HANDOFF_CONTEXT_TOKENS" ] || HANDOFF_CONTEXT_TOKENS="$(role_cfg handoffContextTokens)"
