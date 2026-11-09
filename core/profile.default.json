@@ -32,7 +32,7 @@
       "stages": {"ff_review": false},
       "thresholds": {},
       "lenses": {
-        "security": "(auth|permission|identity|rbac|token|session)",
+        "security": "(auth|permission|identity|rbac|token|session|secret|crypt|password|oauth|jwt|tenant)",
         "design": "\\.tsx$"
       },
       "ticketUrl": "",

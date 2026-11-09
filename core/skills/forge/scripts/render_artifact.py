@@ -34,7 +34,7 @@ KNOWN_KEYS = {
         "accessRules", "planReview", "pending", "links", "next", "decision",
     },
     "qa": {
-        "summary", "ticket", "shortTitle", "date", "tier", "branch", "sandboxId", "previewUrl",
+        "summary", "ticket", "shortTitle", "date", "branch", "sandboxId", "previewUrl",
         "rootLoginEmail", "rootLoginPassword", "adminCreds", "users", "jiraTickets", "links",
         "contextItems", "qaItems", "handoff", "groups", "explore", "round",
     },
@@ -782,7 +782,6 @@ def qa_slots(data: dict, _markdown: str, base: Path) -> tuple[dict[str, str], di
         "TICKET": esc(data.get("ticket", "")),
         "SHORT_TITLE": esc(data.get("shortTitle", "")),
         "DATE": esc(data.get("date", "")),
-        "TIER": esc(data.get("tier", "")),
         "BRANCH": esc(data.get("branch", "")),
         "SANDBOX_ID": esc(data.get("sandboxId", "")),
         "PREVIEW_URL": esc(data.get("previewUrl", "")),
