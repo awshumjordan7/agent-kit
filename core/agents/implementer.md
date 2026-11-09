@@ -1,6 +1,6 @@
 ---
-name: claude-implementer
-description: Implements Forge plan segments when a role selects the Claude provider.
+name: implementer
+description: Implements Forge plan segments and fix rounds.
 model: opus
 effort: high
 maxTurns: 150

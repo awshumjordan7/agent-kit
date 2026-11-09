@@ -113,7 +113,7 @@ def validate_profile(profile: dict[str, Any]) -> None:
     for name, value in agents.items():
         agent = _table(value, f"profile.agents.{name}")
         _unknown(agent, AGENT_KEYS, f"profile.agents.{name}")
-        if not isinstance(agent.get("model"), str):
+        if "model" in agent and not isinstance(agent["model"], str):
             raise ProfileError(f"profile.agents.{name}.model must be a string")
         if (
             "maxTurns" in agent
