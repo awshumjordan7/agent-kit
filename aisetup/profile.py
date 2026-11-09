@@ -385,6 +385,12 @@ def unknown_name_warnings(profile: dict[str, Any], known_agents: set[str]) -> li
         for name in profile.get("forge", {}).get("roles", {})
         if name not in FORGE_ROLE_NAMES
     )
+    warnings.extend(
+        f"agent-kit: warning: profile.forge.roles.{name} sets model or effort, which forge ignores; "
+        f"set them in profile.forge.codex.roles.{name}"
+        for name, role in profile.get("forge", {}).get("roles", {}).items()
+        if isinstance(role, dict) and ("model" in role or "effort" in role)
+    )
     return warnings
 
 

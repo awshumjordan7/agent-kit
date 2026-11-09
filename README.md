@@ -85,7 +85,8 @@ The local layer lives at `~/.ai-setup/local` and is never committed. Put machine
 URLs, and permission changes there.
 
 The kit's default session is Fable at high effort. A user without Fable access sets `"model"` in
-`~/.ai-setup/local/settings.fragment.json`, for example `{"model": "opus"}`.
+`~/.ai-setup/local/settings.fragment.json`, for example `{"model": "opus"}`. That user also sets `"model": "opus"`
+under `agents.reviewer`, `agents.judge` and `agents.security-advisor` in the profile, because those agent files use Fable.
 
 ## Forge lanes
 

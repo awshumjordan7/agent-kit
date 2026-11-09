@@ -50,11 +50,15 @@ def _frontmatter(text: str) -> dict[str, str]:
 def agent_files() -> dict[str, dict[str, str]]:
     agents: dict[str, dict[str, str]] = {}
     try:
-        for path in (Path.home() / ".claude" / "agents").glob("*.md"):
-            fields = _frontmatter(path.read_text(encoding="utf-8"))
-            agents[fields.get("name") or path.stem] = fields
-    except (OSError, UnicodeError, RuntimeError):
+        paths = list((Path.home() / ".claude" / "agents").glob("*.md"))
+    except (OSError, RuntimeError):
         return {}
+    for path in paths:
+        try:
+            fields = _frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            continue
+        agents[fields.get("name") or path.stem] = fields
     return agents
 
 
@@ -102,7 +106,7 @@ def main() -> int:
     if not isinstance(subagent_type, str):
         return 0
 
-    if tool_input.get("model") or agents.get(subagent_type, {}).get("model"):
+    if tool_input.get("model") or not agents or agents.get(subagent_type, {}).get("model"):
         return 0
 
     print(

@@ -45,7 +45,7 @@ def recommendations(profile: dict[str, Any], metrics: dict[str, Any]) -> list[di
                     }
                 )
         models = Counter(stats.get("models", {}))
-        if models:
+        if models and current.get("model"):
             proposed_model, count = models.most_common(1)[0]
             current_model = current.get("model")
             proposed = (
