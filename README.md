@@ -84,6 +84,9 @@ See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook
 URLs, and permission changes there.
 
+The kit's default session is Fable at high effort. A user without Fable access sets `"model"` in
+`~/.ai-setup/local/settings.fragment.json`, for example `{"model": "opus"}`.
+
 ## Forge lanes
 
 | Lane | Purpose |

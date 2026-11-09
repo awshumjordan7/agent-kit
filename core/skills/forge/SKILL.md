@@ -66,13 +66,12 @@ Launch check (`run_context.py launch-facts`, agent label `launch-facts`): a fres
 
 ## Providers
 
-Top-level `roles` selects provider, model, and effort:
+Top-level `roles` selects the provider only:
 
-- `impl` and `quick-impl`: implementation;
 - `review`: final review and verification;
 - `plan-review`: pre-implementation review.
 
-Implementation always uses the `claude-implementer` agent; `provider` must be `claude` for `impl` and `quick-impl`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex budgets remain under `codex.roles`.
+Each agent file sets its own model and effort: `implementer` writes the code, and `reviewer`, `triage`, `judge`, `shipper` and `security-advisor` run their stages. Forge passes a model and effort only for roles with no agent file (`lens`, `handoff`, `codexWrap`, `ffReview`, `gate`, `runCommand`), from one table in `forge-core.js`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex model, effort and budgets live under `codex.roles`.
 
 To run an already confirmed plan, follow `references/implement-mode.md`.
 
@@ -90,7 +89,7 @@ Core ships optional stages disabled. An overlay may supply and enable `stages.ff
 - In `full` mode, the local gate must pass before shipping. In a multi-phase run, every phase gate and the final gate over all run files must pass before the pre-ship checkpoint.
 - Every build run pauses at `PRE_SHIP` after the gate, and forge writes no smoke check.
 - Every review finding is triaged against current code before a fixer runs.
-- Gate failures and review findings go through one capped fix loop of at most `MAX_FIX_ROUNDS` (2) rounds. Each round, an Opus decider turns the open items into an exact fix spec and applies a small fix set itself (at most about 20 lines across at most 2 files, no new functions or control flow); otherwise a medium-effort applier applies only that spec without re-triage. In gate mode `full` every applied gate-failure round re-runs the full gate, and only a passing gate closes a gate item. Applied review-fix rounds run lint, typecheck and Semgrep only; when fixes were applied, one full gate (`gate-fix-final`) then runs on the final state, and a failing final gate runs up to 2 more fix rounds with a full gate each. A separate verifier re-checks only the review items fixed that round and cannot add findings.
+- Gate failures and review findings go through one capped fix loop of at most `MAX_FIX_ROUNDS` (2) rounds. Each round, the `judge` agent (the decider) turns the open items into an exact fix spec and applies a small fix set itself (at most about 20 lines across at most 2 files, no new functions or control flow); otherwise the `implementer` agent, at its file's effort, applies only that spec without re-triage. In gate mode `full` every applied gate-failure round re-runs the full gate, and only a passing gate closes a gate item. Applied review-fix rounds run lint, typecheck and Semgrep only; when fixes were applied, one full gate (`gate-fix-final`) then runs on the final state, and a failing final gate runs up to 2 more fix rounds with a full gate each. A separate verifier re-checks only the review items fixed that round and cannot add findings.
 - The loop stops when nothing is open, BLOCKED `fix-cap` at the round cap, or BLOCKED `no-progress` when a round leaves as many open review items and failing gate checks as before, or a closed item reopens, or BLOCKED `verify-null` when the scoped verifier returns no usable result. BLOCKED results carry the open items, rounds, and decider notes. Review items the decider rejects, defers, or cannot decide go to a human ruling (`needsJudge`) and never close silently. Before a needsJudge stop, forge commits and pushes the fixes it applied when the run has a shipped branch, the loop is not blocked and the gate passes; otherwise the return lists the uncommitted paths. The return also carries the decision lines. Resume with `args.rulings` entries `{ id?, file?, line?, decision: drop | apply | rescope, instruction? }`, matched by id first, then file and line, and applied at the start of every round. Triage always sees the full finding list. On a resume that replays the journal, the first triage keeps its earlier verdicts, so a prior drop holds unless a ruling names that finding. Without a replay, triage runs live and can differ. The resume uses the args in `launch-args.json` plus `rulings`, changing nothing else. In the launching session, pass `resumeFromRunId` to replay cached stages; a new session replays them only after the journal is carried over with `workflow_carry.py` (see step 6).
 - Review diffs are files. Codex receives the validated file through `--inline-diff`; Claude reviewers use the Read tool in ranges of at most 2,000 lines.
 - Shippers stage exactly the changed-file context and never force-push without approval.

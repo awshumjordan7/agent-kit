@@ -4,6 +4,14 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-09
+- core/agents (all files), core/profile.default.json: the agent file is the only place for an agent's model and effort, and the values move to the 2026-11-09 list for Fable 5.2.
+- core/agents/implementer.md, core/hooks/context_guard.py, forge docs: `claude-implementer` is renamed to `implementer`.
+- core/agents/security-advisor.md: new read-only security agent on Fable at xhigh, used by hand and by the forge security lens.
+- core/skills/forge/references/forge-core.js: tiers and the `impl` and `quick-impl` roles are removed, forge passes a model only for roles with no agent file, `changedFiles` is renamed `runCommand`, and the security and dx-audit lens patterns are fixed.
+- core/settings.fragment.json: the kit default session is Fable at high effort.
+- core/hooks/require_agent_model.py, core/CLAUDE.md: an agent call names an agent type and passes a model only to override the agent file.
+
 ## 2026-10-21
 - core/skills/forge/references/forge-core.js, core/skills/forge/scripts/run_context.py: checkpoint facts and checkpoint.json no longer carry the always-empty `command` field, which haiku echo agents filled with the command they ran, so the digest missed and forge stopped BLOCKED at the pre-ship checkpoint and on checkpoint relaunches (inbox 2026-10-20 and 2026-10-21). The unused `checkpoint-save --script/--command` path is removed.
 - core/skills/forge/references/forge-core.js: a checkpoint save or load whose facts miss now says the facts check failed, instead of "could not be read" or "could not be written".

@@ -4,9 +4,9 @@ For a `plan.md` that's already been written and confirmed (by a previous forge r
 hand, or by another session). No investigation, no plan review, no review panel — just
 strict, phase-by-phase execution with a gate after each phase.
 
-**Code is written by the `roles.impl` provider, not by this session.** Read `roles.impl` from
-`~/.claude/skills/forge/forge.config.json`. The old implement mode ran everything in-session
-on the top-level model; that was the most expensive path in the skill.
+**Code is written by the `implementer` agent, not by this session.** Its agent file sets the
+model and effort. The old implement mode ran everything in-session on the top-level model; that
+was the most expensive path in the skill.
 
 ## Steps
 
@@ -25,10 +25,11 @@ on the top-level model; that was the most expensive path in the skill.
      "implement only this phase; do not touch later phases". In gate mode `full`, add "run the
      tests named in the plan for this phase". Never "read plan.md".
    - Add "progress file: `<runDir>/impl-progress-<n>.md`" to the prompt and
-     spawn the `claude-implementer` agent with the role's `model` and that prompt. When it
+     spawn the `implementer` agent with that prompt and no `model`. When it
      returns `PARTIAL`, spawn it again with the same prompt plus a `## Continuation` section that
      names that progress file; allow at most 2 continuations, then stop the phase.
-   - Send one `worker` order with `model: "haiku"`:
+   - Send one `worker` order with `model: "haiku"`, because the order only runs the gate command,
+     the same job forge's `gate` role does on Haiku:
      - gate mode `full`:
        `gate.sh --repo <repo> --run-dir <runDir> --label phase-<n> --files <changed> --commit "<msg>"`.
        It runs tests and static checks, then commits only on a pass.
@@ -36,7 +37,7 @@ on the top-level model; that was the most expensive path in the skill.
        `gate.sh --repo <repo> --run-dir <runDir> --label phase-<n> --no-stages --files <changed> --commit "<msg>"`.
        It runs no tests and commits.
    - A failed gate sends its output back to the implementer (a new
-     `claude-implementer` turn) and re-sends the order. A phase gets at
+     `implementer` turn) and re-sends the order. A phase gets at
      most `MAX_FIX_ROUNDS` (2) fix rounds; then the phase stops. Never skip a gate to reach the
      next phase.
 5. After the last phase: `git status --porcelain` and a one-screen summary per phase
@@ -49,7 +50,6 @@ on the top-level model; that was the most expensive path in the skill.
 - Not reviewed. Use `forge review` afterwards if the change warrants it. The run is not exempt
   from ship-pr's ship check: it returns NEEDS_SHIP_CONFIRM until a code review is recorded (the
   plan-question rules in CLAUDE.md), or until the shipper is relaunched with `SHIP ANYWAY`.
-- Not the build lane. It differs on purpose in two ways:
-  - It gates the working tree and commits on a pass; the build lane commits first and then
-    gates the SHA.
-  - It always uses `roles.impl`, because a plan run this way is a full plan.
+- Not the build lane. It differs on purpose in one way: it gates the working tree and commits on
+  a pass; the build lane commits first and then gates the SHA. Both use the `implementer` agent at
+  its file's model and effort.

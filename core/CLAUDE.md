@@ -28,8 +28,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 
 - **Routing.** A small, fully specified fix of up to three files (nothing left to decide): the main session
   makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: forge,
-  whose `claude-implementer` agent writes the code. The `shipper` always commits and pushes. The main session never edits code otherwise.
-- **Plan question.** Before any code change outside forge (a main-session edit, a `worker`, or a `claude-implementer`
+  whose `implementer` agent writes the code. The `shipper` always commits and pushes. The main session never edits code otherwise.
+- **Plan question.** Before any code change outside forge (a main-session edit, a `worker`, or an `implementer`
   spawn), ask once with AskUserQuestion: "Draft a plan for this change?" Recommend Yes when the change touches
   more than 3 files or changes behavior. Otherwise recommend No. Forge runs skip this, because forge plans and reviews itself.
   - With either answer, the change gets its own run dir: `<workflow dir>/<YYYY-MM-DD>-<slug>/`. `<workflow dir>` is the
@@ -55,7 +55,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`.
 - **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.
 - **No cap on sub-agents; batch them.** When more than one sub-agent would run at the same time, run them
-  as one Workflow (each `agent()` sets model and effort) instead of separate Agent spawns. Size each scout
+  as one Workflow instead of separate Agent spawns. Each `agent()` call names an agent type, or sets model and
+  effort when it has none. Size each scout
   brief to about 6-7 sources or 40 tool calls.
 - **Sub-agents wait in the foreground.** A sub-agent that ends its turn is finished, and its background jobs are killed.
   So it starts a long job in the background writing a done-file (`<cmd>; echo $? > <file>`). Then it re-runs one
@@ -192,6 +193,6 @@ Use an MCP server when it answers the question more directly than local files or
 
 ## Model Routing (Sub-Agents)
 
-Each agent's model and effort live in its frontmatter (`~/.claude/agents/*.md`). The `require_agent_model` hook lists them when it blocks. Prefer the custom agents: the hook also rejects `general-purpose` and `claude` outside forge-core.
-**Every sub-agent gets an explicit `model`.** Built-in agent types and Workflow `agent()` calls otherwise inherit the session model.
+The agent file (`~/.claude/agents/*.md`) is the one place for an agent's model and effort. A call names the agent type and passes `model` only to override the file. The `require_agent_model` hook lists the agents when it blocks. Prefer the custom agents: the hook also rejects `general-purpose` and `claude` outside forge-core.
+A built-in agent type has no file, so its call passes `model`. A Workflow `agent()` call with no agent type sets model and effort. Without them, both inherit the session model.
 Codex CLI (`codex exec`) runs only forge's review roles; role models live in `~/.claude/skills/forge/forge.config.json`, per `~/.claude/skills/forge/references/cost-controls.md`; never hard-code them elsewhere.
