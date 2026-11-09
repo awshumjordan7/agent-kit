@@ -1,8 +1,9 @@
 # Codex
 
 Disabled by default. Installs the Codex collaboration contract and configuration under `~/.codex`. Forge review and
-plan review run through Codex when their role's provider is `codex`; implementation always uses the `claude-implementer` agent.
-Enabling the module sets `roles.plan-review` to Codex `gpt-6.1-sol` at xhigh effort; without it plan review stays on Claude Opus at xhigh.
+plan review run through Codex when their role's provider is `codex`; implementation always uses the `implementer` agent.
+Enabling the module sets the `roles.plan-review` provider to `codex`, which runs on `gpt-6.1-sol` at xhigh effort from
+`codex.roles.plan-review`. Without it plan review uses provider `claude` and runs as the `reviewer` agent, on Fable at xhigh.
 
 Codex reads its global `AGENTS.md` only from `$CODEX_HOME` (default `~/.codex`). Install, update, and doctor's
 `codex-agents-sync` check always use `~/.codex/AGENTS.md`. The old `doctor.codex.agents_md` profile setting still

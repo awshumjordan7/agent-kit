@@ -15,42 +15,20 @@ export const meta = {
   ],
 }
 
-const TIERS = {
-  fable: {
-    implementer: { model: 'opus', effort: 'high' },
-    reviewer: { model: 'fable', effort: 'high' },
-    triage: { model: 'fable', effort: 'high' },
-    decider: { model: 'opus', effort: 'high' },
-    applier: { model: 'opus', effort: 'medium' },
-    codexWrap: { model: 'sonnet', effort: 'low' },
-    gate: { model: 'haiku', effort: 'low' },
-    ffReview: { model: 'sonnet', effort: 'low' },
-    lens: { model: 'sonnet', effort: 'high' },
-    shipper: { model: 'sonnet', effort: 'low' },
-    handoff: { model: 'sonnet', effort: 'low' },
-    changedFiles: { model: 'haiku', effort: 'low' },
-  },
-  opus: {
-    implementer: { model: 'opus', effort: 'high' },
-    reviewer: { model: 'fable', effort: 'high' },
-    triage: { model: 'opus', effort: 'high' },
-    decider: { model: 'opus', effort: 'high' },
-    applier: { model: 'opus', effort: 'medium' },
-    codexWrap: { model: 'sonnet', effort: 'low' },
-    gate: { model: 'haiku', effort: 'low' },
-    ffReview: { model: 'sonnet', effort: 'low' },
-    lens: { model: 'sonnet', effort: 'high' },
-    shipper: { model: 'sonnet', effort: 'low' },
-    handoff: { model: 'sonnet', effort: 'low' },
-    changedFiles: { model: 'haiku', effort: 'low' },
-  },
+// Model and effort for roles with no agent file of their own. Every other role names its agent
+// file through agentType, and that file's frontmatter sets the model and effort.
+// ffReview borrows the shipper agent type, so its entry overrides the shipper file's model.
+const ROLE_SETTINGS = {
+  lens: { model: 'opus', effort: 'high' },
+  handoff: { model: 'opus', effort: 'high' },
+  codexWrap: { model: 'haiku', effort: 'low' },
+  ffReview: { model: 'sonnet', effort: 'low' },
+  gate: { model: 'haiku', effort: 'low' },
+  runCommand: { model: 'haiku', effort: 'low' },
 }
 
-const ROLE_MAP = {
-  implementer: ['impl', 'quick-impl'],
-  applier: ['quick-impl'],
-  reviewer: ['review'],
-}
+// Agent types whose empty result gets one retry on Opus at the agent file's effort.
+const RETRY_AGENT_TYPES = ['reviewer', 'judge', 'security-advisor']
 
 const requestedLane = args.lane || 'build'
 const canonicalLane = ['quick', 'dev'].includes(requestedLane) ? 'build' : requestedLane
@@ -64,7 +42,6 @@ const PARAMS = {
   criteria: Array.isArray(args.criteria)
     ? args.criteria
     : typeof args.criteria === 'string' ? args.criteria.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : [],
-  tier: TIERS[args.tier] ? args.tier : 'opus',
   noShip: args.noShip === true,
   spawnCap: Number.isInteger(args.spawnCap) && args.spawnCap >= 1 ? args.spawnCap : 32,
   rulings: Array.isArray(args.rulings) ? args.rulings : null,
@@ -441,18 +418,14 @@ const HANDOFF_SCHEMA = {
 }
 
 const DEFAULT_LENSES = {
-  security: '(auth|permission|identity|rbac|token|session)',
+  security: '(auth|permission|identity|rbac|token|session|secret|crypt|password|oauth|jwt|tenant)',
   design: '\\.tsx$',
 }
 const LENSES = [
-  { key: 'security', configKey: 'security', prompt: 'Audit authentication, authorization, scoping, token/session handling, input trust, and privilege boundaries.' },
-  { key: 'dx-audit', paths: /(views?|serializers?|urls?|routes?|clients?|api)\//i, skill: 'dx-audit' },
+  { key: 'security', configKey: 'security', agentType: 'security-advisor', prompt: 'Audit authentication, authorization, scoping, token/session handling, input trust, and privilege boundaries.' },
+  { key: 'dx-audit', paths: /(^|\/)(views?|serializers?|urls?|routes?|clients?|api)(\/|\.py$)/i, skill: 'dx-audit' },
   { key: 'design-audit', configKey: 'design', skill: 'design-audit' },
 ]
-
-function pickImplRole(lane, fullySpecified) {
-  return fullySpecified ? 'quick-impl' : 'impl'
-}
 
 function repoName(repo) {
   return String(repo || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
@@ -513,6 +486,7 @@ const STUBS = {
   },
   applier: opts => STUBS.implementer(opts),
   lens: () => ({ verdict: 'approve', score: 5, findings: [] }),
+  securityLens: () => STUBS.lens(),
   gate: opts => {
     if (String(opts.label).startsWith('commit-')) {
       return { passed: true, failures: [], commands: [], skipped: ['lint', 'typecheck', 'migrations', 'tests', 'semgrep'], commit: { sha: dryRunSha(opts.label), error: '', dropped: [] } }
@@ -526,7 +500,7 @@ const STUBS = {
     ? { written: true }
     : { branch: `${PARAMS.ticket}-dry-run`, prUrl: 'https://example.invalid/pr/1', prNumber: 1, repo: PARAMS.repo || 'owner/repo' },
   ffReview: () => ({ skipped: false, reason: '', prNumber: 1, repo: PARAMS.repo || 'owner/repo', headSha: dryRunSha('bot-review'), exitCode: 0, commentCount: 1, commentsPath: `${PARAMS.runDir}/bot-review.json`, summary: 'dry-run bot review' }),
-  changedFiles: opts => opts.schema === ACK_SCHEMA
+  runCommand: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
     : opts.schema === CHECKPOINT_SAVE_SCHEMA
     ? dryRunFacts({ written: true, path: `${PARAMS.runDir}/checkpoint.json`, sha256: dryRunSha('checkpoint'), files: 1, error: '' })
@@ -565,7 +539,6 @@ const __test = {
   partitionTriage,
   applyRulings,
   keepUnruled,
-  pickImplRole,
   inlineGateDigest,
   savedCheckpointProblem,
   sandboxAllowed,
@@ -584,12 +557,6 @@ function journal(label) {
   if (PARAMS.dryRun) dryRunJournal.push({ role: 'event', label, prompt: '' })
 }
 
-function configRoleForTier(tierRole) {
-  const mapped = ROLE_MAP[tierRole] || []
-  if (tierRole === 'implementer') return pickImplRole(PARAMS.lane, PARAMS.fullySpecified)
-  return mapped[0] || null
-}
-
 function configuredRole(name) {
   return (FORGE_CONFIG && FORGE_CONFIG.roles && FORGE_CONFIG.roles[name]) || null
 }
@@ -598,11 +565,13 @@ function configuredStage(name) {
   return Boolean(FORGE_CONFIG && FORGE_CONFIG.stages && FORGE_CONFIG.stages[name])
 }
 
-function tierProfile(tierRole) {
-  const fallback = TIERS[PARAMS.tier][tierRole]
-  const override = configuredRole(configRoleForTier(tierRole))
-  if (!override || (override.provider && override.provider !== 'claude')) return fallback
-  return { ...fallback, model: override.model || fallback.model, effort: override.effort || fallback.effort }
+// A role in ROLE_SETTINGS gets that model and effort. Any other role must name an agentType,
+// and the runtime then uses that agent file's model and effort.
+function agentCallOpts(role, opts) {
+  const settings = ROLE_SETTINGS[role]
+  if (settings) return { ...opts, model: settings.model, effort: settings.effort }
+  if (opts.agentType) return { ...opts }
+  throw new Error(`forge role ${role} has no agentType and no ROLE_SETTINGS entry`)
 }
 
 async function agentT(role, prompt, opts = {}) {
@@ -616,12 +585,8 @@ async function agentT(role, prompt, opts = {}) {
     }
     return null
   }
-  const forceTier = opts.forceTier === true
-  const profile = forceTier ? TIERS[PARAMS.tier][role] : tierProfile(role)
-  if (!profile) throw new Error(`unknown tier role: ${role}`)
+  const callOpts = agentCallOpts(role, opts)
   spawnCount++
-  const { forceTier: _forceTier, ...agentOpts } = opts
-  const callOpts = { ...agentOpts, model: profile.model, effort: profile.effort }
   if (PARAMS.dryRun) {
     dryRunJournal.push({ role, label: opts.label || role, prompt })
     return STUBS[role](opts)
@@ -633,17 +598,17 @@ async function agentT(role, prompt, opts = {}) {
     if (!String(error && error.message).includes('without calling StructuredOutput')) throw error
     await decide(`${role} ended without StructuredOutput (turn cap?): ${error.message}`)
   }
-  if (result === null && profile.model === 'fable' && !forceTier) {
+  if (result === null && RETRY_AGENT_TYPES.includes(opts.agentType)) {
     if (spawnCount >= PARAMS.spawnCap - 2) {
       capBlocked = true
-      await decide(`${role} returned null on Fable; the Opus fallback was not started because the spawn cap was reached.`)
+      await decide(`${role} (${opts.agentType}) returned no result; the Opus retry was not started because the spawn cap was reached.`)
       return null
     }
-    await decide(`${role} returned null on Fable; retrying once with Opus high.`)
+    await decide(`${role} (${opts.agentType}) returned no result; retrying once on Opus at the agent file's effort.`)
     spawnCount++
-    const fallback = role === 'reviewer' ? { model: 'opus', effort: 'xhigh' } : TIERS.opus[role]
     try {
-      result = await runtimeAgent(prompt, { ...callOpts, model: fallback.model, effort: fallback.effort, label: `${opts.label || role}-opus-fallback` })
+      // Passing model without effort keeps the agent file's effort.
+      result = await runtimeAgent(prompt, { ...callOpts, model: 'opus', label: `${opts.label || role}-opus-fallback` })
     } catch (error) {
       if (!String(error && error.message).includes('without calling StructuredOutput')) throw error
       await decide(`${role} ended without StructuredOutput (turn cap?): ${error.message}`)
@@ -712,7 +677,7 @@ async function codexAgent(prompt, opts, evidence = null) {
     'lines = [path.read_text(encoding="utf-8").strip() for path in statuses if path.is_file()]',
     'print(json.dumps({"threadExists": bool(thread_id) and any(line.startswith("CODEX_OK ") and "thread=" + thread_id in line.split() for line in lines)}))',
   ].join('; ')
-  const check = await agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(evidence.threadFile)} ${shellQuote(evidence.log)}`,
+  const check = await agentT('runCommand', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged: python3 -c ${shellQuote(script)} ${shellQuote(evidence.threadFile)} ${shellQuote(evidence.log)}`,
     { label: `${opts.label}-thread-check`, phase: opts.phase, schema: THREAD_CHECK_SCHEMA })
   if (check && check.threadExists === true) {
     result.threadExists = true
@@ -806,11 +771,6 @@ async function loadForgeConfig() {
     repos: { ...defaults.repos, ...((result && result.repos) || {}) },
     gate: { ...defaults.gate, ...((result && result.gate) || {}) },
   }
-  for (const name of ['impl', 'quick-impl']) {
-    if (((FORGE_CONFIG.roles || {})[name] || {}).provider === 'codex') {
-      throw new Error(`forge.config.json: Codex implementation was removed; set roles.${name}.provider to claude`)
-    }
-  }
 }
 
 function configuredGateEntry() {
@@ -845,7 +805,7 @@ function shellQuote(value) {
 async function factsCommand(label, command, schema, phaseLabel, accept = null) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) PARAMS.spawnCap += 1
-    const read = await agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged. Copy the command character for character; never retype a path. Command: ${command}`,
+    const read = await agentT('runCommand', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged. Copy the command character for character; never retype a path. Command: ${command}`,
       { label: attempt === 1 ? label : `${label}-retry`, phase: phaseLabel, schema })
     if (read && read.facts && typeof read.facts === 'object') {
       const canon = canonicalJson(read.facts)
@@ -1002,11 +962,11 @@ function implement(phase = null) {
   const scope = phaseScope(phase)
   const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
   return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Report live-dependent capabilities under unverified. Set error only when the work failed; put notes, workarounds and skipped checks in summary or unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
-    { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'claude-implementer' }, progressFile)
+    { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'implementer' }, progressFile)
 }
 
 function smokeRun(command, label = 'checkpoint-smoke', phase = 'Checkpoint', logName = 'smoke.log') {
-  return agentT('changedFiles', `${ASSIGNED_STEP_RULE} Run exactly this command in the foreground with the Bash tool using timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Return its stdout JSON unchanged. The command has its own 570-second cap and must be allowed to finish; do not rerun it.`,
+  return agentT('runCommand', `${ASSIGNED_STEP_RULE} Run exactly this command in the foreground with the Bash tool using timeout=600000: \`python3 ~/.claude/skills/forge/scripts/run_context.py smoke-run --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --command ${shellQuote(command)} --log-name ${shellQuote(logName)}\`. Return its stdout JSON unchanged. The command has its own 570-second cap and must be allowed to finish; do not rerun it.`,
     { label, phase, schema: SMOKE_RUN_SCHEMA })
 }
 
@@ -1057,7 +1017,7 @@ function stopped(state) {
   return state.needsJudge || state.status === 'BLOCKED' || state.status === 'READY_FOR_HUMAN' || state.status === 'PRE_SHIP'
 }
 
-async function changedFiles() {
+async function collectContext() {
   const base = LAUNCH.base ? ` --base ${shellQuote(LAUNCH.base)}` : ''
   const facts = await factsCommand('changed-files', `python3 ~/.claude/skills/forge/scripts/run_context.py context --run-dir ${shellQuote(PARAMS.runDir)} --repo ${shellQuote(PARAMS.projectDir)} --plan-file ${shellQuote(PLAN)} --label gate${base}${localOnlyFlags()}`,
     CONTEXT_FACTS_SCHEMA, 'Review')
@@ -1270,10 +1230,12 @@ function claudeReview(context) {
 
 function lensReview(lens, context) {
   const skill = lens.skill
-    ? `If ~/.claude/skills/${lens.skill}/SKILL.md exists, read it and every lenses/*.md beneath that skill and apply them. If absent, fall back to a generic ${lens.key} audit.`
+    ? `Read every ~/.claude/skills/${lens.skill}/lenses/*.md file and apply those lenses to the diff. Skip the ${lens.skill} skill's live steps (browser, preview, Datadog, sandbox): review the diff only. If that lenses folder is absent, do a generic ${lens.key} review of the diff.`
     : lens.prompt
-  return agentT('lens', reviewerPrompt(`${lens.key} lens`, `${skill} Report only ${lens.key} concerns.`, context),
-    { label: `lens-${lens.key}`, phase: 'Review', schema: REVIEW_SCHEMA })
+  const role = lens.agentType ? 'securityLens' : 'lens'
+  const opts = { label: `lens-${lens.key}`, phase: 'Review', schema: REVIEW_SCHEMA }
+  if (lens.agentType) opts.agentType = lens.agentType
+  return agentT(role, reviewerPrompt(`${lens.key} lens`, `${skill} Report only ${lens.key} concerns.`, context), opts)
 }
 
 function uniqueFindings(rows) {
@@ -1424,7 +1386,7 @@ async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
   const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
   const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${gateScriptInstruction()} ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
-    { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'claude-implementer' })
+    { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'implementer' })
   return result || null
 }
 
@@ -1442,7 +1404,7 @@ ${JSON.stringify(explanations)}
 
 FIX DIFF
 ${diff}`,
-  { label, phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer', forceTier: true }), REVIEW_TIMEOUT_MS, label)
+  { label, phase: 'Fix', schema: SCOPED_VERIFY_SCHEMA, agentType: 'reviewer' }), REVIEW_TIMEOUT_MS, label)
 }
 
 async function unresolvedAfterVerification(items, verify, label = 'verify-review') {
@@ -1872,7 +1834,7 @@ async function syncBeforeJudge(state) {
     return
   }
   state.fixSync.ran = true
-  const context = await changedFiles()
+  const context = await collectContext()
   if (contextFailed(context) || !context.diffValid) {
     await decide(`Fixes stayed unpushed on ${branch} until ${waiting}: changed-file collection failed before ship sync (${(context && context.error) || 'review diff invalid'}).`)
     return
@@ -1967,7 +1929,7 @@ function gateCheckoutCleanupCommand() {
 }
 
 function removeGateCheckout() {
-  return agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return {"written": true} when it finishes: ${gateCheckoutCleanupCommand()}`,
+  return agentT('runCommand', `${ASSIGNED_STEP_RULE} Execute exactly one command and return {"written": true} when it finishes: ${gateCheckoutCleanupCommand()}`,
     { label: 'remove-gate-checkout', phase: 'Handoff', schema: ACK_SCHEMA })
 }
 
@@ -2010,7 +1972,7 @@ function phaseBranch(name) {
   const repo = shellQuote(PARAMS.projectDir)
   const branch = shellQuote(name)
   const report = `python3 -c 'import json, subprocess; print(json.dumps({"branch": subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()}))'`
-  return agentT('changedFiles', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && case "$current" in ''|develop|main|master|${shellQuote(LAUNCH.base)}) git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
+  return agentT('runCommand', `${ASSIGNED_STEP_RULE} Execute exactly one command and return its stdout JSON unchanged: cd ${repo} && current=$(git branch --show-current) && case "$current" in ''|develop|main|master|${shellQuote(LAUNCH.base)}) git switch -c ${branch} >/dev/null 2>&1 || git switch -c ${branch}-$(date +%s) >/dev/null ;; esac && ${report}`,
     { label: 'phase-branch', phase: 'Implement', schema: BRANCH_SCHEMA })
 }
 
@@ -2151,7 +2113,7 @@ async function phasedImplement(state) {
         await decide(`Phase ${run.lastCommittedPhase} adopted as the last committed phase from its recorded sha ${rowSha.slice(0, 12)}; phases.json named ${saved.lastCommittedPhase ? `Phase ${saved.lastCommittedPhase}` : 'no committed phase'}.`)
       }
     }
-    const context = await changedFiles()
+    const context = await collectContext()
     if (contextFailed(context)) {
       state.status = 'BLOCKED'
       await decide(`Changed-file collection failed while resuming the phase loop: ${(context && context.error) || 'agent returned null'}`)
@@ -2247,8 +2209,6 @@ async function phasedImplement(state) {
 
 async function fullLane() {
   phase('Implement')
-  const implementationRole = pickImplRole(PARAMS.lane, PARAMS.fullySpecified)
-  if (!PARAMS.checkpointDecision) await decide(`Implementation role selected: ${implementationRole} (fullySpecified ${PARAMS.fullySpecified}).`)
   if (PHASED && !PARAMS.checkpointDecision) {
     await decide(configuredGateMode() === 'none'
       ? `Plan has ${PHASES.length} phases (${PHASES.map(item => item.id).join(', ')}); each is committed on its own, and gate mode none runs no gates.`
@@ -2305,7 +2265,7 @@ async function fullLane() {
           : ''
         return followCheckpoint(state, PARAMS.checkpointDecision, command)
       }
-      state.context = await changedFiles()
+      state.context = await collectContext()
       if (contextFailed(state.context)) {
         state.status = 'BLOCKED'
         await decide(`Changed-file collection failed before checkpoint: ${(state.context && state.context.error) || 'agent returned null'}`)
@@ -2330,7 +2290,7 @@ async function fullLane() {
       }
       // Fresh, not the checkpoint's saved context: that one predates any later localOnly change.
       PARAMS.spawnCap += 1
-      state.context = await changedFiles()
+      state.context = await collectContext()
       if (contextFailed(state.context)) {
         state.status = 'BLOCKED'
         await decide(`Changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`)
@@ -2351,14 +2311,14 @@ async function fullLane() {
       phase('Review')
       if (stopped(state)) return state
       if (state.ship) {
-        state.context = await changedFiles()
+        state.context = await collectContext()
         if (contextFailed(state.context)) {
           state.status = 'BLOCKED'
           await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}`)
           return state
         }
       }
-      state.context = state.context || await changedFiles()
+      state.context = state.context || await collectContext()
       state.review = await reviewPanel(state.context)
       if (state.review.status === 'BLOCKED') {
         state.status = 'BLOCKED'
@@ -2387,7 +2347,7 @@ async function fullLane() {
         await syncBeforeJudge(state)
       }
       if (!state.convergence.blocked && !state.convergence.needsJudge && state.convergence.fixesApplied && state.ship) {
-        state.context = await changedFiles()
+        state.context = await collectContext()
         if (contextFailed(state.context) || !state.context.diffValid) {
           state.status = 'BLOCKED'
           await decide(`Changed-file collection failed before ship sync: ${(state.context && state.context.error) || 'review diff invalid'}`)
@@ -2459,7 +2419,7 @@ async function fullLane() {
 async function reviewLane() {
   await decide('Review lane skipped Implement, standalone Gate, and Ship stages.')
   phase('Review')
-  const context = await changedFiles()
+  const context = await collectContext()
   if (contextFailed(context)) {
     await decide(`Changed-file collection failed; review inputs are unavailable: ${(context && context.error) || 'agent returned null'}`)
     return { status: 'BLOCKED', context: context || {}, review: null, convergence: null, ship: null, gate: null, implement: null }

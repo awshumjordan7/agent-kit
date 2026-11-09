@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: every Agent tool call must carry an explicit model, and
-hand-written general-purpose/claude sub-agent calls are not allowed.
+"""PreToolUse guard: every hand-written Agent tool call must name a custom agent
+type, and that agent's file must set a model unless the call passes one.
 
-Why: forge-core.js sets `model` from its role profile on every agent() call it
-makes, and those calls always carry `label`/`phase`/`schema`/`effort` in
-`tool_input`. A call missing all of those is a hand-written Agent invocation
-outside forge-core, which is exactly the case that has drifted from "every
-sub-agent gets an explicit model" in the past -- an omitted `model` silently
-inherits the session model instead of the role-appropriate one. Each agent's
-model lives in its frontmatter (~/.claude/agents/*.md); the block message lists
-them.
+Why: an Agent call with no model and no agent file model silently inherits the
+session model. Each agent's model and effort live in its frontmatter
+(~/.claude/agents/*.md), so a call that names such an agent needs no `model`;
+`model` on the call is an override. forge-core.js's own agent() calls always
+carry `label`/`phase`/`schema`/`effort` in `tool_input` and are not checked.
+general-purpose/claude calls outside forge-core are blocked. The block message
+lists the agent files.
 
 Fail-open by design: any unexpected input or parse error exits 0 (allow). This is a routing nudge, not a security
 boundary.
@@ -23,13 +22,14 @@ from pathlib import Path
 
 # forge-core.js's own agent() calls always carry one of these in tool_input.
 # A call missing all of them is not a Workflow-runtime call and is subject to
-# the general-purpose/model checks below.
+# the agent-type and model checks below.
 FORGE_CORE_KEYS = ("label", "phase", "schema", "effort")
 
+MENU_LEAD = "Pass subagent_type; the agent file supplies the model and effort, so pass model only to override it."
 STATIC_AGENT_MENU = (
-    "Pass model and subagent_type. Choices: scout (opus; reading and judgment), "
+    f"{MENU_LEAD} Choices: scout (opus; reading and judgment), "
     "worker (opus; mechanical edits and tests), locator (haiku; where-is lookups), "
-    "shipper (sonnet; commit, push, PR), browser (sonnet; browser QA)."
+    "shipper (opus; commit, push, PR), browser (opus; browser QA)."
 )
 
 
@@ -47,17 +47,29 @@ def _frontmatter(text: str) -> dict[str, str]:
     return fields
 
 
-def agent_menu() -> str:
-    entries: list[str] = []
+def agent_files() -> dict[str, dict[str, str]]:
+    agents: dict[str, dict[str, str]] = {}
     try:
-        for path in (Path.home() / ".claude" / "agents").glob("*.md"):
+        paths = list((Path.home() / ".claude" / "agents").glob("*.md"))
+    except (OSError, RuntimeError):
+        return {}
+    for path in paths:
+        try:
             fields = _frontmatter(path.read_text(encoding="utf-8"))
-            entries.append(f"{fields.get('name') or path.stem} ({fields.get('model') or 'inherit'})")
-    except (OSError, UnicodeError, RuntimeError):
+        except (OSError, UnicodeError):
+            continue
+        agents[fields.get("name") or path.stem] = fields
+    return agents
+
+
+def agent_menu(agents: dict[str, dict[str, str]]) -> str:
+    if not agents:
         return STATIC_AGENT_MENU
-    if not entries:
-        return STATIC_AGENT_MENU
-    return f"Pass model and subagent_type. Choices: {', '.join(sorted(entries))}."
+    entries = [
+        f"{name} ({fields.get('model') or 'inherit'}, {fields.get('effort') or 'session effort'})"
+        for name, fields in sorted(agents.items())
+    ]
+    return f"{MENU_LEAD} Choices: {', '.join(entries)}."
 
 
 def main() -> int:
@@ -82,21 +94,27 @@ def main() -> int:
     if any(key in tool_input for key in FORGE_CORE_KEYS):
         return 0
 
-    model_value = tool_input.get("model")
-    if not model_value:
-        print(f"Blocked by require_agent_model hook: Agent call has no model. {agent_menu()}", file=sys.stderr)
-        return 2
-
+    agents = agent_files()
     subagent_type = tool_input.get("subagent_type")
     if subagent_type in ("general-purpose", "claude", None, ""):
         print(
             "Blocked by require_agent_model hook: general-purpose agents run outside forge-core "
-            f"are not allowed. {agent_menu()}",
+            f"are not allowed. {agent_menu(agents)}",
             file=sys.stderr,
         )
         return 2
+    if not isinstance(subagent_type, str):
+        return 0
 
-    return 0
+    if tool_input.get("model") or not agents or agents.get(subagent_type, {}).get("model"):
+        return 0
+
+    print(
+        f"Blocked by require_agent_model hook: agent type {subagent_type} has no agent file "
+        f"that sets a model, and the call passes none. {agent_menu(agents)}",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":

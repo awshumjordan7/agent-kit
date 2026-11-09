@@ -1,7 +1,7 @@
 ---
 name: browser
 description: Drives a real browser through Playwright MCP for UI checks, smoke criteria, QA click passes, screenshots and login flows. Use for every browser step, including QA on a preview or fork that another agent set up; no other agent drives the browser.
-model: sonnet
+model: opus
 effort: medium
 tools: Read, Write, Bash, Grep, Glob, mcp__playwright__*
 disallowedTools: Agent, mcp__playwright__browser_run_code_unsafe

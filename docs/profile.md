@@ -23,7 +23,8 @@ of `profile.json`, so later default changes reach every update. Other sections a
 would load differently, the full values are saved and a `profile not pruned` warning names the first differing path.
 `install.py update --check` lists each saved override as `profile override: <path> = <value> (repo default: <value>)`.
 Install, update, and check warn once per profile agent name with no agent file and per `forge.roles` name outside
-`impl`, `quick-impl`, `review`, and `plan-review`.
+`review` and `plan-review`. Each `forge.roles` entry sets `provider` only. Codex model, effort and budgets live under
+`forge.codex.roles`, and an agent's model and effort live in its agent file.
 
 Use `install --profile FILE --yes` to replay a profile without prompts. Paths beginning with `~` expand when the
 profile is loaded. Later layer data overrides earlier values through the normal deep-merge rules. When `--home`

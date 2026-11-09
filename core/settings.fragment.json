@@ -52,7 +52,7 @@
     "defaultMode": "bypassPermissions"
   },
   "attribution": false,
-  "model": "claude-opus-5-5[1m]",
+  "model": "fable",
   "env": {
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
     "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "8"
@@ -116,8 +116,7 @@
     ]
   },
   "alwaysThinkingEnabled": true,
-  "effortLevel": "xhigh",
-  "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
+  "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
   "enableWorkflows": true,
   "skipWorkflowUsageWarning": true,

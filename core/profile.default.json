@@ -18,21 +18,19 @@
     },
     "answers": {},
     "agents": {
-      "worker": {"model": "opus", "maxTurns": 150, "effort": "medium"},
-      "shipper": {"model": "sonnet", "maxTurns": 50, "effort": "medium"},
-      "claude-implementer": {"model": "opus", "maxTurns": 150, "effort": "high"}
+      "worker": {"maxTurns": 150},
+      "shipper": {"maxTurns": 50},
+      "implementer": {"maxTurns": 150}
     },
     "forge": {
       "roles": {
-        "impl": {"provider": "claude", "model": "opus", "effort": "high"},
-        "quick-impl": {"provider": "claude", "model": "opus", "effort": "medium"},
-        "review": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"},
-        "plan-review": {"provider": "claude", "model": "opus", "effort": "xhigh"}
+        "review": {"provider": "codex"},
+        "plan-review": {"provider": "claude"}
       },
       "stages": {"ff_review": false},
       "thresholds": {},
       "lenses": {
-        "security": "(auth|permission|identity|rbac|token|session)",
+        "security": "(auth|permission|identity|rbac|token|session|secret|crypt|password|oauth|jwt|tenant)",
         "design": "\\.tsx$"
       },
       "ticketUrl": "",
@@ -72,11 +70,6 @@
     "agents.locator.maxTurns": {"evidence": "3 of 7 runs reached 15 turns", "confidence": "low"},
     "agents.worker.maxTurns": {"evidence": "6% of runs reached the former 90-turn cap", "confidence": "high"},
     "agents.shipper.maxTurns": {"evidence": "4 of 4 releases on 2026-09-22 reached the former 30-turn cap", "confidence": "high"},
-    "agents.reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"},
-    "agents.scout.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
-    "agents.locator.model": {"evidence": "7 of 7 runs used Haiku", "confidence": "high"},
-    "agents.worker.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
-    "agents.shipper.model": {"evidence": "96% to 100% of runs used Sonnet", "confidence": "high"},
-    "agents.reviewer.model": {"evidence": "13 of 13 runs inherited the session model", "confidence": "high"}
+    "agents.reviewer.maxTurns": {"evidence": "No runs reached the cap", "confidence": "high"}
   }
 }

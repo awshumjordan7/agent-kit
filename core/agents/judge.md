@@ -1,7 +1,7 @@
 ---
 name: judge
 description: Forge fix decider. Turns open gate failures and confirmed review findings into an exact fix spec each fix round, and applies a small fix set itself.
-model: opus
+model: fable
 effort: high
 maxTurns: 40
 tools: Read, Grep, Glob, Bash, Edit

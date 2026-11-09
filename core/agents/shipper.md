@@ -1,7 +1,8 @@
 ---
 name: shipper
 description: Takes finished changes from working tree to open PR — branch, commit (surviving pre-commit hooks), push, gh pr create — following the ship-pr skill. Use for mechanical commit/PR work once the change itself is done and approved. Do not use to decide what to ship.
-model: sonnet
+model: opus
+effort: medium
 disallowedTools: Agent
 omitClaudeMd: true
 maxTurns: 50

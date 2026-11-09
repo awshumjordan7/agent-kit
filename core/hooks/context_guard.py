@@ -4,7 +4,7 @@
 The main session gets a single notice when usage first passes 280k tokens. Nothing is
 blocked.
 
-As a PreToolUse hook, registered in the claude-implementer agent frontmatter, it
+As a PreToolUse hook, registered in the implementer agent frontmatter, it
 guards only that sub-agent: one soft
 block at 250k, then at 300k every tool call except progress-file edits and
 StructuredOutput is blocked. Other sub-agents and the main session pass through.
@@ -38,7 +38,7 @@ NOTICE = (
     "then message the successor. Nothing is blocked; hand off when the run reaches a good stopping point."
 )
 
-IMPLEMENTER_AGENT = "claude-implementer"
+IMPLEMENTER_AGENT = "implementer"
 PROGRESS_MARKER = "/impl-progress-"
 PROGRESS_TOOLS = ("Write", "Edit", "Read")
 AGENT_ID_SHAPE = re.compile(r"^[\w-]+$")
@@ -175,7 +175,7 @@ def progress_file_call(payload):
 
 
 def deny_tool_call(message):
-    print(f"Blocked by context_guard hook (claude-implementer context limit): {message}", file=sys.stderr)
+    print(f"Blocked by context_guard hook (implementer context limit): {message}", file=sys.stderr)
     return 2
 
 
