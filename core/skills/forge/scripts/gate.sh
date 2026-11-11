@@ -969,6 +969,7 @@ elif [[ -z $tests_command ]]; then
 else
   test_commands_file="$state_prefix-test-commands.nul"
   python3 - "$repo" "$entry_file" "$targets_file" "$test_commands_file" "$tests_command" "$create_db_arg" <<'PY'
+import ast
 import fnmatch
 import json
 import os
@@ -994,16 +995,48 @@ def add_target(command, target):
         targets.append(target)
 
 
+def class_defines_test(node):
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if item.name.startswith("test") or item.name == "runTest":
+                return True
+        elif isinstance(item, ast.ClassDef) and class_defines_test(item):
+            return True
+    return False
+
+
+def defines_test(full_path):
+    if os.path.basename(full_path) in ("conftest.py", "__init__.py"):
+        return False
+    with open(full_path, "rb") as handle:
+        source = handle.read()
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        # An unparsable file keeps its own target, so pytest reports the error.
+        return True
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            return True
+        if isinstance(node, ast.ClassDef) and class_defines_test(node):
+            return True
+    return False
+
+
 for path in files:
     normalized = path.replace(os.sep, "/").removeprefix("./")
     full_path = os.path.join(repo, normalized)
     if not os.path.exists(full_path):
         continue
-    if "/tests/" in f"/{normalized}/" or os.path.basename(normalized).startswith("test_"):
-        # pytest rejects a non-Python path (fixture JSON, snapshots) as "not found".
-        if os.path.isdir(full_path) or normalized.endswith(".py"):
+    in_tests = "/tests/" in f"/{normalized}/"
+    if in_tests or os.path.basename(normalized).startswith("test_"):
+        # pytest rejects a non-Python path (fixture JSON, snapshots) as "not found", and a module
+        # with no tests (conftest.py, fakes) passed alone collects nothing.
+        if os.path.isdir(full_path) or (
+            normalized.endswith(".py") and (not in_tests or defines_test(full_path))
+        ):
             add_target(default_command, normalized)
-        elif "/tests/" in f"/{normalized}/":
+        elif in_tests:
             parts = normalized.split("/")
             last_tests = len(parts) - 1 - parts[::-1].index("tests")
             add_target(default_command, "/".join(parts[: last_tests + 1]))
