@@ -2,7 +2,7 @@
 name: implementer
 description: Implements Forge plan segments and fix rounds.
 model: opus
-effort: high
+effort: medium
 maxTurns: 150
 disallowedTools: Agent
 hooks:
