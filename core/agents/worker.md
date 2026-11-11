@@ -53,7 +53,7 @@ Rules:
 - To run anything that needs the repo's env files (pytest against Postgres,
   manage.py), follow ~/.claude/references/env-recipe.md: run the command through
   `bash ~/.claude/scripts/with-env.sh --dir <repo> <env files> -- <command>`.
-  Never `source` an env file inline.
+  Do not `source` an env file inline: the sandbox denies env-file reads, and only the `with-env.sh` spelling above is excluded.
 
 Final message: a short structured report — changed paths, verification results,
 open questions. No narrative.

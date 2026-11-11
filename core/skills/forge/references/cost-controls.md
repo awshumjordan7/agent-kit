@@ -68,6 +68,7 @@ review moved to the astra model 2026-09-04).
 With inputs inline and the Codex `review` budget (`maxToolCalls` 150, `maxToolOutputKB` 300),
 a code review on gpt-6.1-sol at xhigh effort is mostly cached input. Compare each run's
 `CODEX_OK` line against these before starting the next repo of a multi-repo feature.
+One measured plan review (2026-11-09, gpt-6.1-sol at xhigh): 9 tool calls, 94,944 input tokens of which 45,952 were cached, and 11,987 output tokens.
 
 The Claude general reviewer runs in parallel with the Codex reviewer and reads the diff file in
 bounded ranges. gpt-6.1-sol pricing is not recorded in the local model cache; check the Codex
@@ -102,8 +103,6 @@ dashboard before comparing dollars.
 
 ## Follow-ups
 
-- Measure the first bounded plan review (the paused billing-visibility run) and record its
-  `CODEX_OK` line here as the baseline.
 - Evaluate `codex review` (top-level, diff-only, non-interactive) as the code-review mechanism
   once it can take the checklist and plan summary.
 - Re-test Codex sub-agents on a cheaper model when the model-selection regression is closed.

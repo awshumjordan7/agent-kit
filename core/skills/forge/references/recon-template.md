@@ -10,7 +10,7 @@ For a narrow, well-understood ask, keep only `What the spec asks for`, `Already 
 `scripts/build-plan-review-prompt.sh` builds the plan reviewer's excerpt pack from them.
 
 ## What the spec asks for
-Three to five sentences restating `spec.md` in terms of the codebase (which apps, models,
+A short restatement of the request (or of `spec.md` when an SDD spec exists) in terms of the codebase (which apps, models,
 endpoints, screens).
 
 ## Already exists — reuse

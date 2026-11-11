@@ -12,10 +12,8 @@ exploration and design — it produces a plan, not code.
 ## Phase 1: Understand
 
 **Ground in the codebase first.** When the feature touches existing code, before (or
-alongside) questioning, map the current state instead of assuming it: use `locator` agents
-for where-is lookups (entry points, call sites, relevant files) and one `scout` agent
-(`subagent_type: "scout"`) per question that needs reading and judgment, such as existing
-patterns; have them report the key files to read. Use what they find
+alongside) questioning, map the current state instead of assuming it, routing lookups as CLAUDE.md's delegation
+rules say. Have them report the key files to read. Use what they find
 to ask sharper questions and make the approaches concrete. Skip this for greenfield work with
 no existing code to explore.
 
