@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Record the plan answer and review verdicts for a change made outside forge, and check them at ship time.
+"""Record the code-review verdict for a change made outside forge, and check it at ship time.
 
 Usage:
-  ship_record.py answer --repo <repo> --run-dir <d> --plan yes|no [--plan-path <p>] [--label <l>]
   ship_record.py snapshot --repo <repo> --run-dir <d> --label <l> --files-json <context json>
   ship_record.py verdict --repo <repo> --run-dir <d> --stage plan-review|review
                  --provider <p> --model <m> --verdict <v> [--label <l>]
@@ -121,19 +120,6 @@ def files_sha(repo: Path, files: list[str]) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def cmd_answer(args: argparse.Namespace, repo: Path) -> int:
-    run_dir = _run_dir(args.run_dir)
-    record = _load(run_dir)
-    slot = _slot(record, args.label)
-    slot["planAnswer"] = args.plan
-    if args.plan_path:
-        slot["planPath"] = str(Path(args.plan_path).expanduser().resolve())
-    else:
-        slot["planPath"] = str(run_dir / "plan.md") if args.plan == "yes" else None
-    _save(run_dir, record)
-    return 0
-
-
 def cmd_snapshot(args: argparse.Namespace, repo: Path) -> int:
     run_dir = _run_dir(args.run_dir)
     try:
@@ -206,9 +192,6 @@ def cmd_check(args: argparse.Namespace, repo: Path) -> int:
         if run_dir.is_dir():
             record = _load(run_dir)
     slot = _slot(record, args.label)
-    plan_answer = slot.get("planAnswer")
-    plan = {"yes": "yes", "no": "declined"}.get(plan_answer, "not asked")
-    plan_review = _verdict(slot.get("planReview")) or "missing"
     review_entry = slot.get("review")
     review = _verdict(review_entry)
     current = False
@@ -218,22 +201,17 @@ def cmd_check(args: argparse.Namespace, repo: Path) -> int:
             current = isinstance(recorded_sha, str) and recorded_sha == files_sha(repo, args.files)
         except (OSError, subprocess.CalledProcessError):
             current = False
-    if current and _approving(review) and (plan == "declined" or (plan == "yes" and plan_review != "missing")):
+    if current and _approving(review):
         print("SHIP_RECORD_OK")
         return 0
     review_text = "missing" if review is None else (review if current else "stale")
-    print(f"NEEDS_SHIP_CONFIRM plan: {plan}; plan review: {plan_review}; review: {review_text}")
+    print(f"NEEDS_SHIP_CONFIRM review: {review_text}")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-
-    answer = sub.add_parser("answer")
-    answer.add_argument("--plan", required=True, choices=("yes", "no"))
-    answer.add_argument("--plan-path")
-    answer.add_argument("--label", default="change")
 
     snapshot = sub.add_parser("snapshot")
     snapshot.add_argument("--label", required=True)
@@ -259,7 +237,7 @@ def main() -> int:
     if not repo.is_dir():
         print(f"error: repo dir not found: {args.repo}", file=sys.stderr)
         return 2
-    handlers = {"answer": cmd_answer, "snapshot": cmd_snapshot, "verdict": cmd_verdict, "check": cmd_check}
+    handlers = {"snapshot": cmd_snapshot, "verdict": cmd_verdict, "check": cmd_check}
     return handlers[args.command](args, repo)
 
 

@@ -1,7 +1,7 @@
 ---
 name: brainstorming
 description: >-
-  Design discussion before building a feature: grounds the idea in the codebase, compares 2-3 approaches with trade-offs, agrees the plan's tests, and writes a forge plan. Use when the user asks to brainstorm, design, or explore approaches or trade-offs for a feature that has no plan yet ("let's design", "explore approaches", "design session"). Not for bug fixes, small tweaks, "just do it" requests, or work that already has a plan (use forge).
+  Design discussion before building a feature: grounds the idea in the codebase, compares 2-3 approaches with trade-offs, defines the plan's tests, and writes a forge plan. Use when the user asks to brainstorm, design, or explore approaches or trade-offs for a feature that has no plan yet ("let's design", "explore approaches", "design session"). Not for bug fixes, small tweaks, "just do it" requests, or work that already has a plan (use forge).
 ---
 
 # Brainstorming
@@ -50,10 +50,11 @@ paragraphs in cells):
 
 ## Phase 3: Tests
 
-For each approach, consider core behaviors, edge cases, failure modes, test types
-(unit / integration / e2e / manual / load — be specific), blockers vs nice-to-have, and
-what is hard to test. Once the approach is agreed, define its tests in one `## Tests` Markdown
-table with one row per test and exactly these columns:
+For each approach, consider what sits on its critical path (`code-standards.md`, Tests), the
+test type for each such risk (unit / integration / e2e / manual / load — be specific), and what
+is hard to test. Once the approach is agreed, choose its tests yourself, without a separate
+approval question, and define them in one `## Tests` Markdown table with one row per test and
+exactly these columns:
 
 | Section | Test | Pins | How | Why |
 |---|---|---|---|---|
@@ -73,7 +74,7 @@ this way?"); note any hybrid elements borrowed from other approaches.
 Before writing the plan, check for gaps, contradictions, unstated assumptions, and missing
 context. Fix what you find so someone reading it cold can understand the decisions.
 
-Write the agreed approach, key decisions, scope, and the agreed `## Tests` table (or
+Write the agreed approach, key decisions, scope, and the `## Tests` table (or
 `None: <reason>`) to `<runDir>/plan.md` in
 forge's plan shape:
 

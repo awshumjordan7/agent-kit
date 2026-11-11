@@ -2,7 +2,7 @@
 
 ## Workflow: Discuss -> Plan -> Confirm -> Implement
 
-Follow this sequence for every non-trivial task. Never skip steps.
+Follow this sequence for every non-trivial task. Rapid-Fix Mode below is the only shortcut.
 
 1. **Discuss** -- Explore the problem. Ask clarifying questions before proposing anything.
 2. **Plan** -- Propose an approach with rationale. Present trade-offs if multiple approaches exist. If you see a better way, explain why.
@@ -11,67 +11,40 @@ Follow this sequence for every non-trivial task. Never skip steps.
 
 ### Rapid-Fix Mode
 
-For small, obvious fixes (1-3 files, fully specified, no architecture decisions): skip Discuss. The plan question (under Delegation) is the one confirmation, and No is its usual answer. The code review still runs. Then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
+For small, obvious fixes (1-3 files, fully specified, no architecture decisions): skip Discuss and Confirm, because the request is the go. The plan decision (under Delegation) is usually no plan. The code review still runs. Then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
 
 Switch back to full workflow if scope grows into data model/API/architecture changes.
 
 ## Code Philosophy
 
-- **Be straightforward.** Simple, readable code over clever abstractions.
 - **Use existing patterns first.** Search the codebase (and sibling repos in the workspace) for how similar things are done. Match existing style. Report what you found before writing new code.
-- **Explain alternatives.** If you see a better approach, say so and explain why. Don't silently deviate or stay quiet about improvements.
-- **Make minimal changes.** Touch only what's needed.
 - Diagnose before fixing: read the code path and capture live evidence (response body, console, DB state) before naming a cause.
 - When the user reports unexpected behaviour, state what you found before what you will change.
+- **Code standards.** Before writing or reviewing code, comments or tests, read `~/.claude/skills/forge/references/code-standards.md`
+  and follow it. Tests cover the critical path only. Repositories with forge `gate.mode: none` have no tests: do not add or
+  run tests, lint, typecheck, migrations, Semgrep, or parity commands there.
 
 ## Delegation and context hygiene
 
 - **Routing.** A small, fully specified fix of up to three files (nothing left to decide): the main session
   makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: forge,
   whose `implementer` agent writes the code. The `shipper` always commits and pushes. The main session never edits code otherwise.
-- **Plan question.** Before any code change outside forge (a main-session edit, a `worker`, or an `implementer`
-  spawn), ask once with AskUserQuestion: "Draft a plan for this change?" Recommend Yes when the change touches
-  more than 3 files or changes behavior. Otherwise recommend No. Forge runs skip this, because forge plans and reviews itself.
-  - With either answer, the change gets its own run dir: `<workflow dir>/<YYYY-MM-DD>-<slug>/`. `<workflow dir>` is the
-    `.workflow/` folder that holds the session's own run dir, or `<repo>/.workflow/` when the session has none.
-    Create it with an empty `decisions.md` before any worker starts, and name it in every brief for the change.
-  - Record the answer with `python3 ~/.claude/skills/ship-pr/scripts/ship_record.py answer --repo <repo> --run-dir <run dir> --plan yes|no --label <label>`.
-    Pick the label once per change (default `change`). A follow-up in the same run dir takes a new label.
-    The review command, every ship_record call and the shipper brief name that label.
-  - With Yes: write `<run dir>/plan.md`, run `~/.claude/skills/forge/scripts/build-plan-review-prompt.sh` and the
-    `plan-review` role. Record that verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage plan-review --label <label>
-    --provider <p> --model <m> --verdict <v>`. Then wait for the user's go. When the plan has a `## Changelog` section,
-    write `<run dir>/user-ok.md` with the user's approval quoted word for word and the date, as forge does (forge SKILL.md step 4).
-  - With either answer: after the change, run `~/.claude/skills/forge/scripts/build-code-review-prompt.sh --label <label>` and the `review`
-    role. Record the verdict with `ship_record.py verdict --repo <repo> --run-dir <run dir> --stage review --label <label>
-    --provider <p> --model <m> --verdict <v>`.
-  - The role's provider decides who reviews: `codex` runs `codex-exec.sh`, and `claude` runs the `reviewer` agent with the printed paths.
-  - When the shipper returns `NEEDS_SHIP_CONFIRM`, ask "Ship without <what is missing>?". Only on yes, relaunch it with a
-    new brief file that holds a `SHIP ANYWAY: "<the user's words>"` line. Briefs are not edited after a spawn (see the brief
-    rule below), and ship-pr reads that line only from the brief.
-- **Where-is questions go to `locator`.** Any "where is X", symbol, call-site or string lookup is a
-  Haiku `locator` job. `scout` is for questions that need reading and judgment, one question per brief.
-- **Web and browser.** Read a web page with WebFetch. Route browser work to the `browser` agent. The main session and other agents never call Playwright tools.
+- **Plan decision.** Before any code change outside forge (a main-session edit, a `worker`, or an `implementer`
+  spawn), decide whether the change gets a plan. Do not ask the user. It gets a plan when it touches more than
+  3 files or changes behavior. Otherwise it gets none. Say the decision and its reason in one line, then carry on.
+  Then follow `~/.claude/references/change-outside-forge.md` for the run dir, the plan review and the code review.
+  Forge runs skip this, because forge plans and reviews itself.
+- **Browser work goes to the `browser` agent**, one at a time. The main session and other agents never call Playwright tools.
 - **Never run test suites, probes, or captures in the main session.** Local tests go to `worker`.
-- **One browser driver at a time.** Never run two `browser` agents (or any two Playwright-driving agents) concurrently.
-- **No cap on sub-agents; batch them.** When more than one sub-agent would run at the same time, run them
-  as one Workflow instead of separate Agent spawns. Each `agent()` call names an agent type, or sets model and
-  effort when it has none. Size each scout
-  brief to about 6-7 sources or 40 tool calls.
-- **Sub-agents wait in the foreground.** A sub-agent that ends its turn is finished, and its background jobs are killed.
-  So it starts a long job in the background writing a done-file (`<cmd>; echo $? > <file>`). Then it re-runs one
-  Bash call (timeout 600000) on `perl -e '$f=shift; $t=time; until (-e $f or time-$t >= 540) { sleep 10 } print((-e $f) ? "done\n" : "not yet\n")' <file>`
-  until it prints "done". It never waits with Monitor or a `pgrep -f` loop. The main session hands such waits to a
-  worker, never to a tight status loop.
+- **Batch sub-agents.** A sub-agent costs its own context and startup, so start one when the work is large, parallel,
+  or suits a cheaper model. When more than one would run at the same time, run them as one Workflow instead of separate Agent spawns.
+- **Long waits go to a worker.** The main session never waits in a tight status loop.
 - **Every sub-agent prompt follows `~/.claude/references/brief-template.md`.** Write the brief before
   the spawn; do not edit it after.
 - **Artifacts are worker-made**, following `~/.claude/skills/forge/references/artifacts.md`.
 - **Bash output stays small.** A command expected to print more than ~5 KB writes to a file in the
-  run dir and returns `tail` or `grep` of it. Never `cat` a file over 200 lines; use ranged `sed -n`.
-- **Long commands run in the background with a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV'
-  <seconds> <command>`; macOS has no `timeout`).
-- **Overlap waits.** When a long step (gate, test run, capture, Codex or Opus turn) works on a committed
-  state, start the next independent step instead of waiting for it.
+  run dir and returns `tail` or `grep` of it. Read a file over 200 lines in ranges with the Read tool, never with `cat`.
+- **Long commands get a hard timeout** (`perl -e 'alarm shift @ARGV; exec @ARGV' <seconds> <command>`; macOS has no `timeout`).
 - **File tooling issues and suggestions at once.** When a tool, skill, hook, agent, forge step, or routing rule
   misbehaves, wastes calls, or blocks you, or you notice something that would improve the workflow, run
   `python3 ~/.claude/scripts/report_issue.py <bug|inconvenience|redundancy|cost|flag|suggestion> "<text>" [evidence-path]`.
@@ -80,73 +53,9 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   `[step] decision - reason`, with evidence as a file path, never inline dumps.
 - **Files named with "credential" stay unreadable.** A built-in deny rule blocks reading and editing them, so keep that word out of your own run-dir, scratch and capture file names.
 
-### Don't
-
-- Start implementing before confirmation
-- Over-engineer or add speculative abstractions (YAGNI)
-- Catch broad exceptions (`except Exception`) -- catch specific errors
-- Use outdated typing (`Optional[str]`, `List[int]`) -- use `str | None`, `list[int]`
-- Refactor working code you weren't asked about
-- Make up dependency versions -- use package manager to find latest
-
-### Comments
-
-Comments are for the next reader of the code, not the reviewer of this diff.
-Most methods need no comment. When one is needed, it states something the
-code cannot show -- a constraint, a trap, a "why" -- in one or two sentences.
-
-The amnesia test: would this comment exist if you had written the file cold,
-with no prior conversation? If it only exists because we discussed it, delete
-it -- the back-and-forth is not context the file's readers have. A real
-constraint learned in discussion passes the test: it exists because the
-constraint is true, not because it was discussed. State the constraint, never
-the conversation.
-
-Never write comments that:
-
-- Restate the code (`# Proceed with creation` above a transaction block,
-  `# Case A / Case B` labels on if/elif branches)
-- Reference the session, plan, or conversation: "as discussed", "per the
-  spec", "(plan C2.0.x)", "addresses review feedback". The session ends;
-  the comment doesn't.
-- Point at files not in the repo (local plan docs, `.workflow/` artifacts,
-  scratch notes). If the reason matters, state the reason itself.
-- Justify the change to a reviewer ("this is correct because...") -- that
-  belongs in the PR description
-- Reference other PRs, or leave commented-out code behind
-
-Jira IDs in comments are allowed only when the comment still makes sense
-without opening the ticket.
-
-### Tests
-
-Add tests only when the user approved them in the plan's `## Tests` table (a no-tests plan approves
-`None: <reason>`). Repositories with forge `gate.mode: none` have no tests. Do not add or run tests, lint,
-typecheck, migrations, Semgrep, or parity commands in those repositories.
-
-Test behavior, not wiring. Before writing a test, ask: if this fails, did
-the product break -- or did my mock setup change?
-
-Never write tests that:
-
-- Assert a mock returned what it was configured to return, or that mocks
-  were called in the order the test wired them
-- Re-derive the implementation (asserting `hash_code() == hashlib.sha256(...)`)
-- Duplicate existing higher-level coverage, or add parametrize cases for an already-covered code path
-- Test the framework (URL routing resolves, the ORM saves)
-
-A small set of behavior-pinning tests beats exhaustive combinations.
-
 ## Validation Scope
 
 - When the user narrows validation or test scope (for example `uv run ruff check app/`), run exactly that, and never widen it unless explicitly asked.
-- Keep validation proportional to task risk and user intent, and say which suites you skipped.
-
-## MCP Usage
-
-Use an MCP server when it answers the question more directly than local files or memory would, for example current library docs, issue trackers, logs, or security scans.
-
-- **semgrep**: In repositories with forge `gate.mode: full`, code that handles user input, auth, or API calls gets a Semgrep scan through the gate or a `worker`. `none`-mode repositories skip it.
 
 ## Communication Style
 
@@ -171,12 +80,9 @@ Use an MCP server when it answers the question more directly than local files or
 
 - Default to plain language. Prefer everyday words over technical jargon; when a
   technical term is necessary, define it briefly on first use.
-- One idea per sentence: aim for 20 words or fewer, never more than 25. Active voice, plain verbs
-  ("analyze", not "perform an analysis"). One name per concept -- don't call the
-  same thing two different names.
-- No more than three nouns in a row ("the check forge runs at launch", not "the forge run
-  launch check"). No semicolons: split the sentence instead.
-- Use a numbered list for steps, and a list or table for three or more parallel items.
+- One idea per sentence. Active voice, plain verbs ("analyze", not "perform an analysis").
+  One name per concept -- don't call the same thing two different names.
+- Avoid long noun stacks: write "the check forge runs at launch", not "the forge run launch check".
 - When rewriting or summarizing a source, keep every number, condition and limit, keep its
   level of certainty, and add no cause or mechanism it does not state.
 - No mannered prose: no metaphor or flourish standing in for a direct statement. When a

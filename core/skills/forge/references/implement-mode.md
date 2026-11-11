@@ -10,10 +10,9 @@ model and effort.
 ## Steps
 
 1. Read `plan.md`. Confirm it has numbered phases with files and a `## Tests` section containing
-   the five-column approved table, or the single line `None: <reason>`. If the phases are
+   the five-column table, or the single line `None: <reason>`. If the phases are
    missing, stop: "this plan isn't phased — run `forge build` on it instead." If the tests section
-   is missing or malformed, stop: "this plan does not define its approved tests — return it for
-   confirmation."
+   is missing or malformed, stop: "this plan does not define its tests — return it to be fixed."
 2. Create the run dir if absent; write `context.md` with the plan path and the repo. Read the
    repository's `gate.mode` (`full` or `none`) from the same config.
 3. Before the first phase, switch to a new branch when the checkout is on the base branch, as
@@ -48,7 +47,7 @@ model and effort.
   what's wrong with the plan; don't improvise around it.
 - Not reviewed. Use `forge review` afterwards if the change warrants it. The run is not exempt
   from ship-pr's ship check: it returns NEEDS_SHIP_CONFIRM until a code review is recorded (the
-  plan-question rules in CLAUDE.md), or until the shipper is relaunched with `SHIP ANYWAY`.
+  plan-decision rules in CLAUDE.md), or until the shipper is relaunched with `SHIP ANYWAY`.
 - Not the build lane. It differs on purpose in one way: it gates the working tree and commits on
   a pass; the build lane commits first and then gates the SHA. Both use the `implementer` agent at
   its file's model and effort.
