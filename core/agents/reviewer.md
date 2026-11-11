@@ -13,10 +13,9 @@ that holds the plan summary, public API contract, acceptance criteria, checklist
 Rules:
 - Read the brief file and the reviewer contract file the prompt names in full with the Read tool,
   before the diff. The whole-file limit below does not apply to these two files.
-- Read the diff file with the Read tool in ranges of at most 2,000 lines. These reads count
-  toward the 30-call budget. Read repository files only to confirm a specific `file:line`, using
-  ranged reads (`sed -n 'A,Bp'` or `grep -n`), at most 120 lines per read. Never print or
-  read a whole file.
+- Read the diff file with the Read tool in ranges of at most 2,000 lines. Read repository
+  files only to confirm a specific `file:line`, using ranged reads (`sed -n 'A,Bp'` or
+  `grep -n`), at most 120 lines per read. Never print or read a whole file.
 - The diff file and the brief are the whole input, so do not run git commands or use web search.
 - Decide the reads you need before the first one. Stop
   when every checklist item has a verdict and you have reported every other issue you

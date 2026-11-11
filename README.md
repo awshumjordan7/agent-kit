@@ -95,7 +95,7 @@ Fable, so a user without Fable access sets `"model": "opus"` under `agents.revie
 | `build` (default) | Investigate, plan, implement, gate, ship, independently review, converge, and hand off. |
 | `review` | Review and fix an existing working tree or branch diff. |
 
-`quick` and `dev` are temporary aliases for `build`. Every build plan receives one configured plan review.
+Every build plan receives one configured plan review.
 
 For layered releases, merge and tag agent-kit first, then bump the overlay's `requires_agent_kit` pin and run `python3 install.py update`. See [docs/release-order.md](docs/release-order.md).
 

@@ -2,7 +2,7 @@
 The prompt names the diff file and a brief file. The brief holds the plan summary, public API contract,
 acceptance criteria, review checklist, and code standards; read it in full with the Read tool first.
 Read the diff with the Read tool in ranges of at most 2,000 lines and never paste it into a message.
-Those reads count toward the 30-call total budget. Read repository files only to confirm a specific
+Read repository files only to confirm a specific
 file and line from the diff, with `sed -n 'A,Bp'` or `grep -n`, at most 120 lines per read. Never print
 a whole file or run git commands. Do not use web search. Decide the reads before the first one. Stop
 when every checklist item has a verdict and you have reported every other issue you found in the diff,
