@@ -464,7 +464,7 @@ const STUBS = {
     : opts.schema === SHIP_FACTS_SCHEMA
     ? dryRunFacts({ ok: true, dirty: [], excluded: [] })
     : opts.schema === PLAN_FACTS_SCHEMA
-    ? dryRunFacts({ h1: 'Plan: dry-run plan', phases: [], hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
+    ? dryRunFacts({ planFile: PARAMS.planPath, h1: 'Plan: dry-run plan', phases: [], hasContract: false, bytes: 74, sha256: dryRunSha('plan'), error: '', criteria: [] })
     : opts.schema === PHASES_FACTS_SCHEMA
     ? dryRunFacts({ ...EMPTY_PHASES_FILE, lastCommittedPhase: '', headSha: '' })
     : opts.schema === BRANCH_SCHEMA
