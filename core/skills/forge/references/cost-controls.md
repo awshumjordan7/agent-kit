@@ -13,8 +13,8 @@ as stalled only when neither its event log nor its Codex rollout file (which gro
 changed for that long. Each `watch` call restarts the idle count, so its own stall exit (75) needs
 `--max-wait` above the stall timeout (`CODEX_STARTED` prints `--max-wait 2400`); the run's
 watchdog, which kills a stalled session and writes `<log>.failed`, is the primary stall detector.
-`watch` always runs in the background so a stall surfaces as a notification,
-never as a silent hang.
+`watch` runs in the foreground as one bare Bash call. On exit 10 the caller calls it again,
+until it prints `WATCH_RESULT`.
 
 - `references/codex-prompt-contract.md` is prepended to every prompt by `codex-exec.sh`
   (one `review` section for plan review, code review, verify).
@@ -39,7 +39,7 @@ never as a silent hang.
 `gate` role (runs `scripts/gate.sh`): Haiku, low effort, 3-7 spawns per run; cost is test wall-clock time, not tokens.
 
 ## Routing (2026-11-09)
-Each agent file sets its model and effort, and forge passes none for it. The `implementer` (code and fix rounds) and `triage` run on Opus at high effort. The Claude reviewer and `security-advisor` run on Fable at xhigh, and the fix decider (`judge`) on Fable at high. When `reviewer`, `judge` or `security-advisor` returns nothing, forge retries once on Opus at the agent file's effort. `shipper` runs on Opus at medium. Plan review without the codex module uses the `reviewer` agent file. Roles with no agent file take their model from one table in `forge-core.js`: `lens` and `handoff` on Opus at high, `ffReview` on Sonnet at low, and `codexWrap`, `gate` and `runCommand` on Haiku at low. Each fix loop raises the spawn cap by 3 per round (decider, applier, gate or verify), plus 1 per round for the phase commit in phased runs. The final full gate after applied review fixes adds 1 spawn, and its own fix loop, when that gate fails, adds the per-round budget again. `codex.roles.review` runs on Codex gpt-6.1-sol at xhigh effort, the only Codex use. The retired gpt-6-astra was dropped on 2026-09-22 because one astra review could use about 20% of the 5-hour limit. Watch per-review usage in `.state/usage.log`.
+Each agent file sets its model and effort, and forge passes none for it. The `implementer` (code and fix rounds) and `triage` run on Opus at high effort. The Claude reviewer and `security-advisor` run on Fable at xhigh, and the fix decider (`judge`) on Fable at high. When `reviewer`, `judge` or `security-advisor` returns nothing, forge retries once on Opus at the agent file's effort. `shipper` runs on Opus at medium. Plan review without the codex module uses the `reviewer` agent file. Roles with no agent file take their model from one table in `forge-core.js`: `lens` and `handoff` on Opus at high, `ffReview` on Sonnet at low, and `codexWrap`, `gate` and `runCommand` on Haiku at low. `codex.roles.review` runs on Codex gpt-6.1-sol at xhigh effort, the only Codex use. The retired gpt-6-astra was dropped on 2026-09-22 because one astra review could use about 20% of the 5-hour limit. Watch per-review usage in `.state/usage.log`.
 
 ## Why (retro, 2026-09-10)
 
@@ -68,6 +68,7 @@ review moved to the astra model 2026-09-04).
 With inputs inline and the Codex `review` budget (`maxToolCalls` 150, `maxToolOutputKB` 300),
 a code review on gpt-6.1-sol at xhigh effort is mostly cached input. Compare each run's
 `CODEX_OK` line against these before starting the next repo of a multi-repo feature.
+One measured plan review (2026-11-09, gpt-6.1-sol at xhigh): 9 tool calls, 94,944 input tokens of which 45,952 were cached, and 11,987 output tokens.
 
 The Claude general reviewer runs in parallel with the Codex reviewer and reads the diff file in
 bounded ranges. gpt-6.1-sol pricing is not recorded in the local model cache; check the Codex
@@ -102,8 +103,6 @@ dashboard before comparing dollars.
 
 ## Follow-ups
 
-- Measure the first bounded plan review (the paused billing-visibility run) and record its
-  `CODEX_OK` line here as the baseline.
 - Evaluate `codex review` (top-level, diff-only, non-interactive) as the code-review mechanism
   once it can take the checklist and plan summary.
 - Re-test Codex sub-agents on a cheaper model when the model-selection regression is closed.

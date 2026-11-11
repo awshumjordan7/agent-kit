@@ -1,17 +1,12 @@
 # Code standards
 
-Injected into every forge implementer, reviewer, and fixer prompt. Sub-agents
-load ~/.claude/CLAUDE.md unless their frontmatter sets `omitClaudeMd`, and Codex
-reads only the generated AGENTS.md, so these rules travel with the prompt.
-Generated verbatim from CLAUDE.md sections "Don't", "Comments", "Tests" —
-do not edit here; edit CLAUDE.md and run `doctor.py --fix`.
+The rules for writing and reviewing code, comments and tests. Forge puts this file into every
+implementer, reviewer and fixer prompt, and CLAUDE.md points the main session here. Edit this file directly.
 
 ### Don't
 
-- Start implementing before confirmation
 - Over-engineer or add speculative abstractions (YAGNI)
 - Catch broad exceptions (`except Exception`) -- catch specific errors
-- Use outdated typing (`Optional[str]`, `List[int]`) -- use `str | None`, `list[int]`
 - Refactor working code you weren't asked about
 - Make up dependency versions -- use package manager to find latest
 
@@ -46,9 +41,13 @@ without opening the ticket.
 
 ### Tests
 
-Add tests only when the user approved them in the plan's `## Tests` table (a no-tests plan approves
-`None: <reason>`). Repositories with forge `gate.mode: none` have no tests. Do not add or run tests, lint,
-typecheck, migrations, Semgrep, or parity commands in those repositories.
+Tests cover the critical path only: behavior that, when it breaks, stops a user's main task, loses or
+corrupts data, or opens a security hole. Each test names the risk it pins. Claude chooses the tests and
+does not ask the user to approve them separately. A plan lists them in its `## Tests` table (a no-tests
+plan says `None: <reason>`), and approving the plan approves them. Add only the tests in that table. A
+change with no plan gets a test only when it touches the critical path. Repositories with forge
+`gate.mode: none` have no tests. Do not add or run tests, lint, typecheck, migrations, Semgrep, or parity
+commands in those repositories.
 
 Test behavior, not wiring. Before writing a test, ask: if this fails, did
 the product break -- or did my mock setup change?

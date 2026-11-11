@@ -10,7 +10,7 @@ For a narrow, well-understood ask, keep only `What the spec asks for`, `Already 
 `scripts/build-plan-review-prompt.sh` builds the plan reviewer's excerpt pack from them.
 
 ## What the spec asks for
-Three to five sentences restating `spec.md` in terms of the codebase (which apps, models,
+A short restatement of the request (or of `spec.md` when an SDD spec exists) in terms of the codebase (which apps, models,
 endpoints, screens).
 
 ## Already exists — reuse
@@ -41,5 +41,4 @@ implementer copies their shape.
 Anything the spec leaves ambiguous. These go to the user before the plan.
 
 ## Run settings
-- `login_mode`: `token` (v1 default)
 - `lenses_expected`: which of `security` / `dx-audit` / `design-audit` the changed paths will trigger

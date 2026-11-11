@@ -106,7 +106,6 @@ SETTINGS_BASE_FILENAME = "settings.base.json"
 CODEX_CONFIG_BASE_FILENAME = "codex-config.base.json"
 KIT_NEW_SUFFIX = ".kit-new"
 SETTINGS_PATH = "settings.json"
-CODE_STANDARDS_PATH = "skills/forge/references/code-standards.md"
 CODEX_AGENTS_PATH = ".codex/AGENTS.md"
 CODEX_CONFIG_PATH = ".codex/config.toml"
 FALLBACK_COMMENTS = "the live file has comments, which a rewrite would drop"
@@ -312,7 +311,6 @@ def _render_derived(destination: Path, auxiliary_root: Path) -> None:
         sys.dont_write_bytecode = write_bytecode
 
     targets = (
-        (destination / CODE_STANDARDS_PATH, doctor.expected_code_standards),
         (auxiliary_root / CODEX_AGENTS_PATH, doctor.expected_codex_agents),
     )
     for target, generate in targets:
@@ -656,7 +654,7 @@ def _auxiliary_action(status: str | None) -> str:
 
 
 def _rerender_derived(staging: Path, auxiliary: Path, kept_claude_md: Path) -> None:
-    derived = (staging / CODE_STANDARDS_PATH, auxiliary / CODEX_AGENTS_PATH)
+    derived = (auxiliary / CODEX_AGENTS_PATH,)
     kit_versions = {path: path.read_bytes() for path in derived if path.is_file()}
     try:
         _render_derived(staging, auxiliary)
@@ -741,7 +739,7 @@ def prepare_install(
         kept: list[tuple[str, str]] = []
         kit_digests: dict[str, str] = {}
         for relative in result.files:
-            if relative in (SETTINGS_PATH, CODE_STANDARDS_PATH):
+            if relative == SETTINGS_PATH:
                 continue
             staged = staging / relative
             live = home / relative

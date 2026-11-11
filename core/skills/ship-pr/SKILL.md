@@ -69,7 +69,7 @@ Write the PR title and body to files, never inline in the command: free text wit
 Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and remove every matching line.
 
 1. Check for an existing pull request with `gh pr view "<branch>" --json url -q .url`.
-2. When it succeeds, the pull request exists. Regenerate its body, write it to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>` and go to step 5, unless the caller says to keep the existing body; then leave it and go to step 5. Never create a second one.
+2. When it succeeds, the pull request exists. Read its current title and body (`gh pr view "<branch>" --json title,body`), the subjects of the commits this push adds, and their file list. Change only the parts of the title and body that are now wrong or missing. Rewrite the whole body only when the caller says the scope changed. Write the body to the body file, run the grep, then run `gh pr edit "<branch>" --body-file <body file>`, unless the caller says to keep the existing body; then leave it. When the title changed, also run `gh pr edit "<branch>" --title "$(cat <title file>)"`. Then go to step 5. Never create a second one.
 3. When it fails with a 404 or a "requires the repo scope" error, the `gh` token lacks access. Stop and report that error. `gh pr create` would fail the same way.
 4. Otherwise create a non-draft pull request with the resolved base branch: `gh pr create --base "<base>" --head "<branch>" --title "$(cat <title file>)" --body-file <body file>`. Then go to step 5.
 5. Wait for the pull request's checks. This is the only step that returns from this section. Note the start time: the wait has a 10-minute deadline. `<number>` is the pull request number, the last part of its URL.
@@ -83,7 +83,17 @@ Before `gh pr create` or `gh pr edit`, run the same grep on the PR body file and
 
 ## 5. Report
 
-The PR body is written by the shipper on its own pushes only. Nothing refreshes a description after commits land outside ship-pr; rerun ship-pr or edit it by hand. The body holds a summary, the change list and links. No testing-results section unless the caller supplies a PR-body extra section; keep that section verbatim.
+The PR body is written by the shipper on its own pushes only. Nothing refreshes a description after commits land outside ship-pr; rerun ship-pr or edit it by hand.
+
+The body has these sections, in this order:
+- `## Problem`: what was wrong or missing, and who it affects.
+- `## Fix`: what changed and why this approach. No file lists.
+- `## How to verify`: steps a reviewer can run or click. Name a check only when it ran for this change.
+- `## Notes`: risks, follow-ups and anything a reviewer should know. Leave the section out when it is empty.
+
+Ticket and other links go on the last lines.
+
+No testing-results section unless the caller supplies a PR-body extra section; keep that section verbatim.
 
 When the changelog check failed, return only `NEEDS_CHANGELOG_OK`, the instruction file list and what is missing. When the ship check stopped the ship, return only `NEEDS_SHIP_CONFIRM` and the script's line. Otherwise return the pull request URL, resolved base branch and the check result line from section 4 step 5. State that the attribution check printed nothing. List each unstaged approved file as `<path> - <reason>`, or say `All approved files staged.` Report any hook or authentication failure with its exact command and concise output.
 

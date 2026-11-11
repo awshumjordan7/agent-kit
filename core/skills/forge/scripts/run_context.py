@@ -57,71 +57,6 @@ def _safe_paths(repo: Path, paths: list[str]) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(kept)), list(dict.fromkeys(dropped))
 
 
-def _sha256(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _tree_state(repo: Path) -> dict[str, tuple[str, str | None]]:
-    porcelain, paths = _status(repo)
-    return {path: (entry[:2], _sha256(repo / path)) for entry, path in zip(porcelain, paths)}
-
-
-# The cap stays below the 600000 ms Bash timeout the calling agent uses, so the command reports
-# its own timeout instead of being killed by the tool.
-SMOKE_TIMEOUT_SECONDS = 570
-
-
-def smoke_run(run_dir: Path, repo: Path, command: str, log_name: str = "smoke.log") -> dict:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log_path = run_dir / Path(log_name).name
-    before = _tree_state(repo)
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=repo,
-            shell=True,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=SMOKE_TIMEOUT_SECONDS,
-        )
-        output = completed.stdout or ""
-        exit_code = completed.returncode
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        output = exc.stdout or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", "replace")
-        exit_code = 124
-        timed_out = True
-    after = _tree_state(repo)
-    changed_paths = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
-    tail = "\n".join(output.splitlines()[-200:])
-    log_path.write_text(tail + ("\n" if tail else ""), encoding="utf-8")
-    if changed_paths:
-        summary = f"the smoke changed the working tree: {', '.join(changed_paths)}"
-    elif exit_code == 0:
-        summary = "smoke command passed"
-    else:
-        summary = f"smoke command failed with exit {exit_code}"
-    return {
-        "passed": exit_code == 0 and not changed_paths,
-        "exitCode": exit_code,
-        "timedOut": timed_out,
-        "command": command,
-        "logPath": str(log_path),
-        "summary": summary,
-        "changedPaths": changed_paths,
-    }
-
-
 def _section(text: str, heading: str) -> str:
     lines = text.splitlines()
     start = next(
@@ -521,7 +456,6 @@ def context(
 _RELAUNCH_MARKERS = (
     "phases.json",
     "context-gate.json",
-    "checkpoint.json",
     "impl-progress-*.md",
 )
 
@@ -679,70 +613,6 @@ _CONTEXT_DEFAULTS: dict = {
     "noCode": False,
     "instructionFiles": [],
 }
-_CHECKPOINT_DEFAULTS: dict = {
-    "implementFilesChanged": [],
-}
-
-
-def _known(source: object, defaults: dict) -> dict:
-    # Keeps only the keys of defaults; a missing or wrongly typed value becomes the empty default.
-    # type() and not isinstance(): a bool is an int in Python and must not pass for one.
-    values = source if isinstance(source, dict) else {}
-    kept: dict = {}
-    for key, default in defaults.items():
-        value = values.get(key)
-        if type(value) is not type(default):
-            value = default
-        kept[key] = [str(item) for item in value] if isinstance(value, list) else value
-    return kept
-
-
-def _read_json(path: Path) -> tuple[dict, str]:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        return {}, f"could not read {path}: {exc.strerror or exc}"
-    except ValueError as exc:
-        return {}, f"could not parse {path}: {exc}"
-    if not isinstance(document, dict):
-        return {}, f"{path} does not hold a JSON object"
-    return document, ""
-
-
-def checkpoint_save(
-    run_dir: Path,
-    files: list[str],
-    branch: str | None = None,
-) -> dict:
-    path = run_dir / "checkpoint.json"
-    context_path = run_dir / "context-gate.json"
-    context_document, error = _read_json(context_path)
-    phases: list = []
-    # phases.json is read only on request, so a file left by an earlier run cannot turn a
-    # single-pass run into a phased one.
-    if not error and branch is not None:
-        phases_document, error = _read_json(run_dir / "phases.json")
-        phases = phases_document.get("phases") or []
-    facts = {
-        "written": False,
-        "path": str(path),
-        "sha256": "",
-        "files": len(files),
-        "error": error,
-    }
-    if error:
-        return _checked(facts)
-    document = {
-        "implementFilesChanged": files,
-        "branch": branch or "",
-        "phases": phases,
-        "context": _known(context_document, _CONTEXT_DEFAULTS),
-    }
-    try:
-        _write_atomic(path, json.dumps(document, indent=2) + "\n")
-    except OSError as exc:
-        return _checked({**facts, "error": f"could not write {path}: {exc.strerror or exc}"})
-    return _checked({**facts, "written": True, "sha256": _sha256(path) or ""})
 
 
 _EMPTY_PHASES_FILE = {
@@ -775,26 +645,6 @@ def phases_facts(run_dir: Path) -> dict:
     except (OSError, ValueError) as exc:
         sys.exit(f"run_context.py phases-facts: could not read {path}: {exc}")
     return _checked(_no_nulls(document))
-
-
-def checkpoint_facts(run_dir: Path) -> dict:
-    document, error = _read_json(run_dir / "checkpoint.json")
-    facts = _known(document, _CHECKPOINT_DEFAULTS)
-    facts["context"] = _known(document.get("context"), _CONTEXT_DEFAULTS)
-    facts["error"] = error
-    # The facts schema requires branch and phases, so both are printed, empty when the file has
-    # none; forge-core.js drops the empty ones after it checks the digest.
-    branch = document.get("branch")
-    facts["branch"] = branch if isinstance(branch, str) else ""
-    rows = document.get("phases")
-    rows = rows if isinstance(rows, list) else []
-    # Facts hold no null, so a phase without a sha or a gate carries an empty string.
-    facts["phases"] = [
-        {key: str(values.get(key) or "") for key in ("id", "title", "sha", "gate")}
-        for values in rows
-        if isinstance(values, dict)
-    ]
-    return _checked(facts)
 
 
 def _colon_fields(value: str, count: int) -> list[str | None]:
@@ -888,19 +738,8 @@ def main() -> None:
     filter_paths_parser.add_argument("--run-dir", type=Path, required=True)
     filter_paths_parser.add_argument("--exclude", action="append")
     filter_paths_parser.add_argument("--files-file", type=Path, required=True)
-    smoke_run_parser = subparsers.add_parser("smoke-run")
-    smoke_run_parser.add_argument("--run-dir", type=Path, required=True)
-    smoke_run_parser.add_argument("--repo", type=Path, required=True)
-    smoke_run_parser.add_argument("--command", dest="smoke_command", required=True)
-    smoke_run_parser.add_argument("--log-name", default="smoke.log")
     plan_facts_parser = subparsers.add_parser("plan-facts")
     plan_facts_parser.add_argument("--plan-file", required=True)
-    checkpoint_save_parser = subparsers.add_parser("checkpoint-save")
-    checkpoint_save_parser.add_argument("--run-dir", type=Path, required=True)
-    checkpoint_save_parser.add_argument("--branch")
-    checkpoint_save_parser.add_argument("--files", nargs="*", default=[])
-    checkpoint_facts_parser = subparsers.add_parser("checkpoint-facts")
-    checkpoint_facts_parser.add_argument("--run-dir", type=Path, required=True)
     phases_facts_parser = subparsers.add_parser("phases-facts")
     phases_facts_parser.add_argument("--run-dir", type=Path, required=True)
     phases_save_parser = subparsers.add_parser("phases-save")
@@ -946,18 +785,8 @@ def main() -> None:
         result = ship_facts(args.repo, args.run_dir, args.exclude)
     elif args.command == "filter-paths":
         result = filter_paths(args.repo, args.run_dir, args.files_file, args.exclude)
-    elif args.command == "smoke-run":
-        result = smoke_run(args.run_dir, args.repo, args.smoke_command, args.log_name)
     elif args.command == "plan-facts":
         result = plan_facts(args.plan_file)
-    elif args.command == "checkpoint-save":
-        result = checkpoint_save(
-            args.run_dir,
-            args.files,
-            args.branch,
-        )
-    elif args.command == "checkpoint-facts":
-        result = checkpoint_facts(args.run_dir)
     elif args.command == "phases-facts":
         result = phases_facts(args.run_dir)
     elif args.command == "phases-save":

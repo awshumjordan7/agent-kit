@@ -463,8 +463,7 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
     nxt = data.get("next", "")
     go_html = (
         '<div class="next go" role="note"><div class="summary-label">To start</div><ol>'
-        f"<li>Reply <strong>{esc(nxt)}</strong> to approve the plan.</li>"
-        "<li>Reply <strong>tests yes</strong> (or confirm the None reason) to approve the tests.</li>"
+        f"<li>Reply <strong>{esc(nxt)}</strong> to approve the plan, including its tests.</li>"
         "</ol></div>"
     ) if nxt else ""
     lane = data.get("lane", "")

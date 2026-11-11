@@ -6,7 +6,7 @@ Your job: find what will fail, what already exists that the plan duplicates, and
 Check the plan's `## Tests` section. A missing section is a finding. Unless it contains the
 single line `None: <reason>`, it must contain one table where every test row fills all five
 columns: `Section`, `Test`, `Pins`, `How`, and `Why`. Each `Why` must tie the test to a plan risk
-or acceptance criterion; a test that pins nothing the plan risks or requires is a finding.
+or acceptance criterion; a test that pins nothing the plan risks or requires, or that sits off the critical path as CODE STANDARDS defines it, is a finding.
 
 Check the plan for seams: calls to, or changes of, another repository's or an external service's
 interface. The `## Public API contract` must list each seam with its provider and the source of
@@ -36,5 +36,5 @@ RECON
 CODE EXCERPTS (from the recon's file:line references; the line numbers are real)
 {{EXCERPTS}}
 
-CODE STANDARDS (the plan's approved test table and comments must comply)
+CODE STANDARDS (the plan's test table and comments must comply)
 {{STANDARDS}}

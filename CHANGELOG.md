@@ -4,6 +4,24 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-10
+- core/CLAUDE.md: cut from 198 lines to 104, per the user's 2026-11-10 request to remove bloat. Lines that other text already states, the MCP Usage section and the wait recipe for sub-agents are deleted.
+- core/CLAUDE.md, core/skills/forge/references/code-standards.md, core/scripts/doctor.py, aisetup/compose.py: the Don't, Comments and Tests rules live only in code-standards.md, which is now edited by hand, because forge already sends it to every agent that writes or reviews code. The doctor check and the installer step that generated it are removed.
+- core/skills/forge/references/code-standards.md: the Don't list drops "Start implementing before confirmation", which the Confirm step in core/CLAUDE.md already states, and the modern-typing rule, which current models follow by default.
+- core/references/change-outside-forge.md, core/CLAUDE.md: the steps for a change outside forge move to a reference file, because they matter only when code is written.
+- core/CLAUDE.md: the plan question becomes a plan decision that Claude makes and states without asking, and Rapid-Fix Mode treats the request as the go, per the user's 2026-11-09 request.
+- core/CLAUDE.md, core/skills/forge (SKILL.md, build-lane.md, implement-mode.md, plan-review-prompt.md, review-checklist.md, plan-artifact.html, render_artifact.py, code-standards.md), core/skills/brainstorming/SKILL.md: tests cover the critical path only, Claude chooses them, and plan approval covers them with no separate "tests yes".
+- core/skills/ship-pr/scripts/ship_record.py, core/CLAUDE.md: the plan decision is no longer recorded, the `answer` subcommand is removed, and the ship check requires only a current code review.
+- core/skills/forge (SKILL.md, build-lane.md, forge-core.js, run_context.py), core/skills/ship-pr/scripts/ship_record.py, modules/sandbox/settings.fragment.json: a build run no longer pauses before ship, per the user's 2026-11-10 request. The checkpoint, the smoke relaunch and the `PRE_SHIP` status are removed, and a failed ship is retried by running the shipper by hand.
+- core/skills/forge (SKILL.md, forge-core.js): the `quick` and `dev` lane aliases and the agent cap are removed. Neither was used: 0 alias launches in 218 runs and 0 cap stops in 127 run dirs.
+- core/skills/ship-pr/SKILL.md, core/skills/forge/references/forge-core.js: a PR body has the sections Problem, Fix, How to verify and Notes, and a later push edits only what is now wrong.
+- core/agents/reviewer.md: the 30-tool-call budget number is deleted, per the user's 2026-11-10 choice.
+- core/CLAUDE.md: the 25-word limit and the semicolon ban are deleted, the noun limit becomes plain guidance, "Never skip steps" names Rapid-Fix Mode as the one shortcut, and the two review commands carry their required `--run-dir` and `--repo-dir` flags.
+- core/skills/forge/references (build-lane.md, cost-controls.md, codex-wrapper.md, recon-template.md, implement-mode.md, forge-core.js), core/skills/brainstorming/SKILL.md: prompt audit fixes remove text that contradicts current forge behavior, a duplicate rule, a dead `login_mode` line and a `/tmp` title file path.
+- core/CLAUDE.md (delegation rules), core/agents (reviewer.md, scout.md, worker.md), modules/sandbox/CLAUDE.fragment.md, core/skills/forge (SKILL.md, forge-core.js prompts, implement-mode.md, recon-template.md, artifacts.md, claude-reviewer-contract.md, cost-controls.md), core/skills/brainstorming/SKILL.md: the medium and low prompt audit rows give bare rules their reason, drop capitals and fixed number limits, soften lines that push delegation, and remove dead text.
+- docs/release-order.md: the update command runs from the agent-kit checkout, because the overlay has no install.py.
+- core/settings.fragment.json, README.md: the kit default session moves from Fable at high effort to Opus at xhigh effort, because Fable 5.2 costs too much as the orchestrator, and agent files keep their own models.
+
 ## 2026-11-09
 - core/agents (all files), core/profile.default.json: the agent file is the only place for an agent's model and effort, and the values move to the 2026-11-09 list for Fable 5.2.
 - core/agents/implementer.md, core/hooks/context_guard.py, forge docs: `claude-implementer` is renamed to `implementer`.

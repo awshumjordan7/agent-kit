@@ -9,7 +9,7 @@ artifact HTML.
   Forge itself drafts no QA artifact: the main session runs QA on demand with the overlay stage docs
   and has a worker render `qa-artifact.html` then.
 - Any other artifact has no template: the worker writes the page following the `artifact-design` skill.
-- Every artifact is glanceable: a 1-3 sentence summary at the top, tables over prose, copyable
+- Every artifact is glanceable: a short summary at the top, tables over prose, copyable
   credentials, a links section, no changelog or update prose.
 - Republishing a page over 100 KB goes to a worker. Reading a 600 KB page inline cost the main session about 150k tokens.
 - A worker whose run dir is outside its working directory cannot publish from the run dir: the Artifact tool takes files only under the working directory or its scratchpad. It copies the page and its images to its scratchpad and publishes from there.

@@ -84,9 +84,9 @@ See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook
 URLs, and permission changes there.
 
-The kit's default session is Fable at high effort. A user without Fable access sets `"model"` in
-`~/.ai-setup/local/settings.fragment.json`, for example `{"model": "opus"}`. That user also sets `"model": "opus"`
-under `agents.reviewer`, `agents.judge` and `agents.security-advisor` in the profile, because those agent files use Fable.
+The kit's default session is Opus at xhigh effort. The reviewer, judge and security-advisor agent files use
+Fable, so a user without Fable access sets `"model": "opus"` under `agents.reviewer`, `agents.judge` and
+`agents.security-advisor` in the profile.
 
 ## Forge lanes
 
@@ -95,7 +95,7 @@ under `agents.reviewer`, `agents.judge` and `agents.security-advisor` in the pro
 | `build` (default) | Investigate, plan, implement, gate, ship, independently review, converge, and hand off. |
 | `review` | Review and fix an existing working tree or branch diff. |
 
-`quick` and `dev` are temporary aliases for `build`. Every build plan receives one configured plan review.
+Every build plan receives one configured plan review.
 
 For layered releases, merge and tag agent-kit first, then bump the overlay's `requires_agent_kit` pin and run `python3 install.py update`. See [docs/release-order.md](docs/release-order.md).
 

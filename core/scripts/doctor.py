@@ -22,15 +22,6 @@ try:
 except ImportError:
     yaml = None
 
-HEADER = """# Code standards
-
-Injected into every forge implementer, reviewer, and fixer prompt. Sub-agents
-load ~/.claude/CLAUDE.md unless their frontmatter sets `omitClaudeMd`, and Codex
-reads only the generated AGENTS.md, so these rules travel with the prompt.
-Generated verbatim from CLAUDE.md sections "Don't", "Comments", "Tests" —
-do not edit here; edit CLAUDE.md and run `doctor.py --fix`.
-
-"""
 CODEX_HEADER = (
     "<!-- Generated from ~/.claude/CLAUDE.md by `doctor.py --fix`; edit CLAUDE.md, not this file. -->\n\n"
 )
@@ -390,47 +381,6 @@ def check_claude_md_size(ctx: Context) -> list[Finding]:
         f"CLAUDE.md is {n} lines (warn above {maximum}); run a prove-value pass before adding rules",
     )]
 
-def expected_code_standards(ctx: Context) -> tuple[str | None, str | None]:
-    source = ctx.root / "CLAUDE.md"
-    try:
-        lines = ctx.read(source).splitlines()
-    except FileNotFoundError:
-        return None, "CLAUDE.md is missing"
-    sections: list[str] = []
-    for name in ("Don't", "Comments", "Tests"):
-        heading = f"### {name}"
-        try:
-            start = lines.index(heading)
-        except ValueError:
-            return None, f'CLAUDE.md lacks the "{name}" section'
-        end = len(lines)
-        for index in range(start + 1, len(lines)):
-            if lines[index].startswith(("### ", "## ")):
-                end = index
-                break
-        sections.append("\n".join(lines[start:end]).rstrip())
-    return HEADER + "\n\n".join(sections) + "\n", None
-
-def check_code_standards_sync(ctx: Context) -> list[Finding]:
-    expected, error = expected_code_standards(ctx)
-    target = ctx.root / "skills/forge/references/code-standards.md"
-    if error is not None or expected is None:
-        message = error or "cannot generate"
-        return [finding("FAIL", "code-standards-sync", ctx, "CLAUDE.md", message)]
-    try:
-        actual = ctx.read(target)
-    except FileNotFoundError:
-        actual = None
-    if actual == expected:
-        return []
-    if ctx.fix:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(expected, encoding="utf-8")
-        ctx._reads[target] = expected
-        return [finding("FIXED", "code-standards-sync", ctx, target, "regenerated from CLAUDE.md")]
-    message = "generated code standards are missing" if actual is None else "generated code standards differ"
-    return [finding("FAIL", "code-standards-sync", ctx, target, message)]
-
 def strip_claude_only(
     lines: list[str], sections: list[str], bullets: list[str], include: list[str]
 ) -> list[str]:
@@ -627,7 +577,6 @@ CHECKS: list[tuple[str, Check]] = [
     ("builtin-agents", check_builtin_agents),
     ("agent-defers", check_agent_defers),
     ("claude-md-size", check_claude_md_size),
-    ("code-standards-sync", check_code_standards_sync),
     ("codex-agents-sync", check_codex_agents_sync),
     ("overrides-exist", check_overrides_exist),
     ("base-branches", check_base_branches),
