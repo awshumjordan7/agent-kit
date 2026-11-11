@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-10
+- core/skills/forge/scripts/gate.sh: a changed `.py` file under a `tests/` folder that defines no test (`conftest.py`, a fakes module) runs its nearest `tests` folder, because passed alone it made pytest collect 0 tests and failed the gate.
+
 ## 2026-11-09
 - core/agents (all files), core/profile.default.json: the agent file is the only place for an agent's model and effort, and the values move to the 2026-11-09 list for Fable 5.2.
 - core/agents/implementer.md, core/hooks/context_guard.py, forge docs: `claude-implementer` is renamed to `implementer`.
