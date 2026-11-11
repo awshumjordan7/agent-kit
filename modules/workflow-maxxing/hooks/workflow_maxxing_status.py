@@ -69,6 +69,7 @@ def main() -> int:
             "notificationType": _text(payload, "notification_type"),
             "message": _text(payload, "message"),
             "source": _text(payload, "source") or _text(payload, "reason"),
+            "permissionMode": _text(payload, "permission_mode"),
         }
         _send(socket_path, (json.dumps(request) + "\n").encode(), deadline)
     except (OSError, ValueError):

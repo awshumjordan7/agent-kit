@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-11
+- modules/workflow-maxxing/hooks/workflow_maxxing_status.py: forward the hook's permission_mode, so the app can restart a terminal session in its current mode.
+
 ## 2026-11-10
 - core/CLAUDE.md: cut from 198 lines to 104, per the user's 2026-11-10 request to remove bloat. Lines that other text already states, the MCP Usage section and the wait recipe for sub-agents are deleted.
 - core/CLAUDE.md, core/skills/forge/references/code-standards.md, core/scripts/doctor.py, aisetup/compose.py: the Don't, Comments and Tests rules live only in code-standards.md, which is now edited by hand, because forge already sends it to every agent that writes or reviews code. The doctor check and the installer step that generated it are removed.
