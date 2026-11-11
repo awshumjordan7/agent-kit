@@ -41,5 +41,4 @@ implementer copies their shape.
 Anything the spec leaves ambiguous. These go to the user before the plan.
 
 ## Run settings
-- `login_mode`: `token` (v1 default)
 - `lenses_expected`: which of `security` / `dx-audit` / `design-audit` the changed paths will trigger

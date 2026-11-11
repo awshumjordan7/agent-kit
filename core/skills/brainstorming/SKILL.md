@@ -11,9 +11,6 @@ exploration and design — it produces a plan, not code.
 
 ## Phase 1: Understand
 
-Ask every independent question in the same turn; go one at a time only when the next question
-depends on the answer.
-
 **Ground in the codebase first.** When the feature touches existing code, before (or
 alongside) questioning, map the current state instead of assuming it: use `locator` agents
 for where-is lookups (entry points, call sites, relevant files) and one `scout` agent

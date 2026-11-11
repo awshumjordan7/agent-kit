@@ -1756,7 +1756,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const baseRule = base
     ? `The base branch is ${base}; do not run resolve-base-branch.sh; use it as <base> in every ship-pr step, including \`gh pr create --base ${base}\`. `
     : ''
-  const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to /tmp/pr-title.txt with a quoted heredoc as for gh pr create, then run gh pr edit <number> --title "$(cat /tmp/pr-title.txt)".`
+  const titleRule = `Title the PR exactly ${JSON.stringify(planPrTitle())}. After gh pr create, run gh pr view <number> --json title; if the title differs, write that exact title to the title file in the ship-pr $TMPDIR folder and run gh pr edit <number> --title "$(cat <title file>)".`
   const continueBranch = LAUNCH.branch || ''
   const continueBaseRule = `The PR's base branch is ${LAUNCH.prBase}. Do not run resolve-base-branch.sh. Use it as <base> in every ship-pr step. `
   const openGuard = `Before any commit or push, run \`gh pr view ${shellQuote(continueBranch)} --json number,url,state\`. When it exits non-zero or state is not OPEN, commit and push nothing. Return branch ${continueBranch} and repo as usual, prUrl "", prNumber 0, skipped true, and reason "NO_OPEN_PR: ${continueBranch} <state or first stderr line>". `

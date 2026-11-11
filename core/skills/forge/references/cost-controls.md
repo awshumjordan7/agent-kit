@@ -13,8 +13,8 @@ as stalled only when neither its event log nor its Codex rollout file (which gro
 changed for that long. Each `watch` call restarts the idle count, so its own stall exit (75) needs
 `--max-wait` above the stall timeout (`CODEX_STARTED` prints `--max-wait 2400`); the run's
 watchdog, which kills a stalled session and writes `<log>.failed`, is the primary stall detector.
-`watch` always runs in the background so a stall surfaces as a notification,
-never as a silent hang.
+`watch` runs in the foreground as one bare Bash call. On exit 10 the caller calls it again,
+until it prints `WATCH_RESULT`.
 
 - `references/codex-prompt-contract.md` is prepended to every prompt by `codex-exec.sh`
   (one `review` section for plan review, code review, verify).

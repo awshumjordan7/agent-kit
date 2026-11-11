@@ -5,8 +5,7 @@ hand, or by another session). No investigation, no plan review, no review panel 
 strict, phase-by-phase execution with a gate after each phase.
 
 **Code is written by the `implementer` agent, not by this session.** Its agent file sets the
-model and effort. The old implement mode ran everything in-session on the top-level model; that
-was the most expensive path in the skill.
+model and effort.
 
 ## Steps
 
