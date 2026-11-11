@@ -810,7 +810,7 @@ async function launchCheck(relaunch) {
     ? { base: args.base, baseRef: prBaseRef, head: facts.head || '', prBase: args.base, branch: continueBranch }
     : { base: continueFrom, baseRef: facts.baseRef, head: facts.head || '', prBase: args.base, branch: continueBranch }
   await decide(`Continue mode: commits go on open PR branch ${continueBranch} from ${continueFrom}; review scope ${continueScope === 'pr' ? `the whole PR against ${LAUNCH.baseRef}` : `this run's commits from ${continueFrom}`}.`)
-  if (PARAMS.prBodyExtra) await decide(`prBodyExtra ${PARAMS.prBodyExtra} is not used: continue mode keeps the open PR's title and body.`)
+  if (PARAMS.prBodyExtra) await decide(`prBodyExtra ${PARAMS.prBodyExtra} is not used: continue mode edits the open PR's title and body in place.`)
 }
 
 // Scripts such as gate.sh, git-net.sh and codex-exec.sh leave the Bash sandbox only when the whole
@@ -1570,11 +1570,11 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   if (staging.excluded.length) await decide(`Ship excluded env-like paths from staging: ${staging.excluded.join(', ').slice(0, 500)}`)
   const testing = PARAMS.prBodyExtra ? 'omit a testing-results section unless the prBodyExtra section supplies one' : 'omit a testing-results section'
   const bodyExtra = PARAMS.prBodyExtra
-    ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after the bullets; keep that section whenever you rewrite the body. `
+    ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after How to verify; keep that section whenever you rewrite the body. `
     : ''
   const tailWith = extra => `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. After the push, run ship-pr's PR checks step (section 4 step 5) and return its result line as checks. ${extra} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const tail = tailWith(`${bodyExtra}${gateNotice}`)
-  const bodyRule = `The PR body holds three to six bullets on what changed and why (no file lists) and links; ${testing}.`
+  const bodyRule = `The PR body has the sections Problem, Fix, How to verify and Notes that ship-pr section 5 describes (no file lists), then links; ${testing}.`
   const base = LAUNCH.base
   const baseRule = base
     ? `The base branch is ${base}; do not run resolve-base-branch.sh; use it as <base> in every ship-pr step, including \`gh pr create --base ${base}\`. `
@@ -1583,7 +1583,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const continueBranch = LAUNCH.branch || ''
   const continueBaseRule = `The PR's base branch is ${LAUNCH.prBase}. Do not run resolve-base-branch.sh. Use it as <base> in every ship-pr step. `
   const openGuard = `Before any commit or push, run \`gh pr view ${shellQuote(continueBranch)} --json number,url,state\`. When it exits non-zero or state is not OPEN, commit and push nothing. Return branch ${continueBranch} and repo as usual, prUrl "", prNumber 0, skipped true, and reason "NO_OPEN_PR: ${continueBranch} <state or first stderr line>". `
-  const continueTail = `${tailWith('')} Do not run \`gh pr create\`. Keep the PR's title and body as they are.`
+  const continueTail = `${tailWith('')} Do not run \`gh pr create\`. Update the PR's title and body as ship-pr section 4 step 2 says: change only what is now wrong or missing.`
   const syncSteps = branch => `run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${shellQuote(branch)}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${shellQuote(branch)}\` before pushing (automation such as a docs(map) job may have pushed; never force-push)`
   const prompt = existing && continueBranch
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${existing.branch}. ${openGuard}Commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, ${syncSteps(existing.branch)}, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${continueTail}`
