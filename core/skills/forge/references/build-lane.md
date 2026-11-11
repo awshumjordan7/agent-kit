@@ -10,7 +10,7 @@ Use the default build lane for confirmed bugs, features, contract changes, and m
 | Plan | main session | State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. A plan that changes instruction files carries `## Changelog`, and its last phase writes those lines to CHANGELOG.md. |
 | Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. |
 | Confirm | user | The user confirms the plan, test table included, before the run starts. On approval of a plan with `## Changelog`, the main session writes `<runDir>/user-ok.md` with the quoted approval and date; ship-pr's changelog check needs it. |
-| Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, pre-ship checkpoint, ship, parallel Codex and Claude review plus lenses, triage, the capped fix loop (at most `MAX_FIX_ROUNDS` (2) rounds, each gate-failure round re-running the full gate and each review-fix round running lint, typecheck and Semgrep when a gate is configured and, when review items changed, re-checked by a scoped Claude verifier; one full gate runs on the final state when review fixes were applied, and a failing final gate runs up to 2 more fix rounds with a full gate each), handoff. |
+| Workflow | `forge-core.js`, `args.lane='build'` | Implement, repository-specific gate, ship, parallel Codex and Claude review plus lenses, triage, the capped fix loop (at most `MAX_FIX_ROUNDS` (2) rounds, each gate-failure round re-running the full gate and each review-fix round running lint, typecheck and Semgrep when a gate is configured and, when review items changed, re-checked by a scoped Claude verifier; one full gate runs on the final state when review fixes were applied, and a failing final gate runs up to 2 more fix rounds with a full gate each), handoff. |
 
 The `implementer` agent writes the code at its file's model and effort, whether or not `fullySpecified` is true.
 
@@ -22,11 +22,11 @@ A plan with two or more `### Phase <id>: <title>` headings under `## Phases` run
 2. Each phase gets its own implementer turn (`implement-phase-<id>`) with the full plan as context and the instruction to implement only that phase.
 3. The phase's files are committed as `Phase <id>: <title>` through `gate.sh --no-stages --commit`, and the SHA is recorded in `<runDir>/phases.json`.
 4. In gate mode `full`, the phase gate (`gate-phase-<id>`) runs on that SHA with `gate.sh --sha` in `<runDir>/gate-checkout` while the next phase is implemented. Gates run one at a time. The last phase gets no gate of its own: after every earlier gate and its fix commits have settled, the final gate runs on HEAD over every run file.
-5. A failed gate is collected at the next phase boundary, never while an implementer is editing. The fix loop runs in the primary worktree, each applied round is committed as `Fix Phase <id> gate`, and that SHA is re-gated. The final gate, and any fix it needs, finishes before the pre-ship checkpoint.
+5. A failed gate is collected at the next phase boundary, never while an implementer is editing. The fix loop runs in the primary worktree, each applied round is committed as `Fix Phase <id> gate`, and that SHA is re-gated. The final gate, and any fix it needs, finishes before ship.
 
-Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the checkpoint. Every diff starts at the merge-base with the base branch. A resumed run re-gates the pending and failed gates saved in `phases.json`, starts at the first uncommitted phase, and runs the final gate. The handoff removes the gate checkout; a run that stops for a judge or throws removes it directly.
+Gate mode `none` keeps the phase commits, which still go through `gate.sh --no-stages`, and runs no gates. The review panel sees the whole branch diff once, and the shipper pushes the recorded branch and opens one PR after the final phase. Every diff starts at the merge-base with the base branch. A resumed run re-gates the pending and failed gates saved in `phases.json`, starts at the first uncommitted phase, and runs the final gate. The handoff removes the gate checkout; a run that stops for a judge or throws removes it directly.
 
-Workflow resume args include `checkpointDecision` (`ship`, `smoke`, or `qa`) and optional `smokeCommand`. Forge has no QA stage: `qa` stops at `PRE_SHIP` again, and the main session runs QA on demand with the overlay stage docs, then relaunches with `ship` or `smoke`. When a checkpoint returns `PRE_SHIP`, relaunch with the same args plus the user's decision. A new session relaunches with the args in `launch-args.json` plus `checkpointDecision`, changing nothing else. A `smoke` relaunch runs `smokeCommand`, for example after a fix commit. Forge saves an empty command, so a `smoke` relaunch without `smokeCommand` stops BLOCKED. `run_context.py checkpoint-save` writes `checkpoint.json` (command, changed files, branch, phases and context; no summary or script), and the relaunch reads it through `checkpoint-facts`. A new session passes `resumeFromRunId` only after carrying the journal over with `workflow_carry.py` (see `SKILL.md` step 6).
+A new session passes `resumeFromRunId` only after carrying the journal over with `workflow_carry.py` (see `SKILL.md` step 6).
 
 ## Evidence rules
 
@@ -47,7 +47,7 @@ The triage agent confirms each finding against current code. Confirmed findings,
 
 `gate.mode` is resolved per repository and defaults to `full`. Full mode retains the configured gate. Personal repositories use `none`: they have no tests, spawn no gate agent, and run no test, lint, typecheck, migration, or Semgrep command; Forge still creates the review diff with plain `git diff`.
 
-Every build reaches a pre-ship checkpoint after the gate and pauses at `PRE_SHIP`. Forge writes no smoke check. A smoke result appears only after a relaunch with `checkpointDecision` smoke and `smokeCommand`; forge runs that command in the foreground, and a smoke that changes the working tree fails. QA runs only by hand, on demand, with the overlay stage docs. Mode `none` still reaches this checkpoint after skipping its gate.
+Every build goes from the gate straight to ship, with no pause. QA runs only by hand, on demand, with the overlay stage docs. Mode `none` goes straight to ship after skipping its gate.
 
 ## Multi-repository work
 
@@ -55,4 +55,4 @@ Use a separate run directory and repository-specific `planPath` for each reposit
 
 ## What the user receives
 
-The handoff includes the implementation summary, gate and checkpoint result, review disposition, live-evidence status, manual QA checklist, decision log, and branch and pull-request link. For `mode: none`, it states `gates: none (personal repo)` and cites the smoke command in `checkpoint.json`. The pre-ship handoff states the implementer's summary and the smoke command and result; the final handoff after a relaunch carries them over from the pre-ship `handoff.md`.
+The handoff includes the implementation summary, gate result, review disposition, live-evidence status, manual QA checklist, decision log, and branch and pull-request link. For `mode: none`, it states `gates: none (personal repo)`.

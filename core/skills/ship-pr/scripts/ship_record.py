@@ -27,7 +27,7 @@ from pathlib import Path
 RECORD_NAME = "ship-record.json"
 # Forge's build and review lanes write these into their run dir. They are exempt because they ship
 # before their own review. Implement-mode run dirs hold none of them, so those runs are not exempt.
-FORGE_MARKERS = ("phases.json", "context-gate.json", "checkpoint.json")
+FORGE_MARKERS = ("phases.json", "context-gate.json")
 # Before per-label slots these keys sat at the top level, for one change per run dir.
 LEGACY_KEYS = ("planAnswer", "planPath", "planReview", "review")
 
