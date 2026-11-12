@@ -512,8 +512,8 @@ function configuredStage(name) {
   return Boolean(FORGE_CONFIG && FORGE_CONFIG.stages && FORGE_CONFIG.stages[name])
 }
 
-// A role in ROLE_SETTINGS gets that model and effort. Any other role must name an agentType,
-// and the runtime then uses that agent file's model and effort.
+// A role in ROLE_SETTINGS gets that model and effort. A role in ROLE_AGENT_TYPES takes its agentType from
+// that table, and any other role must name one; the runtime then uses that agent file's model and effort.
 function agentCallOpts(role, opts) {
   const settings = ROLE_SETTINGS[role]
   if (settings) return { ...opts, model: settings.model, effort: settings.effort }
@@ -1359,16 +1359,16 @@ async function fixLoop(opts) {
   // A rulings resume passes the ids an earlier launch fixed and verified; unruled ones start
   // closed, so they skip the decider and are rechecked only when a later fix touches their file.
   if (kind === 'review') {
-    let seeded = 0
+    const seeded = []
     for (const id of PARAMS.fixedIds) {
       const item = reviewOpen.get(id)
       if (!item || rulingFor(item)) continue
       reviewOpen.delete(id)
       closedIds.add(id)
       verifiedClosed.set(id, item)
-      seeded++
+      seeded.push(item)
     }
-    if (seeded) await decide(`${label}: ${seeded} finding(s) fixed and verified in an earlier launch start closed.`)
+    if (seeded.length) await decide(`${label}: ${seeded.length} finding(s) fixed and verified in an earlier launch start closed: ${seeded.map(item => `${item.file}:${item.line}`).join(', ').slice(0, 500)}`)
   }
   const disputes = []
   const history = []
@@ -1537,7 +1537,7 @@ async function fixLoop(opts) {
     // A fix result can list no touched files (a decider that applied without an apply result), so the file list alone cannot say whether the tree changed.
     unresolved: open, unresolvedDisputes: openDisputes, rounds,
     fixesApplied: touched.length > 0 || rounds.some(record => record.appliedBy === 'decider' || Boolean(record.fix && (record.fix.fixed || []).length)),
-    touchedFiles: touched, blocked, needsJudge, closed: [...verifiedClosed.keys()],
+    touchedFiles: touched, blocked, needsJudge, fixedIds: [...verifiedClosed.keys()].filter(id => !unverifiedRecheck.some(item => findingKey(item) === id)),
     gatePassed: gateRan ? Boolean(gate && gate.passed) : true, gate, gateRan, ...blockedFields,
   }
 }
@@ -2245,7 +2245,7 @@ if (state.needsJudge) {
     status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir,
     decisions: [...decisions], fixSync: state.fixSync || { ran: false, ok: false, sha: null },
     uncommitted: state.uncommitted, uncommittedError: state.uncommittedError || null,
-    fixedIds: (state.convergence && state.convergence.closed) || [],
+    fixedIds: (state.convergence && state.convergence.fixedIds) || [],
   }
 }
 phase('Handoff')
