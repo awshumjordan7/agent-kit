@@ -42,6 +42,12 @@ RESEND_LABEL = re.compile(r"\(resend of ([^)\s]+)\)")
 ANSWERED_QUESTION = re.compile(r"^- \[answered[^\]]*\]\s*(.*?)(?:\s+->\s+.*)?$")
 NEXT_ENTRY_START = re.compile(r"^([0-9A-Za-z]+)[.)] ")
 SUPERSEDED_TAG = "(superseded by "
+SESSION_MODEL_PREFIX = "Session model:"
+SESSION_MODEL_LINE = re.compile(
+    r"^Session model:\s*(?P<model>[A-Za-z0-9._\[\]-]+)"
+    r"(?:\s*/\s*(?P<effort>low|medium|high|xhigh|max))?\s*$"
+)
+STATE_TEMPLATE_PATH = "~/.claude/references/state-template.md"
 APP_ENV = ("WORKFLOW_MAXXING_SOCKET", "WORKFLOW_MAXXING_PTY", "WORKFLOW_MAXXING_TOKEN")
 APP_DEADLINE_SECONDS = 5
 # The app refuses these session names only after it has replied ok, so check them before sending.
@@ -127,7 +133,9 @@ def _remaining(deadline: float) -> float:
     return left
 
 
-def _open_in_app(app: tuple[str, str, str], session_name: str, cwd: Path, prompt: str) -> str | None:
+def _open_in_app(
+    app: tuple[str, str, str], session_name: str, cwd: Path, prompt: str, model: str, effort: str
+) -> str | None:
     """Ask the workflow-maxxing app to start the successor in this pane; return the error, or None on ok."""
     socket_path, pty, token = app
     request = {
@@ -140,6 +148,10 @@ def _open_in_app(app: tuple[str, str, str], session_name: str, cwd: Path, prompt
         "prompt": prompt,
         "permissionMode": "bypassPermissions",
     }
+    if model:
+        request["model"] = model
+    if effort:
+        request["effort"] = effort
     deadline = time.monotonic() + APP_DEADLINE_SECONDS
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -170,14 +182,14 @@ def _open_in_app(app: tuple[str, str, str], session_name: str, cwd: Path, prompt
 
 
 def _open_windows_terminal_tab(
-    state_path: Path, session_name: str, cwd: Path, prompt: str, distro: str
+    state_path: Path, session_name: str, cwd: Path, successor_args: list[str], distro: str
 ) -> subprocess.CompletedProcess[str]:
     script = state_path.parent / f"handoff-{session_name}.sh"
     # wt.exe splits its command line on ";" and the prompt contains one.
     script.write_text(
         "#!/usr/bin/env bash\n"
         f"cd {shlex.quote(str(cwd))} || exit 1\n"
-        f"claude --name {shlex.quote(session_name)} --permission-mode bypassPermissions {shlex.quote(prompt)}\n"
+        f"{shlex.join(successor_args)}\n"
         "exec bash\n"
     )
     return subprocess.run(
@@ -380,6 +392,31 @@ def _required_sections_refusal(sections: dict[str, list[str]]) -> str | None:
     ) + "\n"
 
 
+def _session_model(state_text: str) -> tuple[str, str] | str:
+    """Return (model, effort) from the header `Session model:` line, each possibly empty.
+
+    Only lines above the first `## ` heading are read. A malformed or repeated line
+    returns the refusal text instead.
+    """
+    found: list[str] = []
+    for line in state_text.splitlines():
+        if line.startswith("## "):
+            break
+        if line.startswith(SESSION_MODEL_PREFIX):
+            found.append(line.rstrip())
+    if not found:
+        return "", ""
+    match = SESSION_MODEL_LINE.match(found[0])
+    if match is None or len(found) > 1:
+        bad = found[0] if match is None else found[1]
+        return (
+            f'handoff.py: bad session model line "{bad}"; write "Session model: <model> / <effort>" '
+            "with effort low, medium, high, xhigh or max, or remove the line "
+            f"(see {STATE_TEMPLATE_PATH})\n"
+        )
+    return match.group("model"), match.group("effort") or ""
+
+
 def _load_checkpoint(run_dir: Path) -> dict:
     path = run_dir / CHECKPOINT_NAME
     try:
@@ -554,6 +591,11 @@ def _run_handoff(
     if refusal:
         sys.stderr.write(refusal)
         return 1
+    session_model = _session_model(state_text)
+    if isinstance(session_model, str):
+        sys.stderr.write(session_model)
+        return 1
+    model, effort = session_model
     state_text = _archive_superseded(state_path, state_text, dry_run)
     sections = _sections(state_text)
     question_bullets = _bullets(sections[QUESTIONS_HEADING])
@@ -574,15 +616,24 @@ def _run_handoff(
         "Read only that file to start; it points at everything else. "
         + _summary_line(record)
     )
+    if model:
+        shown = f"{model} / {effort}" if effort else model
+    else:
+        shown = "none (no line in STATE.md)"
+    session_model_line = f"session model: {shown}\n"
     if dry_run:
+        sys.stdout.write(session_model_line)
         sys.stdout.write(f"dry run: nothing launched; successor prompt:\n{prompt}\n")
         return 0
-    input_text = shlex.join(
-        ["claude", "--name", session_name, "--permission-mode", "bypassPermissions", prompt]
-    )
-    manual_command = f"cd {shlex.quote(str(cwd))} && " + shlex.join(
-        ["claude", "--name", session_name, "--permission-mode", "bypassPermissions", prompt]
-    )
+    # --name stays first after claude: _claude_pids finds the successor by that prefix.
+    successor_args = ["claude", "--name", session_name, "--permission-mode", "bypassPermissions"]
+    if model:
+        successor_args += ["--model", model]
+    if effort:
+        successor_args += ["--effort", effort]
+    successor_args.append(prompt)
+    input_text = shlex.join(successor_args)
+    manual_command = f"cd {shlex.quote(str(cwd))} && " + input_text
     run_yourself = f"run this command yourself: {manual_command}"
     distro = os.environ.get("WSL_DISTRO_NAME", "")
     on_wsl = sys.platform == "linux" and bool(distro) and shutil.which("wt.exe") is not None
@@ -606,7 +657,7 @@ def _run_handoff(
         if refusal:
             sys.stderr.write(refusal)
             return 1
-        error = _open_in_app(app, session_name, cwd, prompt)
+        error = _open_in_app(app, session_name, cwd, prompt, model, effort)
         if error:
             sys.stderr.write(
                 f"handoff.py: workflow-maxxing did not open the successor: {error}; {run_yourself}\n"
@@ -627,7 +678,7 @@ def _run_handoff(
             return 1
     else:
         try:
-            result = _open_windows_terminal_tab(state_path, session_name, cwd, prompt, distro)
+            result = _open_windows_terminal_tab(state_path, session_name, cwd, successor_args, distro)
         except OSError as error:
             sys.stderr.write(
                 f"handoff.py: failed to open Windows Terminal tab: {error}; {run_yourself}\n"
@@ -658,6 +709,7 @@ def _run_handoff(
     _advance_checkpoint(run_dir, checkpoint, entries, _answered_questions(sections))
     sys.stdout.write(f"session: {session_name}\n")
     sys.stdout.write(f"state:   {state_path}\n")
+    sys.stdout.write(session_model_line)
     return 0
 
 
