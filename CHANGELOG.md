@@ -5,6 +5,8 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-11-11
+- core/references/state-template.md: STATE.md gets an optional `Session model` header line so a workstream can keep its model across handoffs without changing the saved default.
+- core/scripts/handoff.py: the successor starts with `--model` and `--effort` when STATE.md names a session model.
 - core/agents/implementer.md, core/skills/forge/references/cost-controls.md: the implementer runs at medium effort instead of high, per the user's 2026-11-11 request.
 - modules/workflow-maxxing/hooks/workflow_maxxing_status.py: forward the hook's permission_mode, so the app can restart a terminal session in its current mode.
 

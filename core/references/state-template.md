@@ -41,6 +41,14 @@ dated bullet when the user changes the goal or a rule instead of rewording an
 old one. Mark a question `[answered <date>]` with the user's answer in quotes;
 remove it after the next handoff lists it under "Close these".
 
+`Session model` is optional and is not in the template above. To keep a
+workstream on one model, add the line `Session model: <model> / <effort>`
+directly under the `Updated:` line, with nothing else on it. handoff.py then
+starts the successor with `--model` and `--effort`, so the workstream stays on
+that model without changing the saved default. The effort is one of low,
+medium, high, xhigh, max and may be left out. handoff.py refuses a malformed
+line. Add the line only when the user asked for a model for this workstream.
+
 Before reusing an `(inferred)` line in published text (a PR body, ticket or message), open its source and re-verify it.
 
 Keep STATE.md under about 30 KB (about 8k tokens), measured with `wc -c`. `Do not redo` holds facts a new session still needs. History of merged PRs and finished runs moves to the decisions file named under Pointers (create `<runDir>/decisions.md` when it is missing), with one pointer line left here. handoff.py moves tagged Next entries to STATE-archive.md and warns when the file is still over 30 KB.
