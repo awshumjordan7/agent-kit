@@ -616,12 +616,13 @@ def _run_handoff(
         "Read only that file to start; it points at everything else. "
         + _summary_line(record)
     )
+    if model:
+        shown = f"{model} / {effort}" if effort else model
+    else:
+        shown = "none (no line in STATE.md)"
+    session_model_line = f"session model: {shown}\n"
     if dry_run:
-        if model:
-            shown = f"{model} / {effort}" if effort else model
-        else:
-            shown = "none (no line in STATE.md)"
-        sys.stdout.write(f"session model: {shown}\n")
+        sys.stdout.write(session_model_line)
         sys.stdout.write(f"dry run: nothing launched; successor prompt:\n{prompt}\n")
         return 0
     # --name stays first after claude: _claude_pids finds the successor by that prefix.
@@ -708,6 +709,7 @@ def _run_handoff(
     _advance_checkpoint(run_dir, checkpoint, entries, _answered_questions(sections))
     sys.stdout.write(f"session: {session_name}\n")
     sys.stdout.write(f"state:   {state_path}\n")
+    sys.stdout.write(session_model_line)
     return 0
 
 
