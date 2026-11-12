@@ -29,7 +29,7 @@ MENU_LEAD = "Pass subagent_type; the agent file supplies the model and effort, s
 STATIC_AGENT_MENU = (
     f"{MENU_LEAD} Choices: scout (opus; reading and judgment), "
     "worker (opus; mechanical edits and tests), locator (haiku; where-is lookups), "
-    "shipper (opus; commit, push, PR), browser (opus; browser QA)."
+    "shipper (sonnet; commit, push, PR), browser (sonnet; browser QA)."
 )
 
 

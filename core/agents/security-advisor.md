@@ -2,7 +2,7 @@
 name: security-advisor
 description: Read-only security agent. Gives an independent opinion (agree / partly / disagree) on a security design decision in a brief file, or reviews a diff for security defects when forge's security lens calls it. Covers secrets, encryption, authentication, authorization, tenant isolation and network safety, with file:line evidence. Never edits code.
 model: fable
-effort: xhigh
+effort: high
 disallowedTools: Agent, Edit, NotebookEdit
 omitClaudeMd: true
 maxTurns: 60
