@@ -5,6 +5,9 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-11-12
+- core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md: a resume after a ruling passes `fixedIds`, so findings the earlier launch fixed and verified start closed and the run does not stop for a second ruling on them.
+- core/agents/runner.md: a new Haiku agent with two tools runs forge's command-only steps, because a start with every tool measured 44,591 tokens against 4,960 for a short tool list.
+- core/skills/forge/references/cost-controls.md: `gate` and `runCommand` take their model from the `runner` agent file.
 - core/agents (reviewer.md, security-advisor.md): Fable runs at high effort instead of xhigh, because the 2026-11-12 usage audit found the review stages cost about six times more per forge run and no gain from xhigh was measured.
 - core/agents/judge.md: the judge runs on Opus at xhigh instead of Fable at high, per the user's 2026-11-12 request.
 - core/agents (shipper.md, browser.md): the shipper and the browser run on Sonnet again instead of Opus.

@@ -22,9 +22,10 @@ const ROLE_SETTINGS = {
   handoff: { model: 'opus', effort: 'high' },
   codexWrap: { model: 'haiku', effort: 'low' },
   ffReview: { model: 'sonnet', effort: 'low' },
-  gate: { model: 'haiku', effort: 'low' },
-  runCommand: { model: 'haiku', effort: 'low' },
 }
+
+// Roles that run one command and return its output start on the small runner agent file.
+const ROLE_AGENT_TYPES = { gate: 'runner', runCommand: 'runner' }
 
 // Agent types whose empty result gets one retry on Opus at the agent file's effort.
 const RETRY_AGENT_TYPES = ['reviewer', 'judge', 'security-advisor']
@@ -42,6 +43,7 @@ const PARAMS = {
     : typeof args.criteria === 'string' ? args.criteria.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : [],
   noShip: args.noShip === true,
   rulings: Array.isArray(args.rulings) ? args.rulings : null,
+  fixedIds: Array.isArray(args.fixedIds) ? args.fixedIds.map(String) : [],
   planPath: typeof args.planPath === 'string' && args.planPath ? args.planPath : `${args.runDir}/plan.md`,
   dryRun: args.dryRun === true,
   dryRunFailGate: typeof args.dryRunFailGate === 'string' ? args.dryRunFailGate : null,
@@ -515,6 +517,7 @@ function configuredStage(name) {
 function agentCallOpts(role, opts) {
   const settings = ROLE_SETTINGS[role]
   if (settings) return { ...opts, model: settings.model, effort: settings.effort }
+  if (ROLE_AGENT_TYPES[role]) return { ...opts, agentType: ROLE_AGENT_TYPES[role] }
   if (opts.agentType) return { ...opts }
   throw new Error(`forge role ${role} has no agentType and no ROLE_SETTINGS entry`)
 }
@@ -1121,7 +1124,8 @@ function partitionTriage(findings, verdicts) {
 }
 
 // Triage sees the full finding list, so a rulings resume replays the first run's triage call.
-// A ruled finding takes its ruling instead of its triage verdict.
+// A ruled finding takes its ruling instead of its triage verdict. A confirmed finding whose id is in
+// fixedIds then starts closed in the fix loop instead of going to the decider again.
 function keepUnruled(partitioned, ruled) {
   const unruled = new Set(ruled.confirmed.map(findingKey))
   return {
@@ -1352,6 +1356,20 @@ async function fixLoop(opts) {
   const reviewOpen = new Map(opts.reviewItems.map(item => [findingKey(item), item]))
   const closedIds = new Set()
   const verifiedClosed = new Map()
+  // A rulings resume passes the ids an earlier launch fixed and verified; unruled ones start
+  // closed, so they skip the decider and are rechecked only when a later fix touches their file.
+  if (kind === 'review') {
+    let seeded = 0
+    for (const id of PARAMS.fixedIds) {
+      const item = reviewOpen.get(id)
+      if (!item || rulingFor(item)) continue
+      reviewOpen.delete(id)
+      closedIds.add(id)
+      verifiedClosed.set(id, item)
+      seeded++
+    }
+    if (seeded) await decide(`${label}: ${seeded} finding(s) fixed and verified in an earlier launch start closed.`)
+  }
   const disputes = []
   const history = []
   const deciderNotes = []
@@ -1519,7 +1537,7 @@ async function fixLoop(opts) {
     // A fix result can list no touched files (a decider that applied without an apply result), so the file list alone cannot say whether the tree changed.
     unresolved: open, unresolvedDisputes: openDisputes, rounds,
     fixesApplied: touched.length > 0 || rounds.some(record => record.appliedBy === 'decider' || Boolean(record.fix && (record.fix.fixed || []).length)),
-    touchedFiles: touched, blocked, needsJudge,
+    touchedFiles: touched, blocked, needsJudge, closed: [...verifiedClosed.keys()],
     gatePassed: gateRan ? Boolean(gate && gate.passed) : true, gate, gateRan, ...blockedFields,
   }
 }
@@ -1642,7 +1660,8 @@ async function readUncommitted(state, label, phaseLabel) {
 }
 
 // Pushing gate-passing fixes before a needsJudge stop keeps them when a rulings resume re-triages the
-// tree. A skipped or failed push is recorded and never changes the needsJudge outcome.
+// tree; the resume passes the stop's fixedIds back, so those findings start closed in the fix loop.
+// A skipped or failed push is recorded and never changes the needsJudge outcome.
 async function syncBeforeJudge(state) {
   const loop = state.convergence
   const branch = (state.ship && state.ship.branch) || '(unknown branch)'
@@ -2226,6 +2245,7 @@ if (state.needsJudge) {
     status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir,
     decisions: [...decisions], fixSync: state.fixSync || { ran: false, ok: false, sha: null },
     uncommitted: state.uncommitted, uncommittedError: state.uncommittedError || null,
+    fixedIds: (state.convergence && state.convergence.closed) || [],
   }
 }
 phase('Handoff')
