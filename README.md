@@ -84,8 +84,8 @@ See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook
 URLs, and permission changes there.
 
-The kit's default session is Opus at xhigh effort. The reviewer, judge and security-advisor agent files use
-Fable, so a user without Fable access sets `"model": "opus"` under `agents.reviewer`, `agents.judge` and
+The kit's default session is Opus at xhigh effort. The reviewer and security-advisor agent files use
+Fable, so a user without Fable access sets `"model": "opus"` under `agents.reviewer` and
 `agents.security-advisor` in the profile.
 
 ## Forge lanes

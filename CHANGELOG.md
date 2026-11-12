@@ -4,6 +4,12 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-12
+- core/agents (reviewer.md, security-advisor.md): Fable runs at high effort instead of xhigh, because the 2026-11-12 usage audit found the review stages cost about six times more per forge run and no gain from xhigh was measured.
+- core/agents/judge.md: the judge runs on Opus at xhigh instead of Fable at high, per the user's 2026-11-12 request.
+- core/agents (shipper.md, browser.md): the shipper and the browser run on Sonnet again instead of Opus.
+- core/hooks/require_agent_model.py, README.md, docs/modules/codex.md, core/skills/forge/references/cost-controls.md: the stated models and efforts match the agent files.
+
 ## 2026-11-11
 - core/references/state-template.md: STATE.md gets an optional `Session model` header line so a workstream can keep its model across handoffs without changing the saved default.
 - core/scripts/handoff.py: the successor starts with `--model` and `--effort` when STATE.md names a session model.
