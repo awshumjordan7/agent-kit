@@ -279,9 +279,12 @@ def parse_markdown(text: str) -> tuple[str, list[tuple[str, list[str]]]]:
     return title, sections
 
 
-def render_sections(sections: list[tuple[str, list[str]]], collapsed: frozenset[str] = frozenset()) -> str:
-    """Render `## ` sections; a name in collapsed (lower-case) renders inside a closed <details>."""
-    used = set(FIXED_IDS)
+def render_sections(
+    sections: list[tuple[str, list[str]]], collapsed: frozenset[str] = frozenset(), used: set[str] | None = None
+) -> str:
+    """Render `## ` sections; a name in collapsed (lower-case) renders inside a closed <details>.
+    used holds the ids already on the page; pass one set across calls so ids stay unique."""
+    used = set(FIXED_IDS) if used is None else used
     out = []
     for name, body in sections:
         sid = slug(name)
@@ -344,8 +347,27 @@ def section_html(sid: str, label: str, inner: str) -> str:
     return f'<section id="{sid}" data-toc="{esc(label)}"><h2>{esc(label)}</h2>{inner}</section>'
 
 
-PLAN_FIXED_SECTIONS = ("out of scope", "risks", "alternatives", "open questions")
-PLAN_COLLAPSED = frozenset({"public api contract", "phases"})
+PLAN_COLLAPSED = frozenset({"public api contract"})
+# The four blocks at the top of the plan page: (slot, plan.md heading).
+PLAN_BLOCKS = (
+    ("WHY_HTML", "why"),
+    ("HOW_HTML", "how it works"),
+    ("SEES_HTML", "what the user sees"),
+    ("NOT_INCLUDED_HTML", "out of scope"),
+)
+# Tabs below the blocks: (tab id, label, plan.md headings in the tab, in this order).
+# A heading in no tab and in no block goes to More, in plan order.
+PLAN_TABS = (
+    ("summary", "Summary", ("summary", "decisions this plan makes")),
+    ("contract", "Contract", ("public api contract",)),
+    ("phases", "Phases", ("phases",)),
+    ("checks", "Checks", ("tests", "acceptance criteria")),
+    ("risks", "Risks", ("risks", "alternatives", "open questions")),
+    ("review", "Review", ()),
+    ("more", "More", ()),
+)
+NOT_STATED = '<p class="missing">Not stated in the plan.</p>'
+FACT_RE = re.compile(r"^\*\*([^*]+?):\*\*\s*(.*)$")
 
 
 def plan_tests(tests: list[str] | None) -> tuple[str, str]:
@@ -391,16 +413,38 @@ def review_count(findings: list[dict]) -> str:
     )
 
 
+def plan_block(key: str, body: list[str] | None) -> str:
+    """Body of one top block. A list shaped the way the plan contract asks gets the block's own layout:
+    "**Label:** text" items as a label list, a numbered list as steps, a plain list as a short list."""
+    if body is None:
+        return NOT_STATED
+    blocks = parse_blocks(body)
+    if not blocks:
+        return NOT_STATED
+    if len(blocks) == 1:
+        kind, items = blocks[0]
+        facts = [FACT_RE.match(text) for text, _subs in items] if kind == "ul" else []
+        if facts and all(facts):
+            rows = "".join(
+                f"<dt>{esc(m.group(1))}</dt><dd>{inline(m.group(2))}{sub_list(subs)}</dd>"
+                for m, (_text, subs) in zip(facts, items, strict=True)
+            )
+            return f'<dl class="facts">{rows}</dl>'
+        if kind == "ol" and key == "what the user sees":
+            rows = "".join(f'<li><div class="t"><p>{inline(t)}</p>{sub_list(subs)}</div></li>' for _n, t, subs in items)
+            return f'<ol class="steps">{rows}</ol>'
+        if kind == "ul":
+            return '<ul class="out">' + "".join(f"<li>{inline(t)}{sub_list(subs)}</li>" for t, subs in items) + "</ul>"
+    return render_blocks(blocks)
+
+
 def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], dict[str, bool]]:
     md_title, sections = parse_markdown(markdown)
     by_name: dict[str, list[str]] = {}
     for name, body in sections:
         by_name.setdefault(name.strip().lower(), body)
-    if "summary" in by_name:
-        summary_html = summary_box(render_blocks(parse_blocks(by_name["summary"])))
-    else:
-        summary_html = ""
-        warn("plan.md has no ## Summary section; the page renders without a Summary box")
+    if "summary" not in by_name:
+        warn("plan.md has no ## Summary section; the Summary tab renders without it")
     has_risks = "risks" in by_name
     if not has_risks:
         warn('plan.md has no ## Risks section; the Decision box shows "Risks: none listed"')
@@ -408,9 +452,11 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
         warn("no decision key; the Decision box shows only the Tests line")
     tests_html, tests_line = plan_tests(by_name.get("tests"))
 
-    fixed = [(name, body) for key in PLAN_FIXED_SECTIONS for name, body in sections if name.strip().lower() == key]
-    skip = {"summary", "tests", *PLAN_FIXED_SECTIONS}
-    rest = [(name, body) for name, body in sections if name.strip().lower() not in skip]
+    block_slots = {}
+    for slot, key in PLAN_BLOCKS:
+        if key not in by_name:
+            warn(f'plan.md has no ## {key.capitalize()} section; its block shows "Not stated in the plan."')
+        block_slots[slot] = plan_block(key, by_name.get(key))
 
     meta = []
     if data.get("ticket"):
@@ -460,29 +506,55 @@ def plan_slots(data: dict, markdown: str, _base: Path) -> tuple[dict[str, str], 
         + "</tbody></table></div>",
     ) if pending else ""
 
-    nxt = data.get("next", "")
-    go_html = (
-        '<div class="next go" role="note"><div class="summary-label">To start</div><ol>'
-        f"<li>Reply <strong>{esc(nxt)}</strong> to approve the plan, including its tests.</li>"
-        "</ol></div>"
-    ) if nxt else ""
+    used = set(FIXED_IDS) | {"why", "how", "sees", "not-included"}
+    used |= {f"{prefix}-{tid}" for tid, _label, _keys in PLAN_TABS for prefix in ("tab", "panel")}
+    placed = {key for _slot, key in PLAN_BLOCKS} | {key for _tid, _label, keys in PLAN_TABS for key in keys}
+
+    def named(*keys: str) -> list[tuple[str, list[str]]]:
+        return [(name, body) for key in keys for name, body in sections if name.strip().lower() == key]
+
+    links = section_html(
+        "links",
+        "Links",
+        '<div class="tbl"><table class="links"><tbody>'
+        + link_rows(run_rows + pairs(data.get("links"), ("label", "url")))
+        + "</tbody></table></div>",
+    )
+    panels = {
+        "summary": render_sections(named("summary"), used=used)
+        + decision_box(data.get("decision"), tests_line, has_risks)
+        + render_sections(named("decisions this plan makes"), used=used),
+        "contract": render_sections(named("public api contract"), PLAN_COLLAPSED, used),
+        "phases": render_sections(named("phases"), used=used),
+        "checks": section_html("tests", "Tests", tests_html)
+        + render_sections(named("acceptance criteria"), used=used),
+        "risks": render_sections(named("risks", "alternatives", "open questions"), used=used),
+        "review": review_html + pending_html,
+        "more": render_sections([(n, b) for n, b in sections if n.strip().lower() not in placed], used=used)
+        + access
+        + links,
+    }
+    tabs = [(tid, label) for tid, label, _keys in PLAN_TABS if panels[tid].strip()]
+    tabs_html = "".join(
+        f'<button type="button" role="tab" id="tab-{tid}" aria-controls="panel-{tid}" aria-selected="false">'
+        f"{esc(label)}</button>"
+        for tid, label in tabs
+    )
+    panels_html = "\n".join(
+        f'<div class="panel" role="tabpanel" id="panel-{tid}" aria-labelledby="tab-{tid}">{panels[tid]}</div>'
+        for tid, _label in tabs
+    )
     lane = data.get("lane", "")
     slots = {
         "TITLE": esc(data.get("title") or md_title),
         "EYEBROW": esc(f"Forge plan - {lane} lane" if lane else "Forge plan"),
         "META_HTML": "".join(meta),
         "STATUS": inline(data.get("status") or "Awaiting approval"),
-        "SUMMARY_HTML": summary_html,
-        "DECISION_HTML": decision_box(data.get("decision"), tests_line, has_risks),
-        "SECTIONS": render_sections(fixed + rest, PLAN_COLLAPSED),
-        "TESTS_HTML": tests_html,
-        "ACCESS_RULES_SECTION": access,
-        "PLAN_REVIEW_SECTION": review_html,
-        "PENDING_SECTION": pending_html,
-        "LINKS": link_rows(run_rows + pairs(data.get("links"), ("label", "url"))),
-        "NEXT": go_html,
+        **block_slots,
+        "TABS": tabs_html,
+        "PANELS": panels_html,
     }
-    return slots, {"SUMMARY": bool(summary_html)}
+    return slots, {}
 
 
 DB_ID_BAD_RE = re.compile(r"[^A-Za-z0-9_\-.~:@+]")
@@ -611,7 +683,8 @@ def automated_check(click: dict, base: Path) -> str:
     status = str(click.get("status", "PENDING")).upper()
     label = "pending" if status == "PENDING" else status
     shot = str(click.get("screenshot") or "")
-    if shot and not is_web_url(shot):
+    # Artifact asset uploads return root-relative /_blob/<id> links.
+    if shot and not is_web_url(shot) and not shot.startswith("/_blob/"):
         shot = str(data_path(shot, base))
     shot_link = f' <a href="{esc(shot)}">screenshot</a>' if shot else ""
     note = f" - {esc(click['note'])}" if click.get("note") else ""
