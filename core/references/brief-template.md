@@ -13,7 +13,7 @@ A Workflow script enforces the reply length in OUTPUT: give each `agent()` call 
 A sub-agent's Write tool refuses `.md` names that start with `report`, `summary`, `findings` or `analysis`, so OUTPUT files use the `recon-`, `result-`, `capture-` or `locate-` prefixes.
 Spell OUTPUT paths in full from `/`. An agent reads a BOUNDARIES alias such as `R2/<file>` as a folder under its working directory.
 Every Agent prompt the main session writes has these four parts. The prompt is the brief.
-Forge-internal agents (reviewer, triage, judge) get their prompts from forge and return their schema in the final message instead of writing an OUTPUT file.
+Forge-internal agents (reviewer, triage, judge, and security-advisor when forge's security lens calls it) get their prompts from forge and return their schema in the final message instead of writing an OUTPUT file.
 Write a brief file only when another step reads it later (the shipper's brief) or several agents share it. Write that file in a tool round before the spawn, and do not edit it after.
 Never tell an agent to delete a directory (`rm -rf` is denied); if a dir must be emptied, a worker runs `find <dir> -mindepth 1 -delete` then `rmdir <dir>`.
 If a hook blocks a command, use only the alternative the block message names; if none fits, stop and report the block. Never rewrite the command to get past the hook, because the block is information the caller needs.

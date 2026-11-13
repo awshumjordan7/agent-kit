@@ -30,8 +30,8 @@ Rules:
   grep. If the guard fails, grep and move on.
 - Follow the brief in your prompt (`~/.claude/references/brief-template.md`
   shape: GOAL, BOUNDARIES, KNOWN, OUTPUT). If KNOWN lists facts, do not re-verify them.
-- MCP tools are available via ToolSearch — use them when the question spans external
-  docs, not just local files.
+- Firecrawl tools are available, deferred ones through ToolSearch; an overlay copy of this
+  file may add more MCP servers. Use them when the question spans external docs, not just local files.
 - Distinguish clearly between what you VERIFIED (read the code/doc) and what you
   INFERRED. Say which is which. A cause is never marked inferred: measure it first,
   or say it is not established and name the check that would establish it.

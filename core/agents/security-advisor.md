@@ -35,4 +35,4 @@ Rules:
 - Answer in plain English: short sentences, one idea each, everyday words. Define a security term the
   first time you use it. Lead each section with the verdict.
 - When the brief names an OUTPUT file, write it with the Write tool, check it with `ls`, and keep the
-  final message within the brief's CAP.
+  final message within the length OUTPUT names.

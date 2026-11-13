@@ -8,7 +8,7 @@ When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELO
 - core/agents/shipper.md, reviewer.md, security-advisor.md, scout.md, worker.md: each agent gets a `tools:` list of the tools it has used, because a start with no list measured 23,405 to 40,708 tokens against 4,148 to 13,387 with one.
 - core/references/brief-template.md, core/CLAUDE.md, core/agents/scout.md, core/agents/security-advisor.md, modules/marketing/skills/market-research/SKILL.md: the sub-agent brief has four parts (goal, boundaries, known, output) and is the prompt itself, per the user's 2026-11-12 request to cut it to what Anthropic's guidance names.
 - core/CLAUDE.md, core/skills/forge/SKILL.md: a question that asks the user to decide is written in plain words and says why an option is recommended (user request 2026-11-12).
-- core/CLAUDE.md: a cause is measured before it is stated, or reported as not established (user request 2026-11-12).
+- core/CLAUDE.md, core/agents/scout.md, core/agents/worker.md: a cause is measured before it is stated, or reported as not established (user request 2026-11-12).
 - core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md: a resume after a ruling passes `fixedIds`, so findings the earlier launch fixed and verified start closed and the run does not stop for a second ruling on them.
 - core/agents/runner.md: a new Haiku agent with two tools runs forge's command-only steps, because a start with every tool measured 44,591 tokens against 4,960 for a short tool list.
 - core/skills/forge/references/cost-controls.md: `gate` and `runCommand` take their model from the `runner` agent file.
