@@ -39,8 +39,8 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 - **Batch sub-agents.** A sub-agent costs its own context and startup, so start one when the work is large, parallel,
   or suits a cheaper model. When more than one would run at the same time, run them as one Workflow instead of separate Agent spawns.
 - **Long waits go to a worker.** The main session never waits in a tight status loop.
-- **Every sub-agent prompt follows `~/.claude/references/brief-template.md`.** Write the brief before
-  the spawn; do not edit it after.
+- **Every sub-agent prompt has the four parts in `~/.claude/references/brief-template.md`:** goal, boundaries,
+  known, output. The prompt is the brief; a brief file is written only when another step reads it later or several agents share it.
 - **Artifacts are worker-made**, following `~/.claude/skills/forge/references/artifacts.md`.
 - **Bash output stays small.** A command expected to print more than ~5 KB writes to a file in the
   run dir and returns `tail` or `grep` of it. Read a file over 200 lines in ranges with the Read tool, never with `cat`.
@@ -67,12 +67,17 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
   answers in a turn of their own first. Facts the answer needs go inside the question or its options.
 - Keep at most 3 decisions open with the user at a time. Restate each in one plain line, with enough
   context to answer it without scrolling back.
+- A question that asks the user to decide starts with what happens today and what goes wrong for a real user,
+  in everyday words, with no file paths, ids or internal names in the first lines. Each option says what happens
+  if chosen and what it costs. The recommended option says why it is recommended and what risk the user accepts
+  by taking it. File and line references go last.
 - When the user grants auto mode or says not to wait, end a turn only when nothing can move without them
   or a protected resource blocks you. Do not end on a summary that announces the next step, an offer to
   continue, a list of decisions that block nothing, or a milestone report. Risky or destructive actions
   still need confirmation.
 - Cite sources for external patterns so I can verify them. Mark each factual claim as verified
-  (name the evidence: file:line, command output, captured response) or inferred.
+  (name the evidence: file:line, command output, captured response) or inferred. A cause is never marked
+  inferred: measure it first, or say it is not established and name the check that would establish it.
 - When a turn produces something the user should open (artifact, PR, report), end with a clickable link:
   the published URL or an absolute file path.
 
