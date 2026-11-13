@@ -128,7 +128,7 @@ h1 { font: 700 30px/1.15 var(--font-display); margin: 0; text-wrap: balance; }
 .missing { display: inline-block; align-self: flex-start; background: var(--warn-bg); color: var(--warn-ink); font-weight: 600; padding: 2px 10px; border-radius: 4px; }
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 16px; margin: 0; }
 .facts dt { font: 600 12px/1.6 var(--font-body); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding-top: 1px; }
-.facts dd { margin: 0; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.facts dd { margin: 0; min-width: 0; }
 .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; counter-reset: s; }
 .steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; counter-increment: s; }
 .steps li::before { content: counter(s); font: 600 13px/28px var(--font-display); text-align: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
