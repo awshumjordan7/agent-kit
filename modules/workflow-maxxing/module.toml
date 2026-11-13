@@ -1,7 +1,7 @@
 name = "workflow-maxxing"
-description = "Status and same-pane handoff for the workflow-maxxing app on macOS"
+description = "Status and same-pane handoff for the workflow-maxxing app on macOS and Linux"
 default = false
 depends = []
 requires = []
-platforms = ["darwin"]
+platforms = ["darwin", "linux"]
 settings_fragment = "settings.fragment.json"
