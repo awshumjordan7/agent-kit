@@ -4,6 +4,10 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-13
+- core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md: a forge plan gains `## Why`, `## How it works` and `## What the user sees`, written in plain English, because the user wants the plan to say why it is built, how it works and what the user will see (2026-11-12).
+- core/skills/forge/references/plan-artifact.html: the plan page opens with four plain blocks and puts the rest in tabs, and the "Reply go to approve the plan" box is removed (user request 2026-11-12).
+
 ## 2026-11-12
 - core/agents/shipper.md, reviewer.md, security-advisor.md, scout.md, worker.md: each agent gets a `tools:` list of the tools it has used, because a start with no list measured 23,405 to 40,708 tokens against 4,148 to 13,387 with one.
 - core/references/brief-template.md, core/CLAUDE.md, core/agents/scout.md, core/agents/security-advisor.md, modules/marketing/skills/market-research/SKILL.md: the sub-agent brief has four parts (goal, boundaries, known, output) and is the prompt itself, per the user's 2026-11-12 request to cut it to what Anthropic's guidance names.

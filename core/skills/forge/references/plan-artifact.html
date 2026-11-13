@@ -3,6 +3,7 @@
     python3 ~/.claude/skills/forge/scripts/render_artifact.py plan \
       --data <runDir>/plan-data.json --markdown <runDir>/plan.md --out <runDir>/plan-artifact.html
   The main session writes plan-data.json; a worker runs the renderer; the main session publishes the page.
+  The main session asks for approval in chat; the page has no approve box.
   The renderer removes this comment, then fills every slot. It exits 1 when a slot is left unfilled.
 
   plan-data.json keys:
@@ -12,34 +13,41 @@
     repo, date    Meta line; an empty value is left out.
     runDir, lenses   First rows of the Links table ("Run dir", "Lenses");
                   an empty value is left out. lenses is a list or a comma string.
-    decision      {"approving": str, "size": str, "topRisk": str}. Rendered as the Decision box
-                  under the Summary, plus a Tests line from plan.md "## Tests" (its "None: <reason>"
+    decision      {"approving": str, "size": str, "topRisk": str}. Rendered as the Decision box in
+                  the Summary tab, plus a Tests line from plan.md "## Tests" (its "None: <reason>"
                   line, or the count of its table rows). Missing: stderr warning; the box shows
                   only the Tests line. An empty field is left out.
-    status        One line for the status banner; defaults to "Awaiting approval".
+    status        One line for the status line; defaults to "Awaiting approval".
     accessRules   List of access-rule sentences. Empty: no Access rules section.
     planReview    {verdict, findings: [{severity, text, disposition}]}. Renders as one closed line,
                   "N findings: F folded, R rejected, O other", that opens to the verdict and table.
                   A disposition starting with "folded" counts as folded, one starting with
                   "rejected" as rejected (case-insensitive); anything else counts as other. No
                   verdict and no findings: no Plan review section.
-    pending       [[item, state], ...] or [{item, state}, ...]. Renders closed, below the plan
-                  sections. Empty: no Pending section.
+    pending       [[item, state], ...] or [{item, state}, ...]. Renders closed. Empty: no Pending section.
     links         [[label, url], ...] or [{label, url}, ...]; each row gets a Copy button.
-    next          The exact word the user says to approve the plan, normally "go". The go box asks
-                  once: "Reply <next> to approve the plan, including its tests". Empty: no go box.
+    next          Accepted so older data files print no warning; it renders nothing.
   There is no tests key: the Tests section comes from plan.md.
 
-  plan.md supplies everything else:
-    "## Summary" renders in the Summary box under the title and is not repeated below. No
-    "## Summary": stderr warning, no box. There is no summary data key.
-    These headings render first after the Decision box, in this order: "## Out of scope",
-    "## Risks" (a table Risk | Mitigation | Undo), "## Alternatives", "## Open questions".
-    Headings match case-insensitively; a missing one is left out. No "## Risks": stderr warning,
-    and the Decision box shows "Risks: none listed".
-    Every other "## " section renders after those in plan.md order with a TOC entry, except
-    "## Tests". "## Public API contract" and "## Phases" render closed; a TOC link opens them.
-    "## Tests" renders in the fixed Tests section: its table, or its "None: <reason>" line.
+  plan.md supplies everything else. Headings match case-insensitively.
+    Four blocks open the page, each from one heading, which renders only there:
+      "Why we are building it"  <- "## Why"
+      "How it works"            <- "## How it works" ("**Data:**", "**Endpoints:**", "**Screens:**"
+                                   items render as a label list)
+      "What the user sees"      <- "## What the user sees" (a numbered list renders as steps)
+      "What is not included"    <- "## Out of scope"
+    A missing heading: its block reads "Not stated in the plan." and stderr gets one warning.
+    Tabs follow the blocks; one shows at a time, and with scripts off every panel shows:
+      Summary   "## Summary", the Decision box, "## Decisions this plan makes"
+      Contract  "## Public API contract" (renders closed)
+      Phases    "## Phases"
+      Checks    "## Tests" (its table, or its "None: <reason>" line), "## Acceptance criteria"
+      Risks     "## Risks" (a table Risk | Mitigation | Undo), "## Alternatives", "## Open questions"
+      Review    Plan review and Pending additions
+      More      every other "## " section in plan.md order, Access rules, Links
+    A tab with nothing in it is left out. The chosen tab is kept in the browser's localStorage.
+    No "## Summary" or "## Risks": stderr warning; no "## Risks" also adds "Risks: none listed"
+    to the Decision box.
     Markdown handled: paragraphs, "- " lists (one nested "- " level), numbered lists (as a numbered table), "### "
     subheads, pipe tables, fenced code (with a Copy button), `code`, **bold**, and [label](url)
     links. Raw HTML is escaped.
@@ -56,198 +64,188 @@
     Inline text handles `code`, **bold**, and [label](url); only http(s) URLs become links,
     anything else stays escaped text.
 
-  Page order: header, Summary, Decision, status, TOC, plan.md sections, Tests, Access rules,
-  Plan review, Pending additions, Links, go box.
+  Page order: header, status line, the four blocks, the tab row and its panels.
 
-  Slots: TITLE, EYEBROW, META_HTML, SUMMARY_HTML, DECISION_HTML, STATUS, TOC, SECTIONS, TESTS_HTML,
-  ACCESS_RULES_SECTION, PLAN_REVIEW_SECTION, PENDING_SECTION, LINKS, NEXT. A *_SECTION slot is a whole
-  <section id="..." data-toc="Label"> or "".
+  Slots: TITLE, EYEBROW, META_HTML, STATUS, WHY_HTML, HOW_HTML, SEES_HTML, NOT_INCLUDED_HTML, TABS, PANELS.
 -->
 <title>{{TITLE}}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 :root {
-  --ground: #f4f5f2;
+  --bg: #f4f6f9;
   --surface: #ffffff;
-  --ink: #1c2321;
-  --muted: #5a6560;
-  --rule: #dce1dc;
-  --accent: #34539c;
-  --accent-soft: #e6ebf6;
-  --code-bg: #eceee9;
-  --warn: #8a5a00;
-  --warn-soft: #fbf1dc;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ink: #16202c;
+  --muted: #5a6677;
+  --line: #dbe1ea;
+  --accent: #2c55c9;
+  --accent-soft: #e6ecfb;
+  --warn-bg: #fff3d6;
+  --warn-ink: #7a5000;
+  --code-bg: #eef1f6;
+  --font-display: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    --bg: #0e1218; --surface: #161b23; --ink: #e5e9f0; --muted: #98a2b2; --line: #29313c;
+    --accent: #8ea9ff; --accent-soft: #1d2740; --warn-bg: #3a2c0b; --warn-ink: #f4cf7a; --code-bg: #1e242e;
     color-scheme: dark;
-    --ground: #121614;
-    --surface: #1a1f1d;
-    --ink: #e2e7e3;
-    --muted: #9aa59f;
-    --rule: #2c3431;
-    --accent: #93acec;
-    --accent-soft: #1f2840;
-    --code-bg: #232a27;
-    --warn: #e8c071;
-    --warn-soft: #2e2615;
   }
 }
 :root[data-theme="dark"] {
+  --bg: #0e1218; --surface: #161b23; --ink: #e5e9f0; --muted: #98a2b2; --line: #29313c;
+  --accent: #8ea9ff; --accent-soft: #1d2740; --warn-bg: #3a2c0b; --warn-ink: #f4cf7a; --code-bg: #1e242e;
   color-scheme: dark;
-  --ground: #121614;
-  --surface: #1a1f1d;
-  --ink: #e2e7e3;
-  --muted: #9aa59f;
-  --rule: #2c3431;
-  --accent: #93acec;
-  --accent-soft: #1f2840;
-  --code-bg: #232a27;
-  --warn: #e8c071;
-  --warn-soft: #2e2615;
 }
 * { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--ground);
-  color: var(--ink);
-  font: 15px/1.6 var(--sans);
-  padding: 0 16px;
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--font-body); }
+.wrap {
+  max-width: 920px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 48px;
+  display: flex; flex-direction: column; gap: 20px; min-width: 0;
 }
-.wrap { max-width: 980px; margin: 0 auto; padding-block: 32px 64px; display: grid; gap: 28px; min-width: 0; }
 .wrap > * { min-width: 0; }
-header { display: grid; gap: 6px; }
-.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
-h1 { font-size: 28px; line-height: 1.2; margin: 0; font-weight: 600; text-wrap: balance; }
+header { display: flex; flex-direction: column; gap: 4px; }
+.eyebrow { font: 500 12px/1.4 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0; }
+h1 { font: 700 30px/1.15 var(--font-display); margin: 0; text-wrap: balance; }
 .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; color: var(--muted); font-size: 13px; }
-.pill { display: inline-block; font: 500 11px/1.4 var(--mono); letter-spacing: .04em; padding: 2px 8px; border-radius: 4px; background: var(--code-bg); color: var(--ink); }
-.status {
-  background: var(--accent-soft); color: var(--ink);
-  border-radius: 6px; padding: 10px 14px; font-weight: 500;
-}
+.pill { display: inline-block; font: 500 11px/1.4 var(--font-mono); letter-spacing: .04em; padding: 2px 8px; border-radius: 4px; background: var(--code-bg); color: var(--ink); }
+.status { background: var(--accent-soft); color: var(--ink); border-radius: 6px; padding: 10px 14px; font-weight: 500; }
 .status b { color: var(--accent); font-weight: 600; margin-right: 6px; }
-h2 { font-size: 19px; font-weight: 600; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--rule); text-wrap: balance; }
-h3 { font-size: 16px; font-weight: 600; margin: 0 0 8px; color: var(--accent); text-wrap: balance; }
-p { margin: 0 0 12px; max-width: 72ch; }
+
+.brief { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.block { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 8px 28px; padding: 22px 24px; }
+.block + .block { border-top: 1px solid var(--line); }
+.block > h2 { font: 600 17px/1.3 var(--font-display); margin: 0; padding: 0; border: 0; text-wrap: balance; }
+.block .body { min-width: 0; display: flex; flex-direction: column; gap: 10px; max-width: 66ch; }
+.block .body > * { margin: 0; }
+.missing { display: inline-block; align-self: flex-start; background: var(--warn-bg); color: var(--warn-ink); font-weight: 600; padding: 2px 10px; border-radius: 4px; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 16px; margin: 0; }
+.facts dt { font: 600 12px/1.6 var(--font-body); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding-top: 1px; }
+.facts dd { margin: 0; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; counter-reset: s; }
+.steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; counter-increment: s; }
+.steps li::before { content: counter(s); font: 600 13px/28px var(--font-display); text-align: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
+.steps .t { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.steps .t p { margin: 0; }
+.out { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+
+.plan { display: flex; flex-direction: column; gap: 12px; }
+.tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+.tabs button { font: 500 14px/1 var(--font-body); color: var(--muted); background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 12px; cursor: pointer; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px; min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+.panel > * { min-width: 0; }
+.panel section { scroll-margin-top: 16px; min-width: 0; }
+h2 { font: 600 19px/1.3 var(--font-display); margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); text-wrap: balance; }
+h3 { font: 600 16px/1.3 var(--font-display); margin: 0 0 8px; color: var(--accent); text-wrap: balance; }
+p { margin: 0 0 12px; max-width: 78ch; }
 .muted { color: var(--muted); }
-.warn { color: var(--warn); }
-code {
-  font-family: var(--mono); font-size: .86em; background: var(--code-bg);
-  padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere;
-}
+.warn { color: var(--warn-ink); }
+code { font-family: var(--font-mono); font-size: .86em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
 pre { margin: 0 0 12px; padding: 10px 12px; background: var(--code-bg); border-radius: 6px; overflow-x: auto; }
 pre code { padding: 0; background: none; overflow-wrap: normal; white-space: pre; }
-.tbl { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; margin-bottom: 12px; }
+.tbl { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 12px; }
 .tbl:last-child { margin-bottom: 0; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
-th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 tbody tr:last-child td { border-bottom: 0; }
-th { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--ground); }
+th { font: 500 11px/1.3 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
 td:first-child { font-weight: 500; }
 .review td:first-child { width: 14%; }
 .review td:last-child { width: 24%; color: var(--muted); }
-.pending th { background: var(--warn-soft); color: var(--warn); }
-.pending td:last-child { color: var(--warn); width: 34%; }
-table.numbered td.num { width: 3em; color: var(--accent); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.pending th { background: var(--warn-bg); color: var(--warn-ink); }
+.pending td:last-child { color: var(--warn-ink); width: 34%; }
+table.numbered td.num { width: 3em; color: var(--accent); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 table.numbered td:last-child { font-weight: 400; }
-nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
-nav.toc a { color: var(--accent); text-decoration: none; }
-nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
-section { scroll-margin-top: 16px; min-width: 0; }
-ul.rows { list-style: none; margin: 0 0 12px; padding: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
-ul.rows li { padding: 8px 12px 8px 26px; border-bottom: 1px solid var(--rule); position: relative; }
+ul.rows { list-style: none; margin: 0 0 12px; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+ul.rows li { padding: 8px 12px 8px 26px; border-bottom: 1px solid var(--line); position: relative; }
 ul.rows li:last-child { border-bottom: 0; }
 ul.rows li::before { content: ""; position: absolute; left: 12px; top: 1.05em; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
-ul.rows ul.sub-list { list-style: disc; margin: 4px 0 0; padding-left: 18px; }
-ul.rows ul.sub-list li { padding: 2px 0; border: 0; }
+ul.sub-list { list-style: disc; margin: 4px 0 0; padding-left: 18px; }
+ul.sub-list li { padding: 2px 0; border: 0; }
 ul.rows ul.sub-list li::before { content: none; }
 .sub { display: grid; gap: 4px; margin-bottom: 18px; }
 .sub:last-child { margin-bottom: 0; }
 .links td:first-child { white-space: nowrap; }
 .links td:last-child { width: 1%; }
-.next { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 6px 6px 0; padding: 12px 16px; }
 a { color: var(--accent); overflow-wrap: anywhere; }
 .copy-btn {
-  font: 500 12px/1 var(--sans); color: var(--accent); background: transparent;
-  border: 1px solid var(--rule); border-radius: 4px; padding: 5px 9px; cursor: pointer; white-space: nowrap;
+  font: 500 12px/1 var(--font-body); color: var(--accent); background: transparent;
+  border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px; cursor: pointer; white-space: nowrap;
 }
 .copy-btn:hover { background: var(--accent-soft); }
 .copy-btn[disabled] { opacity: .7; cursor: default; }
-.summary { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
-.summary-label { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
-.summary > :last-child { margin-bottom: 0; }
+.summary-label { font: 500 11px/1.3 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
 .codeblock { position: relative; margin: 0 0 12px; }
 .codeblock pre { margin: 0; padding-right: 72px; }
 .codeblock .copy-code-btn { position: absolute; top: 6px; right: 6px; margin: 0; background: var(--surface); }
-.cmd { display: grid; gap: 4px; margin: 0 0 12px; }
-.cmd .codeblock { margin: 0; }
-.cmd-cwd, .cmd-note { margin: 0; font-size: 13px; color: var(--muted); }
-.decision { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.decision { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; }
 .decision dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; }
 .decision dt { font-weight: 600; }
 .decision dd { margin: 0; min-width: 0; }
-details.fold > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; cursor: pointer; list-style: none; margin-bottom: 12px; border-bottom: 1px solid var(--rule); }
+details.fold > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; cursor: pointer; list-style: none; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
 details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > summary h2 { border-bottom: 0; margin: 0; padding-bottom: 6px; }
 details.fold > summary h2::before { content: "\25B8"; display: inline-block; width: 1.1em; color: var(--accent); }
 details.fold[open] > summary h2::before { content: "\25BE"; }
 .fold-line { color: var(--muted); font-size: 14px; padding-bottom: 6px; }
-.go ol { margin: 0; padding-left: 20px; }
-.go li + li { margin-top: 4px; }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 720px) {
+  .block { grid-template-columns: minmax(0, 1fr); padding: 18px 16px; }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 4px 0; }
+  .facts dd { margin-bottom: 8px; }
+  h1 { font-size: 25px; }
+  .panel { padding: 14px; }
+}
 @media (max-width: 560px) {
-  h1 { font-size: 23px; }
   th, td { padding: 7px 9px; }
   .review td:first-child, .review td:last-child { width: auto; }
   .links td:first-child { white-space: normal; }
   .decision dl { grid-template-columns: minmax(0, 1fr); }
   .decision dd { margin-bottom: 6px; }
 }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
 </style>
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">{{EYEBROW}}</div>
+    <p class="eyebrow">{{EYEBROW}}</p>
     <h1>{{TITLE}}</h1>
     <div class="meta">{{META_HTML}}</div>
   </header>
 
-  <!--SUMMARY_START-->
-  {{SUMMARY_HTML}}
-  <!--SUMMARY_END-->
-
-  {{DECISION_HTML}}
-
   <div class="status" role="status"><b>Status</b>{{STATUS}}</div>
 
-  <nav class="toc" aria-label="Plan sections">{{TOC}}</nav>
+  <main class="brief" aria-label="Plan outline">
+    <section class="block" id="why">
+      <h2>Why we are building it</h2>
+      <div class="body">{{WHY_HTML}}</div>
+    </section>
+    <section class="block" id="how">
+      <h2>How it works</h2>
+      <div class="body">{{HOW_HTML}}</div>
+    </section>
+    <section class="block" id="sees">
+      <h2>What the user sees</h2>
+      <div class="body">{{SEES_HTML}}</div>
+    </section>
+    <section class="block" id="not-included">
+      <h2>What is not included</h2>
+      <div class="body">{{NOT_INCLUDED_HTML}}</div>
+    </section>
+  </main>
 
-  {{SECTIONS}}
-
-  <section id="tests" data-toc="Tests">
-    <h2>Tests</h2>
-    {{TESTS_HTML}}
+  <section class="plan" aria-label="The full plan">
+    <div class="tabs" role="tablist" aria-label="Plan sections" hidden>{{TABS}}</div>
+    {{PANELS}}
   </section>
-
-  {{ACCESS_RULES_SECTION}}
-
-  {{PLAN_REVIEW_SECTION}}
-
-  {{PENDING_SECTION}}
-
-  <section id="links" data-toc="Links">
-    <h2>Links</h2>
-    <div class="tbl"><table class="links">
-      <tbody>{{LINKS}}</tbody>
-    </table></div>
-  </section>
-
-  {{NEXT}}
 </div>
 
 <script>
@@ -280,16 +278,44 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
       setTimeout(function () { btn.textContent = original; btn.disabled = false; }, 1500);
     });
   });
-  function openFold(id) {
+
+  var tablist = document.querySelector('.tabs');
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tabs [role="tab"]'));
+  function show(id, focus) {
+    tabs.forEach(function (t) {
+      var on = t.getAttribute('aria-controls') === id;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+      if (on && focus) { t.focus(); }
+    });
+    try { localStorage.setItem('forge-plan-tab', id); } catch (err) { /* storage unavailable */ }
+  }
+  function openTarget(id) {
     var target = id ? document.getElementById(id) : null;
-    var fold = target ? target.querySelector('details.fold') : null;
+    if (!target) { return; }
+    var panel = target.closest ? target.closest('[role="tabpanel"]') : null;
+    if (panel && tabs.length) { show(panel.id); }
+    var fold = target.querySelector('details.fold');
     if (fold) { fold.open = true; }
   }
-  document.addEventListener('click', function (event) {
-    var link = event.target.closest ? event.target.closest('nav.toc a') : null;
-    if (link) { openFold(decodeURIComponent(link.getAttribute('href').slice(1))); }
-  });
-  window.addEventListener('hashchange', function () { openFold(decodeURIComponent(location.hash.slice(1))); });
-  openFold(decodeURIComponent(location.hash.slice(1)));
+  if (tabs.length) {
+    tablist.hidden = false;
+    tabs.forEach(function (t, i) {
+      t.addEventListener('click', function () { show(t.getAttribute('aria-controls')); });
+      t.addEventListener('keydown', function (e) {
+        var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!d) { return; }
+        e.preventDefault();
+        var n = tabs[(i + d + tabs.length) % tabs.length];
+        show(n.getAttribute('aria-controls'), true);
+      });
+    });
+    var saved = null;
+    try { saved = localStorage.getItem('forge-plan-tab'); } catch (err) { /* storage unavailable */ }
+    show(saved && document.getElementById(saved) ? saved : tabs[0].getAttribute('aria-controls'));
+  }
+  window.addEventListener('hashchange', function () { openTarget(decodeURIComponent(location.hash.slice(1))); });
+  openTarget(decodeURIComponent(location.hash.slice(1)));
 })();
 </script>
