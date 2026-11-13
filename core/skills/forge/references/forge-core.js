@@ -1273,9 +1273,16 @@ async function converge(panel, context) {
     runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles, ['lint', 'typecheck', 'semgrep']) : null,
     commitsPerRound: false,
   })
+  // A rulings resume that seeded findings and fixed nothing new can still hold the earlier launch's
+  // unpushed fixes; a dirty tree then gets the final gate and the Fix stage's ship sync.
+  const tree = {}
+  if (review.seeded && !review.fixesApplied) await readUncommitted(tree, 'resume', 'Fix')
+  const seededPending = Boolean(tree.uncommitted && tree.uncommitted.length)
+  const seededUnread = tree.uncommitted === null
+  if (tree.uncommitted) await decide(seededPending ? `fix: the resume fixed nothing new and the tree holds ${tree.uncommitted.length} uncommitted path(s); the earlier launch's fixes get the final gate and, when the run has a shipped branch, the ship sync.` : 'fix: the resume fixed nothing new and the tree is clean, so the earlier launch\'s fixes are already committed.')
   // The final gate runs even when the review loop ended blocked or needing a ruling: the tree holds
   // fixes that only had fast checks, and a later resume may apply nothing more.
-  if (!gated || !review.fixesApplied) return review
+  if (!gated || !(review.fixesApplied || seededPending)) return { ...review, seededPending, seededUnread }
   const files = [...new Set([...(context.files || []), ...review.touchedFiles])]
   const first = await localGate('gate-fix-final', 'Fix', files)
   const final = await gateWithFixes('gate-fix-final', files, `${PARAMS.runDir}/codex-fix-gate-fix-final.thread`, context, 'Fix', { first })
@@ -1285,7 +1292,7 @@ async function converge(panel, context) {
   const blocked = review.blocked || Boolean(final.blocked)
   const reason = review.reason || final.reason
   return {
-    ...review,
+    ...review, seededPending, seededUnread,
     blocked,
     needsJudge: review.needsJudge || Boolean(final.needsJudge),
     unresolved: [...review.unresolved, ...finalOpen],
@@ -1343,7 +1350,7 @@ API CONTRACT: ${contract}`
 // One capped loop for gate failures and review findings. Each round a decider writes the fix
 // spec (applying a small fix set itself), an applier applies the rest, then the re-gate checks
 // gate items and a separate verifier re-checks this round's fixed review items, plus items closed
-// earlier whose files this round touched. Gate item ids come from failure text and change across
+// earlier whose files this round touched and every still-closed item a rulings resume seeded from fixedIds. Gate item ids come from failure text and change across
 // edits, so gate progress is a failure count. Gate-failure rounds re-run the full gate. Review-fix
 // rounds run lint, typecheck and Semgrep only; converge then runs one full gate on the final state
 // when fixes were applied, and a failing final gate gets up to MAX_FIX_ROUNDS more rounds with a
@@ -1357,9 +1364,9 @@ async function fixLoop(opts) {
   const closedIds = new Set()
   const verifiedClosed = new Map()
   // A rulings resume passes the ids an earlier launch fixed and verified; unruled ones start
-  // closed, so they skip the decider and are rechecked only when a later fix touches their file.
+  // closed, skip the decider, and are rechecked in every round that applies a fix.
+  const seeded = []
   if (kind === 'review') {
-    const seeded = []
     for (const id of PARAMS.fixedIds) {
       const item = reviewOpen.get(id)
       if (!item || rulingFor(item)) continue
@@ -1370,6 +1377,7 @@ async function fixLoop(opts) {
     }
     if (seeded.length) await decide(`${label}: ${seeded.length} finding(s) fixed and verified in an earlier launch start closed: ${seeded.map(item => `${item.file}:${item.line}`).join(', ').slice(0, 500)}`)
   }
+  const seededIds = new Set(seeded.map(item => findingKey(item)))
   const disputes = []
   const history = []
   const deciderNotes = []
@@ -1473,7 +1481,7 @@ async function fixLoop(opts) {
       }
       const reviewFixed = fixItems.filter(item => item.source !== 'gate' && reviewOpen.has(findingKey(item)))
       const touchedSet = new Set(touched)
-      const recheck = [...verifiedClosed.values()].filter(item => [item.file, ...(item.specFiles || [])].some(file => file && touchedSet.has(file)))
+      const recheck = [...verifiedClosed].filter(([id, item]) => seededIds.has(id) || [item.file, ...(item.specFiles || [])].some(file => file && touchedSet.has(file))).map(([, item]) => item)
       if (reviewFixed.length || recheck.length) {
         const verifyLabel = round === 1 ? 'verify-review' : `verify-review-${round}`
         const checked = [...reviewFixed, ...recheck]
@@ -1538,6 +1546,7 @@ async function fixLoop(opts) {
     unresolved: open, unresolvedDisputes: openDisputes, rounds,
     fixesApplied: touched.length > 0 || rounds.some(record => record.appliedBy === 'decider' || Boolean(record.fix && (record.fix.fixed || []).length)),
     touchedFiles: touched, blocked, needsJudge, fixedIds: [...verifiedClosed.keys()].filter(id => !unverifiedRecheck.some(item => findingKey(item) === id)),
+    seeded: seeded.length,
     gatePassed: gateRan ? Boolean(gate && gate.passed) : true, gate, gateRan, ...blockedFields,
   }
 }
@@ -2125,14 +2134,19 @@ async function fullLane() {
       phase('Fix')
       state.convergence = await converge(state.review, state.context)
       if (state.convergence.needsJudge) state.needsJudge = true
+      const syncFixes = state.convergence.fixesApplied || state.convergence.seededPending
+      if (state.convergence.seededUnread) {
+        state.status = 'BLOCKED'
+        await decide('Fix: a resume that fixed nothing new could not read the tree, so whether the earlier launch\'s fixes are on the branch is not established.')
+      }
       if (state.convergence.blocked) {
         state.status = 'BLOCKED'
         const branch = (state.ship && state.ship.branch) || '(unknown branch)'
         await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} item(s) stayed open after the fix loop (${state.convergence.reason}).`)
-      } else if (state.convergence.needsJudge && state.convergence.fixesApplied) {
+      } else if (state.convergence.needsJudge && syncFixes) {
         await syncBeforeJudge(state)
       }
-      if (!state.convergence.blocked && !state.convergence.needsJudge && state.convergence.fixesApplied && state.ship) {
+      if (!state.convergence.blocked && !state.convergence.needsJudge && syncFixes && state.ship) {
         state.context = await collectContext()
         if (contextFailed(state.context) || !state.context.diffValid) {
           state.status = 'BLOCKED'
@@ -2245,7 +2259,7 @@ if (state.needsJudge) {
     status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir,
     decisions: [...decisions], fixSync: state.fixSync || { ran: false, ok: false, sha: null },
     uncommitted: state.uncommitted, uncommittedError: state.uncommittedError || null,
-    fixedIds: (state.convergence && state.convergence.fixedIds) || [],
+    fixedIds: (state.convergence && state.convergence.fixedIds) || PARAMS.fixedIds,
   }
 }
 phase('Handoff')
