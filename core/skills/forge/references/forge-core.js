@@ -1274,12 +1274,13 @@ async function converge(panel, context) {
     commitsPerRound: false,
   })
   // A rulings resume that seeded findings and fixed nothing new can still hold the earlier launch's
-  // unpushed fixes; a dirty tree then gets the final gate and the Fix stage's ship sync.
+  // fixes uncommitted, or committed and unpushed, so it gets the final gate and the Fix stage's ship
+  // sync like a round that applied fixes. A failed tree read blocks instead.
   const tree = {}
   if (review.seeded && !review.fixesApplied) await readUncommitted(tree, 'resume', 'Fix')
-  const seededPending = Boolean(tree.uncommitted && tree.uncommitted.length)
+  const seededPending = Boolean(tree.uncommitted)
   const seededUnread = tree.uncommitted === null
-  if (tree.uncommitted) await decide(seededPending ? `fix: the resume fixed nothing new and the tree holds ${tree.uncommitted.length} uncommitted path(s); the earlier launch's fixes get the final gate and, when the run has a shipped branch, the ship sync.` : 'fix: the resume fixed nothing new and the tree is clean, so the earlier launch\'s fixes are already committed.')
+  if (seededPending) await decide(`fix: the resume fixed nothing new; its ${review.seeded} seeded finding(s) get the final gate${gated ? '' : ' (skipped: gate mode is not full)'} and, when the run has a shipped branch, the ship sync, which pushes the earlier launch's fixes whether they are uncommitted (${tree.uncommitted.length} path(s) now) or committed and unpushed.`)
   // The final gate runs even when the review loop ended blocked or needing a ruling: the tree holds
   // fixes that only had fast checks, and a later resume may apply nothing more.
   if (!gated || !(review.fixesApplied || seededPending)) return { ...review, seededPending, seededUnread }
