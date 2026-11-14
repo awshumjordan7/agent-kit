@@ -59,7 +59,7 @@
 # the stall timeout (CODEX_STARTED prints --max-wait 2400). The start/resume watchdog, which kills
 # a stalled session and writes <log>.failed, is the primary stall detector.
 # On a start/resume stall:
-#   - stall at ZERO progress (no item.completed events — the resume-wedge
+#   - stall at ZERO progress (no non-reasoning item.completed events — the resume-wedge
 #     signature): the process is killed, the log rotated to <log>.stalled, and the
 #     SAME prompt retried ONCE as a fresh session. Prompts must be self-contained.
 #   - stall mid-work: no auto-retry; exits 75 for the caller to triage.
@@ -232,7 +232,7 @@ log_stats() {
         {
           calls: (tool_items | length),
           bytes: (tool_items | map(out_bytes) | add // 0),
-          completed: ([.[] | select(.type == "item.completed")] | length),
+          completed: ([.[] | select(.type == "item.completed" and .item.type != "reasoning")] | length),
           nocredit: (errs | map(select(test("out of credits"; "i"))) | length),
           errors: (errs | unique | join(" | ")),
           usage: ([.[] | select(.type == "turn.completed") | .usage] | last // {})
@@ -258,8 +258,9 @@ find_rollout() {
 }
 
 # ---------- stall check (shared by watch and start/resume) ----------
-# `codex exec --json` does not stream reasoning to the event log, but the rollout file grows with
-# every reasoning item, so a change in either file counts as progress. Idle time is counted in
+# `codex exec --json` writes reasoning items to the event log only when reasoning summaries are on
+# (ARGS turns them on); the rollout file grows with every reasoning item either way, so a change
+# in either file counts as progress. Idle time is counted in
 # polls rather than from file age, so a laptop waking from sleep does not trip the timeout at once.
 stall_reset() {
     # $1 = rollout path or empty.
@@ -586,6 +587,7 @@ ARGS=(
     --output-last-message "$OUT"
     -c model="$MODEL"
     -c model_reasoning_effort="$EFFORT"
+    -c model_reasoning_summary=detailed
 )
 [ -n "$TOOL_OUTPUT_TOKEN_LIMIT" ] && ARGS+=( -c tool_output_token_limit="$TOOL_OUTPUT_TOKEN_LIMIT" )
 [ -n "$WEB_SEARCH" ] && ARGS+=( -c web_search="$WEB_SEARCH" )
