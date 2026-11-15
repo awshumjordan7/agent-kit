@@ -335,18 +335,17 @@ def _load_forge_result(path: str, sha256: str, run_dir: str, device: int | None)
     return result, st
 
 
-def _disputes(result: dict) -> dict[str, dict]:
+def _disputes(result: dict) -> dict[str, list[object]]:
     disputes = result.get("disputes")
     _require(isinstance(disputes, list), "forge result has no dispute list")
-    by_id: dict[str, dict] = {}
+    by_id: dict[str, list[object]] = {}
     for dispute in disputes:
         _require(isinstance(dispute, dict) and type(dispute.get("id")) is str, "forge result has a malformed dispute")
-        finding = dispute.get("finding")
-        by_id[dispute["id"]] = finding if isinstance(finding, dict) else {}
+        by_id.setdefault(dispute["id"], []).append(dispute.get("finding"))
     return by_id
 
 
-def _check_rulings(rulings: object, disputes: dict[str, dict]) -> list[dict]:
+def _check_rulings(rulings: object, disputes: dict[str, list[object]]) -> list[dict]:
     _require(isinstance(rulings, list) and len(rulings) <= MAX_RULINGS, "rulings must be a list of at most 200")
     seen: set[str] = set()
     for ruling in rulings:
@@ -579,9 +578,12 @@ def cmd_claim_auto(args: argparse.Namespace) -> dict:
         disputes = _disputes(check.forge_result)
         rulings = _check_rulings(draft["rulings"], disputes)
         for ruling in rulings:
-            finding = disputes[ruling["id"]]
-            if ruling["decision"] == "drop" and (
-                finding.get("severity") in ("HIGH", "CRITICAL") or finding.get("reviewer") == "security"
+            if ruling["decision"] == "drop" and not all(
+                isinstance(finding, dict)
+                and finding.get("severity") in ("LOW", "MEDIUM")
+                and type(finding.get("reviewer")) is str
+                and finding["reviewer"] != "security"
+                for finding in disputes[ruling["id"]]
             ):
                 raise Refused(f"auto may not drop {ruling['id']}")
         check.transcript.tail_pass()
@@ -598,7 +600,7 @@ def cmd_claim_auto(args: argparse.Namespace) -> dict:
             "rulings": rulings,
         }
         try:
-            _claim(check.transcript, path, json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            _claim(check.transcript, path, json.dumps(body, sort_keys=True).encode("utf-8"))
         except FileExistsError as error:
             raise Refused("auto limit reached") from error
         return {"ok": True, "path": path, "n": n, "rulings": rulings}
@@ -616,7 +618,7 @@ def cmd_save_result(args: argparse.Namespace) -> dict:
         type(result.get("runDir")) is str and os.path.realpath(result["runDir"]) == run_dir,
         "result is for another run folder",
     )
-    body = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    body = json.dumps(result, sort_keys=True).encode("utf-8")
     _require(len(body) <= FORGE_RESULT_CAP, "result too large")
     n = _highest(run_dir, FORGE_RESULT_NAME) + 1
     path = os.path.join(run_dir, f"forge-result-{n}.json")
