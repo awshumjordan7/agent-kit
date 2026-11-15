@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-14
+- core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/skills/forge/scripts/control_record.py, core/skills/ship-pr/SKILL.md: forge accepts one control record that the workflow-maxxing app writes before a plain `go` message, as the plan approval (with the review provider and auto rulings) or the rulings, because app buttons must not put order words into the message Workflow relays to every agent (I19).
+
 ## 2026-11-13
 - modules/workflow-maxxing/module.toml, README.md: the workflow-maxxing module installs on Linux too, because its hook uses only an AF_UNIX socket and the app now runs on Linux (WSL2).
 - core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md: a forge plan gains `## Why`, `## How it works` and `## What the user sees`, written in plain English, because the user wants the plan to say why it is built, how it works and what the user will see (2026-11-12).
