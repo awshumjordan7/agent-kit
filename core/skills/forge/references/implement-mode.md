@@ -20,8 +20,9 @@ model and effort.
 4. For each phase, in order:
    - Build one prompt containing, all inline: the phase text, the acceptance criteria, the
      recon's reuse table when one exists, `references/code-standards.md` verbatim, and
-     "implement only this phase; do not touch later phases". In gate mode `full`, add "run the
-     tests named in the plan for this phase". Do not tell the implementer to read plan.md: it gets only this phase inline, so it cannot work ahead.
+     "implement only this phase; do not touch later phases", and "do not run gate.sh, tests, lint,
+     typecheck, migrations, or Semgrep commands". The gate order below is the one check of the
+     phase, as in the build lane's phase loop. Do not tell the implementer to read plan.md: it gets only this phase inline, so it cannot work ahead.
    - Add "progress file: `<runDir>/impl-progress-<n>.md`" to the prompt and
      spawn the `implementer` agent with that prompt and no `model`. When it
      returns `PARTIAL`, spawn it again with the same prompt plus a `## Continuation` section that

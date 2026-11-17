@@ -2,13 +2,13 @@
 
 export const meta = {
   name: 'forge-core',
-  description: 'Forge orchestration: implement, gate, ship, independent review, bounded fixes, and handoff',
+  description: 'Forge orchestration: implement, gate check, independent review, bounded fixes, ship, and handoff',
   phases: [
-    { title: 'Implement', detail: 'Implementation by the configured provider' },
-    { title: 'Gate', detail: 'Repository-native tests, lint, Semgrep, and migration checks' },
-    { title: 'Ship', detail: 'Branch, commit, push, and non-draft pull request' },
-    { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses' },
-    { title: 'Fix', detail: 'Capped decide-then-apply fix loop: fast checks (lint, typecheck, Semgrep) and scoped verification per review-fix round, then one full gate on the final state' },
+    { title: 'Implement', detail: 'Implementation by the configured provider, which runs the gate as its last step' },
+    { title: 'Gate', detail: 'Gate check: the same gate command, reused when the implementer\'s passing result still matches the tree' },
+    { title: 'Review', detail: 'Independent Codex, optional Claude, and path-selected lenses on the local diff, before any push' },
+    { title: 'Fix', detail: 'Capped decide-then-apply fix loop: one gate and scoped verification per round that applies a fix' },
+    { title: 'Ship', detail: 'Branch, commit, one push, and non-draft pull request; also before a ruling stop when the gate passes' },
     { title: 'Bot Review', detail: 'Optional review-bot pass on the final PR head, triaged for the handoff only' },
     { title: 'Handoff', detail: 'Run status, evidence, decisions, and manual QA' },
   ],
@@ -455,7 +455,7 @@ const STUBS = {
   },
   shipper: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
-    : { branch: `${PARAMS.ticket}-dry-run`, prUrl: 'https://example.invalid/pr/1', prNumber: 1, repo: PARAMS.repo || 'owner/repo' },
+    : { branch: `${PARAMS.ticket}-dry-run`, prUrl: 'https://example.invalid/pr/1', prNumber: 1, repo: PARAMS.repo || 'owner/repo', sha: dryRunSha(opts.label) },
   ffReview: () => ({ skipped: false, reason: '', prNumber: 1, repo: PARAMS.repo || 'owner/repo', headSha: dryRunSha('bot-review'), exitCode: 0, commentCount: 1, commentsPath: `${PARAMS.runDir}/bot-review.json`, summary: 'dry-run bot review' }),
   runCommand: opts => opts.schema === ACK_SCHEMA
     ? { written: true }
@@ -820,20 +820,21 @@ async function launchCheck(relaunch) {
 // command matches their excludedCommands entry; inside it they fail or stop with exit 86.
 const BARE_CALL_RULE = 'Run every `bash ~/.claude/...` or `python3 ~/.claude/...` command named in this prompt, or in a skill it tells you to follow, exactly as written, as one bare Bash call: no `cd` prefix, pipe, redirect, `2>&1`, `;` or `&&`, and keep the `~/.claude` spelling. Anything added keeps the call inside the Bash sandbox, where it fails. The Bash tool result already shows a nonzero exit as `Exit code N` and keeps stderr, so never add `| tail`, `| head`, `2>&1` or `; echo $?`. When the output is very long, the result names a file holding all of it or cuts the middle: read that file, or the log the command writes, instead of trimming the call. If a script stops with "must run outside the Bash sandbox", the call was not bare: fix it and run it again.'
 
-function gateScriptInstruction() {
-  if (configuredGateMode() === 'none') return ''
-  const gateDir = `${PARAMS.runDir}/implementer-gate`
-  return `Run tests and the migrations check only with this command, Bash timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(gateDir)} --label implementer-gate --only tests,migrations --files <repository-relative paths of every changed file>\`. ${BARE_CALL_RULE} If the call times out, the gate did not finish: read the last lines of ${gateDir}/gate-implementer-gate-tests-*.log, report tests as unverified (gate timeout) in summary, and do not retry in the foreground. It prints JSON (also saved as ${gateDir}/gate-implementer-gate.json); a failing stage's last log lines are in failures[].summary, and each stage's full log is ${gateDir}/gate-implementer-gate-<stage>.log (tests: gate-implementer-gate-tests-1.log, -2, ... one per tests command in commands). Never run, copy, or wrap a tests or migrations command from forge.config.json, and never source env files yourself.`
+// The one gate command of a code change. The code-writing agent's prompt and forge's own gate call
+// use this same string, so gate.sh reuses the agent's passing result when the tree has not changed.
+function gateCommand(label) {
+  return `bash ~/.claude/skills/forge/scripts/gate.sh --repo ${shellQuote(PARAMS.projectDir)} --run-dir ${shellQuote(PARAMS.runDir)} --label ${label}${gateBaseArg()}`
 }
 
-function claudeTestPromptInstruction() {
-  if (configuredGateMode() === 'none') return 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, or Semgrep commands.'
-  return `${gateScriptInstruction()} The gate re-runs it; copy the final pytest summary line from the last lines of each tests log into summary (or state that commands shows tests skipped). When tests did not run, say why under unverified (for example, gate timeout). This repository requires tests, so a skip is never by choice.`
-}
+const NO_GATES_RULE = 'This personal repository has no tests or gates. Do not plan or run tests, lint, typecheck, migrations, or Semgrep commands.'
 
-function runBeforeReturningInstruction() {
-  if (configuredGateMode() === 'none') return 'Do not run tests, lint, typecheck, migrations, or Semgrep commands.'
-  return 'Before returning, run that gate.sh command again after your last edit, then run it once more with --only lint,typecheck,semgrep in place of --only tests,migrations. Fix what they report; the gate remains authoritative.'
+// label is the gate label forge calls after the agent returns; null means forge gates a commit
+// itself (the phase loop), so the agent runs no checks.
+function agentGateInstruction(label) {
+  if (configuredGateMode() === 'none') return NO_GATES_RULE
+  if (!label) return 'Do not run gate.sh, tests, lint, typecheck, migrations, or Semgrep commands: forge gates this work itself after you return.'
+  const dir = PARAMS.runDir
+  return `Run the gate as your last step, after your final edit, with exactly this command and Bash timeout=600000: \`${gateCommand(label)}\`. Do not add --files, --only or --sha. ${BARE_CALL_RULE} Never run tests, lint, typecheck, migrations or Semgrep any other way, never run, copy, or wrap a command from forge.config.json, and never source env files yourself. It prints JSON (also saved as ${dir}/gate-${label}.json); a failing stage's last log lines are in failures[].summary, and each stage's full log is ${dir}/gate-${label}-<stage>.log (tests: gate-${label}-tests-1.log, -2, ... one per tests command in commands). When passed is false, fix what failures[] reports and run the same command again, at most three runs in total; then return and list what still fails under unverified. If a call times out, the gate did not finish: read the last lines of ${dir}/gate-${label}-tests-*.log, report tests as unverified (gate timeout) in summary, and do not retry in the foreground. Forge runs the same command after you return and reuses your passing result when the tree has not changed. Copy the final pytest summary line from the last lines of each tests log into summary (or state that commands shows tests skipped).`
 }
 
 function phaseScope(phase) {
@@ -884,7 +885,11 @@ function implement(phase = null) {
   const label = `implement${suffix}`
   const scope = phaseScope(phase)
   const progressFile = `${PARAMS.runDir}/impl-progress-${phase ? phase.id : 'main'}.md`
-  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${claudeTestPromptInstruction()} ${runBeforeReturningInstruction()} Report live-dependent capabilities under unverified. Set error only when the work failed; put notes, workarounds and skipped checks in summary or unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
+  // A phased plan gates each phase commit with --sha, which gate.sh never reuses, so the
+  // implementer runs no gate there and forge's per-phase gate is the one check.
+  const gate = agentGateInstruction(phase ? null : 'gate')
+  const testRule = configuredGateMode() === 'none' || phase ? '' : ' When tests did not run, say why under unverified (for example, gate timeout). This repository requires tests, so a skip is never by choice.'
+  return claudeImplement(`${planRef(phase)}\n\nImplement this confirmed Forge plan in ${PARAMS.projectDir}. ${scope ? `${scope} ` : ''}Never commit or ship. ${gate}${testRule} Report live-dependent capabilities under unverified. Set error only when the work failed; put notes, workarounds and skipped checks in summary or unverified. Keep the progress file ${progressFile} current (sections Done, In progress, Remaining, Notes) and return it as progressFile; return status DONE when the work is complete, or PARTIAL after a context-guard handoff.`,
     { label, phase: 'Implement', schema: IMPL_RESULT, agentType: 'implementer' }, progressFile)
 }
 
@@ -892,12 +897,12 @@ function gateBaseArg() {
   return LAUNCH.base ? ` --base ${shellQuote(LAUNCH.base)}` : ''
 }
 
+// Called with only a label, it runs gateCommand(label) unchanged; the phase loop adds --sha and --files.
 function localGate(label = 'gate', gatePhase = 'Gate', files = [], only = [], sha = '') {
-  const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
-  const filesArg = files.length ? ` --files ${files.map(quote).join(' ')}` : ''
+  const filesArg = files.length ? ` --files ${files.map(shellQuote).join(' ')}` : ''
   const onlyArg = only.length ? ` --only ${only.join(',')}` : ''
-  const shaArg = sha ? ` --sha ${quote(sha)}` : ''
-  return agentT('gate', `${ASSIGNED_STEP_RULE} Run exactly this command with the Bash tool using timeout=600000: \`bash ~/.claude/skills/forge/scripts/gate.sh --repo ${quote(PARAMS.projectDir)} --run-dir ${quote(PARAMS.runDir)} --label ${label}${gateBaseArg()}${shaArg}${onlyArg}${filesArg}\`. ${BARE_CALL_RULE} Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
+  const shaArg = sha ? ` --sha ${shellQuote(sha)}` : ''
+  return agentT('gate', `${ASSIGNED_STEP_RULE} Run exactly this command with the Bash tool using timeout=600000: \`${gateCommand(label)}${shaArg}${onlyArg}${filesArg}\`. ${BARE_CALL_RULE} Return its stdout JSON as your structured output without changes. If the script exits 2 or prints no JSON, return \`{ passed: false, failures: [{ tool: 'gate.sh', summary: "gate.sh could not run (exit 2: config or usage error): <stderr tail>", file: null, line: null }], commands: [] }\`.`,
   { label, phase: gatePhase, schema: GATE_SCHEMA })
 }
 
@@ -921,13 +926,14 @@ function gateFindings(gate) {
 // hooks.first is a gate result already collected; hooks.run gates a label and file list;
 // hooks.afterFix(touched, files) runs after each applied fix and returns false to stop the loop;
 // hooks.planPhase is the plan phase row the decider and applier are pointed at.
+// Without hooks.run the gate is gateCommand(label), which the applier also runs before it returns.
 async function gateWithFixes(label, files, threadFile, context, phaseLabel, hooks = {}) {
-  const runGate = hooks.run || ((gateLabel, gateFiles) => localGate(gateLabel, phaseLabel, gateFiles))
+  const runGate = hooks.run || (gateLabel => localGate(gateLabel, phaseLabel))
   const gate = 'first' in hooks ? hooks.first : await runGate(label, files)
   if (gate && gate.passed) return { gate, touchedFiles: [], blocked: false, needsJudge: false }
   return fixLoop({
     kind: 'gate', label: `fix-${label}`, gateLabel: label, gate, reviewItems: [], files, threadFile, context, phaseLabel,
-    runGate, afterFix: hooks.afterFix, planPhase: hooks.planPhase, commitsPerRound: Boolean(hooks.afterFix),
+    runGate, applierGate: !hooks.run, afterFix: hooks.afterFix, planPhase: hooks.planPhase, commitsPerRound: Boolean(hooks.afterFix),
   })
 }
 
@@ -1211,10 +1217,10 @@ async function reviewPanel(context) {
 
 // The applier gets only the decider's fix items, already verified, so it applies them without re-triage.
 async function fixAgent(items, context, label, threadFile, fixPhase, extra) {
-  const { round, planPhase, diffStat } = extra
+  const { round, planPhase, diffStat, gateLabel } = extra
   const spec = items.map(item => ({ id: findingKey(item), source: item.source || 'review', files: item.specFiles || [item.file].filter(Boolean), change: item.change || item.fix_hint, check: item.check || '', finding: { file: item.file, line: item.line, claim: item.claim } }))
   const inputs = `FIX SPEC\n${JSON.stringify(spec)}\n\nDIFF STAT\n${diffStat || '(not reported)'}`
-  const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${gateScriptInstruction()} ${runBeforeReturningInstruction()} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
+  const result = await agentT('applier', `${planRef(planPhase)}\n\nApply only this verified fix spec in ${PARAMS.projectDir} (fix round ${round} of ${MAX_FIX_ROUNDS}). The fix decider already verified every item against current code: apply each change as written. Do not re-triage, re-check whether an item is real, or widen scope. Do not commit or ship. ${agentGateInstruction(gateLabel)} Return one results[] entry per item with the same id and a concise reason saying what you changed or why you could not apply it, list unapplied ids under couldNotFix, and include the fix diff in diff.\n\n${inputs}`,
     { label, phase: fixPhase, schema: FIX_SCHEMA, agentType: 'implementer' })
   return result || null
 }
@@ -1265,30 +1271,30 @@ async function converge(panel, context) {
     return { unresolved: [], unresolvedDisputes: [], fixesApplied: false, rounds: [], touchedFiles: [], blocked: false, needsJudge: false, gatePassed: true, gate: null, gateRan: false }
   }
   const gated = configuredGateMode() === 'full'
+  // Each round that applies a fix runs the full gate once, as gate-fix-<round>: the applier runs that
+  // command before it returns, so forge's call reuses its passing result; a judge-applied round runs it fresh.
   const review = await fixLoop({
     kind: 'review', label: 'fix', gateLabel: 'gate-fix', gate: null,
     reviewItems: originalFindings.map(finding => ({ ...finding, source: 'review' })),
     files: context.files || [], threadFile: `${PARAMS.runDir}/codex-fix.thread`, context, phaseLabel: 'Fix',
-    // Review-fix rounds run fast checks only: the full suite runs once on the final state below, and a full gate per round costs one suite run per round.
-    runGate: gated ? (gateLabel, gateFiles) => localGate(gateLabel, 'Fix', gateFiles, ['lint', 'typecheck', 'semgrep']) : null,
+    runGate: gated ? gateLabel => localGate(gateLabel, 'Fix') : null, applierGate: gated,
     commitsPerRound: false,
   })
   // A rulings resume that seeded findings and fixed nothing new can still hold the earlier launch's
-  // fixes uncommitted, or committed and unpushed, so it gets the final gate and the Fix stage's ship
-  // sync like a round that applied fixes. A failed tree read blocks instead.
+  // fixes uncommitted, or committed and unpushed, so it gets one gate and goes out with the Ship stage
+  // like a round that applied fixes. A failed tree read blocks instead.
   const tree = {}
   if (review.seeded && !review.fixesApplied) await readUncommitted(tree, 'resume', 'Fix')
   const seededPending = Boolean(tree.uncommitted)
   const seededUnread = tree.uncommitted === null
-  if (seededPending) await decide(`fix: the resume fixed nothing new; its ${review.seeded} seeded finding(s) get the final gate${gated ? '' : ' (skipped: gate mode is not full)'} and, when the run has a shipped branch, the ship sync, which pushes the earlier launch's fixes whether they are uncommitted (${tree.uncommitted.length} path(s) now) or committed and unpushed.`)
-  // The final gate runs even when the review loop ended blocked or needing a ruling: the tree holds
-  // fixes that only had fast checks, and a later resume may apply nothing more.
-  if (!gated || !(review.fixesApplied || seededPending)) return { ...review, seededPending, seededUnread }
+  if (seededPending) await decide(`fix: the resume fixed nothing new; its ${review.seeded} seeded finding(s) get one gate${gated ? '' : ' (skipped: gate mode is not full)'} and go out with the Ship stage, which pushes the earlier launch's fixes whether they are uncommitted (${tree.uncommitted.length} path(s) now) or committed and unpushed.`)
+  if (!gated || !seededPending || review.gateRan) return { ...review, seededPending, seededUnread }
+  // The seeded tree matches the Gate check's tree unless the earlier launch left changes, so this is
+  // usually a gate.sh reuse hit.
   const files = [...new Set([...(context.files || []), ...review.touchedFiles])]
-  const first = await localGate('gate-fix-final', 'Fix', files)
-  const final = await gateWithFixes('gate-fix-final', files, `${PARAMS.runDir}/codex-fix-gate-fix-final.thread`, context, 'Fix', { first })
+  const final = await gateWithFixes('gate-fix-seeded', files, `${PARAMS.runDir}/codex-fix-gate-fix-seeded.thread`, context, 'Fix')
   const finalTouched = final.touchedFiles || []
-  if (finalTouched.length) await decide(`The final gate fix loop changed ${finalTouched.join(', ').slice(0, 500)} after the review fixes; no review verifier re-checked these edits.`)
+  if (finalTouched.length) await decide(`The seeded-fix gate fix loop changed ${finalTouched.join(', ').slice(0, 500)}; no review verifier re-checked these edits.`)
   const finalOpen = final.open || []
   const blocked = review.blocked || Boolean(final.blocked)
   const reason = review.reason || final.reason
@@ -1352,12 +1358,14 @@ API CONTRACT: ${contract}`
 // spec (applying a small fix set itself), an applier applies the rest, then the re-gate checks
 // gate items and a separate verifier re-checks this round's fixed review items, plus items closed
 // earlier whose files this round touched and every still-closed item a rulings resume seeded from fixedIds. Gate item ids come from failure text and change across
-// edits, so gate progress is a failure count. Gate-failure rounds re-run the full gate. Review-fix
-// rounds run lint, typecheck and Semgrep only; converge then runs one full gate on the final state
-// when fixes were applied, and a failing final gate gets up to MAX_FIX_ROUNDS more rounds with a
-// full gate each.
+// edits, so gate progress is a failure count. Every round that applies a fix runs the full gate
+// once; a gate failure after a review-fix round becomes a gate item for the next round.
 async function fixLoop(opts) {
   const { kind, label, runGate } = opts
+  // Review rounds gate as gate-fix-<round>; gate-failure rounds keep <gateLabel>-retry, -retry2.
+  const roundGateLabel = round => kind === 'review'
+    ? `${opts.gateLabel}-${round}`
+    : round === 1 ? `${opts.gateLabel}-retry` : `${opts.gateLabel}-retry${round}`
   const afterFix = opts.afterFix || (async () => true)
   let gate = opts.gate
   let gateOpen = kind === 'gate' ? gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] }) : []
@@ -1457,7 +1465,7 @@ async function fixLoop(opts) {
     } else if (fixItems.length) {
       appliedBy = 'applier'
       const threadFile = round === 1 ? opts.threadFile : `${opts.threadFile}-${round}`
-      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planPhase: opts.planPhase, diffStat: spec.diffStat })
+      fix = await fixAgent(fixItems, opts.context, `${label}-${round}`, threadFile, opts.phaseLabel, { round, planPhase: opts.planPhase, diffStat: spec.diffStat, gateLabel: opts.applierGate ? roundGateLabel(round) : null })
       if (!fix) {
         reason = 'agent-null'
         await decide(`${label} round ${round}: the fix applier returned null; the loop stopped.`)
@@ -1475,7 +1483,7 @@ async function fixLoop(opts) {
         break
       }
       if (runGate) {
-        gate = await runGate(round === 1 ? `${opts.gateLabel}-retry` : `${opts.gateLabel}-retry${round}`, files)
+        gate = await runGate(roundGateLabel(round), files)
         gateRan = true
         gateOpen = gate && gate.passed ? [] : gateFindings(gate || { failures: [{ tool: 'gate', summary: 'agent returned null', file: null, line: null }] })
         record.gatePassed = Boolean(gate && gate.passed)
@@ -1600,7 +1608,7 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const bodyExtra = PARAMS.prBodyExtra
     ? `Read ${PARAMS.prBodyExtra} with the Read tool and include its contents verbatim as a section after How to verify; keep that section whenever you rewrite the body. `
     : ''
-  const tailWith = extra => `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. After the push, run ship-pr's PR checks step (section 4 step 5) and return its result line as checks. ${extra} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
+  const tailWith = extra => `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. Do not run ship-pr's PR checks step (section 4 step 5) and leave checks unset: forge waits for the checks in its own step. ${extra} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const tail = tailWith(`${bodyExtra}${gateNotice}`)
   const bodyRule = `The PR body has the sections Problem, Fix, How to verify and Notes that ship-pr section 5 describes (no file lists), then links; ${testing}.`
   const base = LAUNCH.base
@@ -1616,12 +1624,12 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
   const prompt = existing && continueBranch
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${existing.branch}. ${openGuard}Commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, ${syncSteps(existing.branch)}, push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${continueTail}`
     : continueBranch && !existing
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${continueBranch}; never create or switch branches. ${openGuard}${committedBranch ? `The branch already holds this run's phase commits. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage.` : `Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}.`} Then ${syncSteps(continueBranch)}, push the branch, and return the open PR's {branch, prUrl, prNumber, repo}. ${continueTail}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${continueBaseRule}In ${PARAMS.projectDir}, stay on branch ${continueBranch}; never create or switch branches. ${openGuard}${committedBranch ? `The branch already holds this run's phase commits. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage.` : `Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}.`} Then ${syncSteps(continueBranch)}, push the branch, and return the open PR's {branch, prUrl, prNumber, repo}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${continueTail}`
     : existing
     ? `${ghEnvironmentInstruction()}You sync verified Forge fixes to the existing pull request. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. In ${PARAMS.projectDir}, stay on branch ${existing.branch}, commit current verified fixes with exactly the subject ${JSON.stringify([args.ticket, 'Apply review fixes'].filter(Boolean).join(': '))}, run \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} fetch origin ${existing.branch}\` and, when origin has commits the local branch lacks, \`bash ~/.claude/scripts/git-net.sh -C ${shellQuote(PARAMS.projectDir)} pull --no-rebase origin ${existing.branch}\` before pushing (automation such as a docs(map) job may have pushed; never force-push), push them, and return the same non-draft PR metadata: ${JSON.stringify(existing)}, plus sha set to the output of \`git rev-parse HEAD\` after the push. Update the PR body after the push and keep its title as it is. ${bodyRule} ${tail}`
     : committedBranch
-    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? '' : 'resolve the repository base branch and '}stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a non-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
-    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? 'if' : 'resolve the repository base branch. If'} the current branch is the base branch or detached, create branch ${planBranchName()} from origin/${base || '<base>'}, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a non-draft PR, and return {branch, prUrl, prNumber, repo}. ${titleRule} ${bodyRule} ${tail}`
+    ? `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? '' : 'resolve the repository base branch and '}stay on branch ${committedBranch}, which already holds this run's phase commits; never create or switch branches. Commit only run files that are still uncommitted, if any, and skip the commit when nothing is left to stage. Push the branch, open a non-draft PR, and return {branch, prUrl, prNumber, repo}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${titleRule} ${bodyRule} ${tail}`
+    : `${ghEnvironmentInstruction()}You run the SHIP stage. Follow ~/.claude/skills/ship-pr/SKILL.md and ~/.claude/skills/ship-pr/references/lessons.md. ${baseRule}In ${PARAMS.projectDir}, ${base ? 'if' : 'resolve the repository base branch. If'} the current branch is the base branch or detached, create branch ${planBranchName()} from origin/${base || '<base>'}, appending -<unix time> when that name already exists; otherwise stay on the current branch. Never name the branch or commit from session context, run-directory names, or file names. Commit the implementation with exactly the subject ${JSON.stringify(planPrTitle())}, push it, open a non-draft PR, and return {branch, prUrl, prNumber, repo}, plus sha set to the output of \`git rev-parse HEAD\` after the push. ${titleRule} ${bodyRule} ${tail}`
   return agentT('shipper', prompt, { label: existing ? 'ship-sync' : 'ship', phase: existing ? 'Fix' : 'Ship', agentType: 'shipper', schema: SHIP_SCHEMA })
 }
 
@@ -1669,43 +1677,70 @@ async function readUncommitted(state, label, phaseLabel) {
   state.uncommittedError = null
 }
 
-// Pushing gate-passing fixes before a needsJudge stop keeps them when a rulings resume re-triages the
-// tree; the resume passes the stop's fixedIds back, so those findings start closed in the fix loop.
-// A skipped or failed push is recorded and never changes the needsJudge outcome.
+// Every file the run changed. The ship prompt stages context.files; this list names the run's own edits.
+function runFiles(state) {
+  return [
+    ...((state.implement && state.implement.filesChanged) || []),
+    ...((state.convergence && state.convergence.touchedFiles) || []),
+  ]
+}
+
+// The tree passes when the last gate that ran on it passed: the fix loop's gate after a fix round,
+// otherwise the Gate check or the phase loop's last gate.
+function gatePassing(state) {
+  if (configuredGateMode() === 'none') return true
+  const loop = state.convergence
+  if (loop && loop.gateRan) return Boolean(loop.gatePassed)
+  return Boolean(state.gate && state.gate.passed)
+}
+
+// The run's first push and pull request, from the Ship stage or before a needsJudge stop.
+// Returns the reason it did not push, or '' when state.ship now holds the pull request.
+async function firstShip(state) {
+  state.context = await collectContext()
+  if (contextFailed(state.context)) return `changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`
+  const phasesCommitted = (state.phases || []).some(row => row.sha)
+  const shipped = await ship(null, runFiles(state), state.context, phasesCommitted ? state.branch : '')
+  await recordUnstaged(state, shipped, 'Ship')
+  if (!shipped || shipped.skipped) return (shipped && shipped.reason) || 'shipper returned null'
+  state.ship = shipped
+  return ''
+}
+
+// Pushing a gate-passing tree before a needsJudge stop keeps the work on GitHub while the user
+// decides; a rulings resume passes the stop's fixedIds back, so those findings start closed in the
+// fix loop. A skipped or failed push is recorded and never changes the needsJudge outcome.
 async function syncBeforeJudge(state) {
   const loop = state.convergence
-  const branch = (state.ship && state.ship.branch) || '(unknown branch)'
-  const waiting = `${loop.unresolvedDisputes.length} disputed item(s) get a human ruling`
-  const gatePassing = configuredGateMode() === 'none' || (loop.gateRan && loop.gatePassed)
+  const disputeCount = [
+    ...((state.review && state.review.unresolvedDisputes) || []),
+    ...((loop && loop.unresolvedDisputes) || []),
+    ...(state.fixDisputes || []),
+  ].length
+  const waiting = `${disputeCount} disputed item(s) get a human ruling`
   state.fixSync = { ran: false, ok: false, sha: null }
-  const skip = !state.ship ? 'the run has no shipped branch' : !gatePassing ? 'the gate is not passing on the fixed tree' : ''
+  const skip = PARAMS.noShip ? 'args.noShip is true'
+    : state.ship ? 'the run already pushed'
+    : state.status === 'BLOCKED' ? 'the run is BLOCKED'
+    : loop && loop.blocked ? 'the fix loop is blocked'
+    : !gatePassing(state) ? 'the gate is not passing on the tree'
+    : ''
   if (skip) {
-    await decide(`Fixes stayed unpushed on ${branch} until ${waiting}, because ${skip}.`)
+    await decide(`The run's changes were not pushed before the needsJudge stop, until ${waiting}, because ${skip}.`)
     return
   }
   state.fixSync.ran = true
-  const context = await collectContext()
-  if (contextFailed(context) || !context.diffValid) {
-    await decide(`Fixes stayed unpushed on ${branch} until ${waiting}: changed-file collection failed before ship sync (${(context && context.error) || 'review diff invalid'}).`)
+  const failed = await firstShip(state)
+  if (failed) {
+    await decide(`Ship before the needsJudge stop failed (${failed}); the changes stay uncommitted in ${PARAMS.projectDir} until ${waiting}.`)
     return
   }
-  state.context = context
-  const synced = await ship(state.ship, [
-    ...((state.implement && state.implement.filesChanged) || []),
-    ...(loop.touchedFiles || []),
-  ], state.context)
-  await recordUnstaged(state, synced, 'Ship sync')
-  if (!synced || synced.skipped) {
-    await decide(`Ship sync to ${branch} failed before the needsJudge stop (${(synced && synced.reason) || 'shipper returned null'}); the fixes stay uncommitted until ${waiting}.`)
-    return
-  }
-  state.ship = synced
-  state.fixSync.sha = synced.sha || null
-  const left = await shipCheck(state, 'Ship sync', false)
+  state.fixSync.sha = state.ship.sha || null
+  const left = await shipCheck(state, 'Ship', false)
   state.fixSync.ok = Array.isArray(left) && left.length === 0
   state.uncommitted = left
   state.uncommittedError = left ? null : 'ship-facts unavailable'
-  await decide(`Fixes were pushed to ${branch} at ${state.fixSync.sha || 'an unreported sha'} before the needsJudge stop${state.fixSync.ok ? '' : ', but the tree was not clean afterwards'}; ${loop.unresolvedDisputes.length} disputed item(s) need a human ruling.`)
+  await decide(`The run's changes were pushed to ${state.ship.branch} (${state.ship.prUrl || 'no PR URL reported'}) at ${state.fixSync.sha || 'an unreported sha'} before the needsJudge stop${state.fixSync.ok ? '' : ', but the tree was not clean afterwards'}; ${disputeCount} disputed item(s) need a human ruling.`)
 }
 
 function ffReview(shipResult) {
@@ -2066,6 +2101,8 @@ async function fullLane() {
     async state => {
       phase('Gate')
       if (stopped(state)) return state
+      // Gate check: the implementer ran gateCommand('gate') last, so on an unchanged tree gate.sh
+      // returns its passing result at once. A phased run's per-phase gates already checked the work.
       if (PHASED || configuredGateMode() === 'none') return state
       const gateRun = await gateWithFixes('gate', repoRelative((state.implement && state.implement.filesChanged) || []), `${PARAMS.runDir}/codex-fix-gate.thread`, {}, 'Gate')
       state.gate = gateRun.gate
@@ -2080,41 +2117,16 @@ async function fullLane() {
       return state
     },
     async state => {
-      phase('Ship')
+      phase('Review')
       if (stopped(state)) return state
-      if (PARAMS.noShip) {
-        await decide('Ship stage skipped because args.noShip is true.')
-        return state
-      }
+      // Nothing is pushed yet: the reviewers read the local diff against the merge-base, which
+      // includes any edits the Gate check's fix loop made.
       state.context = await collectContext()
       if (contextFailed(state.context)) {
         state.status = 'BLOCKED'
-        await decide(`Changed-file collection failed before ship: ${(state.context && state.context.error) || 'agent returned null'}`)
+        await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}`)
         return state
       }
-      const phasesCommitted = (state.phases || []).some(row => row.sha)
-      state.ship = await ship(null, (state.implement && state.implement.filesChanged) || [], state.context, phasesCommitted ? state.branch : '')
-      await recordUnstaged(state, state.ship, 'Ship')
-      if (!state.ship || state.ship.skipped) {
-        state.status = 'BLOCKED'
-        if (state.ship && state.ship.reason) await decide(state.ship.reason)
-      } else {
-        await shipCheck(state, 'Ship')
-      }
-      return state
-    },
-    async state => {
-      phase('Review')
-      if (stopped(state)) return state
-      if (state.ship) {
-        state.context = await collectContext()
-        if (contextFailed(state.context)) {
-          state.status = 'BLOCKED'
-          await decide(`Changed-file collection failed; review inputs are unavailable: ${(state.context && state.context.error) || 'agent returned null'}`)
-          return state
-        }
-      }
-      state.context = state.context || await collectContext()
       state.review = await reviewPanel(state.context)
       if (state.review.status === 'BLOCKED') {
         state.status = 'BLOCKED'
@@ -2124,7 +2136,8 @@ async function fullLane() {
       if ((configuredRole('review') || {}).provider !== 'claude' && state.review.failures.some(failure => failure.key === 'codex')) {
         // Cross-model review is the contract; never continue Claude-only.
         state.status = 'BLOCKED'
-        await decide('CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the run is BLOCKED instead of continuing with Claude-only findings. The PR is preserved. Fix the cause named in the \'Codex review did not run\' line above, then relaunch with resumeFromRunId and resumeAttempt raised by one.')
+        const kept = state.ship ? 'The PR is preserved.' : `Nothing was pushed; the changes stay in ${PARAMS.projectDir}.`
+        await decide(`CROSS-MODEL ASSERT FAILED: the Codex review did not run, so the run is BLOCKED instead of continuing with Claude-only findings. ${kept} Fix the cause named in the 'Codex review did not run' line above, then relaunch with resumeFromRunId and resumeAttempt raised by one.`)
         return state
       }
       if (state.review.unresolvedDisputes.length) state.needsJudge = true
@@ -2135,41 +2148,34 @@ async function fullLane() {
       phase('Fix')
       state.convergence = await converge(state.review, state.context)
       if (state.convergence.needsJudge) state.needsJudge = true
-      const syncFixes = state.convergence.fixesApplied || state.convergence.seededPending
       if (state.convergence.seededUnread) {
         state.status = 'BLOCKED'
         await decide('Fix: a resume that fixed nothing new could not read the tree, so whether the earlier launch\'s fixes are on the branch is not established.')
       }
       if (state.convergence.blocked) {
         state.status = 'BLOCKED'
-        const branch = (state.ship && state.ship.branch) || '(unknown branch)'
-        await decide(`Fixes stayed unpushed on ${branch} because ${state.convergence.unresolved.length} item(s) stayed open after the fix loop (${state.convergence.reason}).`)
-      } else if (state.convergence.needsJudge && syncFixes) {
-        await syncBeforeJudge(state)
+        await decide(`Nothing was pushed; the changes stay in ${PARAMS.projectDir} because ${state.convergence.unresolved.length} item(s) stayed open after the fix loop (${state.convergence.reason}).`)
       }
-      if (!state.convergence.blocked && !state.convergence.needsJudge && syncFixes && state.ship) {
-        state.context = await collectContext()
-        if (contextFailed(state.context) || !state.context.diffValid) {
-          state.status = 'BLOCKED'
-          await decide(`Changed-file collection failed before ship sync: ${(state.context && state.context.error) || 'review diff invalid'}`)
-          return state
-        }
-        const synced = await ship(state.ship, [
-          ...((state.implement && state.implement.filesChanged) || []),
-          ...((state.convergence && state.convergence.touchedFiles) || []),
-        ], state.context)
-        await recordUnstaged(state, synced, 'Ship sync')
-        if (synced && !synced.skipped) {
-          const left = await shipCheck(state, 'Ship sync')
-          state.uncommitted = left
-          state.uncommittedError = left ? null : 'ship-facts unavailable'
-        }
-        if (!synced || synced.skipped) {
-          state.status = 'BLOCKED'
-          await decide((synced && synced.reason) || 'Verified fixes could not be pushed to the existing pull request.')
-        } else {
-          state.ship = synced
-        }
+      return state
+    },
+    async state => {
+      phase('Ship')
+      // A ruling stop pushes a gate-passing tree first, so the work is on GitHub while the user decides.
+      if (state.needsJudge) {
+        await syncBeforeJudge(state)
+        return state
+      }
+      if (stopped(state)) return state
+      if (PARAMS.noShip) {
+        await decide('Ship stage skipped because args.noShip is true.')
+        return state
+      }
+      const failed = await firstShip(state)
+      if (failed) {
+        state.status = 'BLOCKED'
+        await decide(failed)
+      } else {
+        await shipCheck(state, 'Ship')
       }
       return state
     },
@@ -2259,6 +2265,7 @@ if (state.needsJudge) {
   return {
     status: 'needsJudge', findings: (state.review && state.review.findings) || [], disputes, convergence, gateFix: state.gateFix || null, runDir: PARAMS.runDir,
     decisions: [...decisions], fixSync: state.fixSync || { ran: false, ok: false, sha: null },
+    prUrl: (state.ship && state.ship.prUrl) || '',
     uncommitted: state.uncommitted, uncommittedError: state.uncommittedError || null,
     fixedIds: (state.convergence && state.convergence.fixedIds) || PARAMS.fixedIds,
   }
