@@ -43,7 +43,7 @@ fi
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$SKILL_DIR/references/plan-review-prompt.md"
 STANDARDS="$SKILL_DIR/references/code-standards.md"
-# The short template has no {{RECON}} or {{STANDARDS}} token, so neither section is written.
+# The short template has no RECON or STANDARDS token, so neither section is written.
 [ "$SHORT" -eq 0 ] || TEMPLATE="$SKILL_DIR/references/plan-review-prompt-short.md"
 REPO_NAME="${REPO_NAME:-$(basename "$REPO_DIR")}"
 EXCERPTS="$RUN_DIR/excerpts.md"

@@ -2,7 +2,7 @@
 
 ## Workflow: Discuss -> Plan -> Confirm -> Implement
 
-Follow this sequence for every non-trivial task. A small change and Rapid-Fix Mode below are the only shortcuts.
+Follow this sequence for every non-trivial task. A short plan and Rapid-Fix Mode below are the only shortcuts.
 
 1. **Discuss** -- Explore the problem. Ask clarifying questions before proposing anything.
 2. **Plan** -- Propose an approach with rationale. Present trade-offs if multiple approaches exist. If you see a better way, explain why.
@@ -21,7 +21,7 @@ A small change whose request already says exactly what to change is a Rapid-Fix 
 
 For small, obvious fixes (small and low risk, and the request already says exactly what to change): skip Discuss and Confirm, because the request is the go. It gets no plan. The code review still runs. Then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
 
-Switch to a small change or the full workflow when something turns out to need a decision, or scope grows into data model/API/architecture changes.
+Switch to a short plan when the code change still has to be worked out, and to the full workflow when the user must make a decision or scope grows into data model/API/architecture changes.
 
 ## Code Philosophy
 
