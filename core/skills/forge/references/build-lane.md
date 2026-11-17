@@ -1,14 +1,14 @@
 # Forge build lane
 
-Use the default build lane for confirmed bugs, features, contract changes, and multi-phase work. The investigation is `recon.md`, short for a narrow ask and broader when reuse and caller mapping matter, and every build receives one plan review.
+Use the default build lane for confirmed bugs, features, contract changes, and multi-phase work. The investigation is `recon.md`, short for a narrow ask and broader when reuse and caller mapping matter, and every build receives one plan review. A small, low-risk change needs no `recon.md` and gets the short plan and the short review brief (`SKILL.md` steps 1 to 3).
 
 ## What runs
 
 | Step | Owner | Notes |
 |---|---|---|
 | Investigate | main session and scoped scouts | Diagnose before fixing: read the code path and capture live evidence before naming a cause. Map reusable patterns and affected callers. |
-| Plan | main session | Open with a summary, then `## Why`, `## How it works` (`**Data:**`, `**Endpoints:**`, `**Screens:**`) and `## What the user sees`, in plain English for the user. State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. A plan that changes instruction files carries `## Changelog`, and its last phase writes those lines to CHANGELOG.md. |
-| Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. |
+| Plan | main session | These sections apply to a full plan; a small, low-risk change uses the short shape in `SKILL.md` step 2. Open with a summary, then `## Why`, `## How it works` (`**Data:**`, `**Endpoints:**`, `**Screens:**`) and `## What the user sees`, in plain English for the user. State the public contract, files, acceptance criteria, access rules, risks, run settings, and one `## Tests` table with `Section`, `Test`, `Pins`, `How`, and `Why` columns; use `None: <reason>` when there are no tests. A plan that changes instruction files carries `## Changelog`, and its last phase writes those lines to CHANGELOG.md. |
+| Plan review | configured reviewer | Build one prompt with the plan, investigation, excerpt pack, standards, and `plan-review-checks.md`; run one round and fold in critical findings. A short plan gets the short review brief (`--short`): the plan and its excerpts only. |
 | Confirm | user | The user confirms the plan, test table included, before the run starts, in chat or with an `approve-plan` control record (SKILL.md `## Control records`). On approval of a plan with `## Changelog`, the main session writes `<runDir>/user-ok.md` with the quoted approval and date, or the record line; ship-pr's changelog check needs it. |
 | Workflow | `forge-core.js`, `args.lane='build'` | Implement (the implementer runs the repository's gate command as its last step and fixes its own failures), gate check (the same command, reused when the tree has not changed), parallel Codex and Claude review plus lenses on the local diff, triage, the capped fix loop (at most `MAX_FIX_ROUNDS` (2) rounds; each round that applies a fix runs the full gate once when a gate is configured and, when review items changed, is re-checked by a scoped Claude verifier), ship (one push and the PR), handoff. |
 
@@ -30,7 +30,7 @@ A new session passes `resumeFromRunId` only after carrying the journal over with
 
 ## Evidence rules
 
-- Put a `## Public API contract` in the plan for any client, CLI, library, data shape, or externally visible behavior. Implementation and verification must preserve it.
+- Put a `## Public API contract` in a full plan for any client, CLI, library, data shape, or externally visible behavior. Implementation and verification must preserve it. A short plan has no such section (`SKILL.md` step 2); a change that needs one is not small.
 - When live behavior matters, build or keep a runnable evidence harness before feature work. Emit per-capability evidence with pass, fail, or blocked status.
 - Harness and QA setup must be idempotent: use get_or_create/update_or_create, or clean up the rows it owns first, so the setup is safe to run twice against the same database.
 - The post-fix verifier receives only the original post-triage findings, the implementer's per-finding explanations, and the fix diff. It marks each of those findings `RESOLVED` or `UNRESOLVED` and cannot add findings; unresolved items stay open for the next round or the BLOCKED handoff. Codex reports inaccessible live targets as implemented-unverified.

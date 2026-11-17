@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Assemble a bounded plan-review prompt from a plan, investigation, and cited excerpts.
 # Usage: build-plan-review-prompt.sh --run-dir <runDir> --repo-dir <repo> [--recon <file>]
-#        [--repo-name <name>] [--checks <file>] [--max-excerpt-kb 60] [--context-lines 40]
+#        [--repo-name <name>] [--checks <file>] [--max-excerpt-kb 60] [--context-lines 40] [--short]
 # The excerpt pack is capped at 60 KB by default.
+# --short reviews a short plan: the short template, excerpts from plan.md only (recon.md is ignored),
+# a 20 KB excerpt cap unless --max-excerpt-kb is passed, and no RECON or CODE STANDARDS section.
 
 set -euo pipefail
 
-RUN_DIR="" REPO_DIR="" REPO_NAME="" RECON_FILE="" CHECKS_FILE="" MAX_KB=60 CONTEXT=40
+RUN_DIR="" REPO_DIR="" REPO_NAME="" RECON_FILE="" CHECKS_FILE="" MAX_KB=60 CONTEXT=40 SHORT=0 MAX_KB_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --run-dir) RUN_DIR="$2"; shift 2 ;;
@@ -14,17 +16,22 @@ while [ $# -gt 0 ]; do
         --repo-name) REPO_NAME="$2"; shift 2 ;;
         --recon) RECON_FILE="$2"; shift 2 ;;
         --checks) CHECKS_FILE="$2"; shift 2 ;;
-        --max-excerpt-kb) MAX_KB="$2"; shift 2 ;;
+        --max-excerpt-kb) MAX_KB="$2"; MAX_KB_SET=1; shift 2 ;;
         --context-lines) CONTEXT="$2"; shift 2 ;;
+        --short) SHORT=1; shift ;;
         *) echo "error: unknown flag: $1" >&2; exit 64 ;;
     esac
 done
 [ -n "$RUN_DIR" ] && [ -n "$REPO_DIR" ] || {
-    echo "usage: build-plan-review-prompt.sh --run-dir <d> --repo-dir <r> [--recon <f>] [--max-excerpt-kb 60]" >&2
+    echo "usage: build-plan-review-prompt.sh --run-dir <d> --repo-dir <r> [--recon <f>] [--max-excerpt-kb 60] [--short]" >&2
     exit 64
 }
 [ -f "$RUN_DIR/plan.md" ] || { echo "error: $RUN_DIR/plan.md not found" >&2; exit 64; }
-if [ -z "$RECON_FILE" ]; then
+if [ "$SHORT" -eq 1 ]; then
+    # A short plan has no recon; its own file:line references give the excerpts.
+    RECON_FILE="$RUN_DIR/plan.md"
+    [ "$MAX_KB_SET" -eq 1 ] || MAX_KB=20
+elif [ -z "$RECON_FILE" ]; then
     # A plan written outside forge has no recon; its own file:line references give the excerpts.
     RECON_FILE="$RUN_DIR/recon.md"
     [ -f "$RECON_FILE" ] || RECON_FILE="$RUN_DIR/plan.md"
@@ -36,6 +43,8 @@ fi
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$SKILL_DIR/references/plan-review-prompt.md"
 STANDARDS="$SKILL_DIR/references/code-standards.md"
+# The short template has no {{RECON}} or {{STANDARDS}} token, so neither section is written.
+[ "$SHORT" -eq 0 ] || TEMPLATE="$SKILL_DIR/references/plan-review-prompt-short.md"
 REPO_NAME="${REPO_NAME:-$(basename "$REPO_DIR")}"
 EXCERPTS="$RUN_DIR/excerpts.md"
 OUT="$RUN_DIR/plan-review-prompt.md"
@@ -73,6 +82,8 @@ build_excerpts
 
 if [ -n "$CHECKS_FILE" ] && [ -s "$CHECKS_FILE" ]; then
     CHECKS="$(cat "$CHECKS_FILE")"
+elif [ "$SHORT" -eq 1 ]; then
+    CHECKS="(none)"
 else
     CHECKS="(no additional checks; verify the plan's phases and public API contract against the investigation)"
 fi
