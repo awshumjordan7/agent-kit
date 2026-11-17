@@ -67,7 +67,7 @@ Top-level `roles` selects the provider only:
 - `review`: final review and verification;
 - `plan-review`: pre-implementation review.
 
-Each agent file sets its own model and effort: `implementer` writes the code, and `reviewer`, `triage`, `judge`, `shipper` and `security-advisor` run their stages, and `runner` runs the `gate` and `runCommand` steps. Forge passes a model and effort only for roles with no agent file (`lens`, `handoff`, `codexWrap`, `ffReview`), from one table in `forge-core.js`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex model, effort and budgets live under `codex.roles`.
+Each agent file sets its own model and effort: `implementer` writes the code, and `reviewer`, `triage`, `judge`, `shipper` and `security-advisor` run their stages, and `runner` runs the `gate`, `runCommand` and `ciWait` steps. Forge passes a model and effort only for roles with no agent file (`lens`, `handoff`, `codexWrap`, `ffReview`), from one table in `forge-core.js`. The Claude reviewer always runs beside the Codex reviewer, and matching lenses run in parallel. Codex model, effort and budgets live under `codex.roles`.
 
 To run an already confirmed plan, follow `references/implement-mode.md`.
 
@@ -75,7 +75,9 @@ To run an already confirmed plan, follow `references/implement-mode.md`.
 
 Core ships optional stages disabled. An overlay may supply and enable `stages.ff_review` and ticket handling; each reads its doc from the overlay at `references/stages/<stage>.md`.
 
-`stages.ff_review` runs after the ship on the configured frontend and backend repos, runs the overlay's stage script (`scripts/stages/<stage>.sh`), which posts the review trigger once per PR head (the overlay's stage doc names the bot login and trigger), verifies the bot's comments with the `triage` agent, and reports them in the handoff only; bot findings never enter the fix loop.
+After the ship, forge starts two waits at the same time: its own wait for the pull request's GitHub checks (on the `runner` agent, at most 10 minutes) and, when it is on, the bot review below. A failed check ends the run BLOCKED with the check names and links; forge does not fix it. When the pull request has no checks, the wait returns `none` at once.
+
+`stages.ff_review` runs after the ship on the configured frontend and backend repos, runs the overlay's stage script (`scripts/stages/<stage>.sh`), which posts the review trigger once per PR head (the overlay's stage doc names the bot login and trigger), and verifies the bot's comments with the `triage` agent. Forge waits for the bot at most 10 minutes from the push. When the bot has not answered by then, the handoff says `review bot: no answer within 10 minutes` and the comments can be read later with the overlay's stage doc. Bot findings triaged real and worth fixing get one pass of the fix loop, then one more push and one more checks wait; this happens at most once per run, and the bot is not asked again.
 
 ## Control records
 

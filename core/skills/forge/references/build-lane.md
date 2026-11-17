@@ -47,7 +47,7 @@ The triage agent confirms each finding against current code. Confirmed findings,
 
 `gate.mode` is resolved per repository and defaults to `full`. Full mode retains the configured gate. Personal repositories use `none`: they have no tests, spawn no gate agent, and run no test, lint, typecheck, migration, or Semgrep command; Forge still creates the review diff with plain `git diff`.
 
-Every build goes from the gate check to review, fixes and ship, with no pause; nothing is pushed before review. QA runs only by hand, on demand, with the overlay stage docs. Mode `none` skips the gate check and goes straight to review.
+Every build goes from the gate check to review, fixes and ship, with no pause; nothing is pushed before review. After the one push, the wait for GitHub's checks and the bot review (when `stages.ff_review` is on) start together, and each stops after 10 minutes at the latest. A failed check ends the run BLOCKED with the check named. Bot findings triaged real and worth fixing get one fix pass, one more push and one more checks wait. QA runs only by hand, on demand, with the overlay stage docs. Mode `none` skips the gate check and goes straight to review.
 
 ## Multi-repository work
 
@@ -55,4 +55,4 @@ Use a separate run directory and repository-specific `planPath` for each reposit
 
 ## What the user receives
 
-The handoff includes the implementation summary, gate result, review disposition, live-evidence status, manual QA checklist, decision log, and branch and pull-request link. For `mode: none`, it states `gates: none (personal repo)`.
+The handoff includes the implementation summary, gate result, review disposition, the result of GitHub's checks, what the review bot found and which findings were fixed (or that it did not answer within 10 minutes), live-evidence status, manual QA checklist, decision log, and branch and pull-request link. For `mode: none`, it states `gates: none (personal repo)`.

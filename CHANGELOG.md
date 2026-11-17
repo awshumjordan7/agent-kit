@@ -4,6 +4,10 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-16
+- core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/skills/forge/references/implement-mode.md: a build run reviews before it pushes and the code-writing agent runs the gate once, because 68 of 95 measured runs pushed more than once and tests ran 779 times.
+- core/skills/forge/references/cost-controls.md, core/skills/ship-pr/SKILL.md: forge waits for GitHub's checks in its own step, beside the review bot for at most 10 minutes, and fixes bot findings that are worth fixing (user request 2026-11-16).
+
 ## 2026-11-14
 - core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/skills/forge/scripts/control_record.py, core/skills/ship-pr/SKILL.md: forge accepts one control record that the workflow-maxxing app writes before a plain `go` message, as the plan approval (with the review provider and auto rulings) or the rulings, because app buttons must not put order words into the message Workflow relays to every agent (I19).
 
