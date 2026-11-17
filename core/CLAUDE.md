@@ -2,18 +2,26 @@
 
 ## Workflow: Discuss -> Plan -> Confirm -> Implement
 
-Follow this sequence for every non-trivial task. Rapid-Fix Mode below is the only shortcut.
+Follow this sequence for every non-trivial task. A short plan and Rapid-Fix Mode below are the only shortcuts.
 
 1. **Discuss** -- Explore the problem. Ask clarifying questions before proposing anything.
 2. **Plan** -- Propose an approach with rationale. Present trade-offs if multiple approaches exist. If you see a better way, explain why.
 3. **Confirm** -- Wait for explicit approval ("go ahead", "do it", "start building"). Silence or "what do you think?" does NOT count.
 4. **Implement** -- Execute the confirmed plan. Minimal changes only.
 
+### Small changes
+
+A change is small and low risk when all of these hold: it touches no stored data, migration, public API shape, sign-in, permissions, tenant isolation, secrets or money; one revert undoes it; and what it should do is already clear, so no design choice is left for the user. The number of files does not decide it. When unsure, treat the change as not small.
+
+When a request looks small and low risk, say so in one line with the reason, and carry on. The user can also say "small change". "full plan" from the user overrules either.
+
+A small change whose request already says exactly what to change is a Rapid-Fix (below) and gets no plan. Any other small change keeps Plan and Confirm in a short form: a short plan and a quick plan review (forge `SKILL.md` steps 2 and 3), no plan page, and the go asked in chat. Skip Discuss when nothing is unclear.
+
 ### Rapid-Fix Mode
 
-For small, obvious fixes (1-3 files, fully specified, no architecture decisions): skip Discuss and Confirm, because the request is the go. The plan decision (under Delegation) is usually no plan. The code review still runs. Then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
+For small, obvious fixes (small and low risk, and the request already says exactly what to change): skip Discuss and Confirm, because the request is the go. It gets no plan. The code review still runs. Then make the edit in the main session. Trigger phrases: "quick fix", "just do it", "go ahead", "no ceremony", "fire off requests", or when making rapid-fire visual tweaks.
 
-Switch back to full workflow if scope grows into data model/API/architecture changes.
+Switch to a short plan when the code change still has to be worked out, and to the full workflow when the user must make a decision or scope grows into data model/API/architecture changes.
 
 ## Code Philosophy
 
@@ -26,12 +34,13 @@ Switch back to full workflow if scope grows into data model/API/architecture cha
 
 ## Delegation and context hygiene
 
-- **Routing.** A small, fully specified fix of up to three files (nothing left to decide): the main session
+- **Routing.** A small, low-risk fix whose request already says exactly what to change (nothing left to decide): the main session
   makes it directly, or hands it to `worker`. Anything that needs code reading to decide the change: forge,
   whose `implementer` agent writes the code. The `shipper` always commits and pushes. The main session never edits code otherwise.
 - **Plan decision.** Before any code change outside forge (a main-session edit, a `worker`, or an `implementer`
-  spawn), decide whether the change gets a plan. Do not ask the user. It gets a plan when it touches more than
-  3 files or changes behavior. Otherwise it gets none. Say the decision and its reason in one line, then carry on.
+  spawn), decide whether the change gets a plan. Do not ask the user. A small, low-risk change whose request
+  already says exactly what to change gets none. Any other small, low-risk change gets a short plan. Everything
+  else gets the full plan. Small changes above defines the terms. Say the decision and its reason in one line, then carry on.
   Then follow `~/.claude/references/change-outside-forge.md` for the run dir, the plan review and the code review.
   Forge runs skip this, because forge plans and reviews itself.
 - **Browser work goes to the `browser` agent**, one at a time. The main session and other agents never call Playwright tools.

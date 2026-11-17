@@ -5,6 +5,8 @@ heading, creating it at the top if missing. Each line reads `- <paths or area>: 
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
 ## 2026-11-16
+- core/CLAUDE.md, core/references/change-outside-forge.md: a small, low-risk change is judged by what it touches, not by a count of files, and gets a short plan, a quick plan review and no plan page (user request 2026-11-16: "i dont like the 3 file limit").
+- core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/skills/forge/references/plan-review-prompt-short.md, core/skills/forge/references/codex-wrapper.md: forge's plan steps describe the short plan and the short review brief, because the measured median review brief was 66,554 bytes and a plan review took about 5.5 minutes.
 - core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/skills/forge/references/implement-mode.md: a build run reviews before it pushes and the code-writing agent runs the gate once, because 68 of 95 measured runs pushed more than once and tests ran 779 times.
 - core/skills/forge/references/cost-controls.md, core/skills/ship-pr/SKILL.md: forge waits for GitHub's checks in its own step, beside the review bot for at most 10 minutes, and fixes bot findings that are worth fixing (user request 2026-11-16).
 

@@ -9,7 +9,9 @@ These steps apply to a main-session edit, a `worker` change, or an `implementer`
    The review command, every ship_record call and the shipper brief name that label.
 3. **With a plan.** Write `<run dir>/plan.md`. Run
    `~/.claude/skills/forge/scripts/build-plan-review-prompt.sh --run-dir <run dir> --repo-dir <repo>` and the
-   `plan-review` role. Then wait for the user's go. When the plan has a `## Changelog` section, write
+   `plan-review` role. For a small, low-risk change, the plan has the short shape (forge SKILL.md step 2) and
+   the script runs with `--short`; when the reviewer answers `NOT SMALL`, write the full plan and review that.
+   Then wait for the user's go. When the plan has a `## Changelog` section, write
    `<run dir>/user-ok.md` with the user's approval quoted word for word and the date, as forge does (forge SKILL.md step 4).
 4. **Code review, with or without a plan.** After the change, run
    `~/.claude/skills/forge/scripts/build-code-review-prompt.sh --run-dir <run dir> --repo-dir <repo> --label <label>`
