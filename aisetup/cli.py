@@ -26,6 +26,7 @@ from aisetup.deps import (
     MissingDependencyError,
     check_dependencies,
     format_missing_dependencies,
+    windows_jq_warning,
 )
 from aisetup.layers import Layer, ResolvedLayers, resolve_layers
 from aisetup.manifest import ManifestError, load_layer_manifest, load_module_manifest
@@ -179,6 +180,9 @@ def _install(args: argparse.Namespace) -> int:
     except (ManifestError, ProfileError) as error:
         print(f"agent-kit: {error}", file=sys.stderr)
         return 4
+    jq_warning = windows_jq_warning()
+    if jq_warning:
+        print(jq_warning, file=sys.stderr)
     _print_name_warnings(profile, resolved)
     _print_layer_replacements(resolved)
 
