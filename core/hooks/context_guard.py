@@ -33,10 +33,12 @@ STATE_DIR = os.environ.get("CONTEXT_GUARD_STATE_DIR") or os.path.expanduser(
 NOTICE = (
     "Context guard: ~{n}k tokens. This session is past 280k and a handoff is one command away: "
     "rewrite STATE.md, then run "
-    "`python3 ~/.claude/scripts/handoff.py <STATE.md> <new-session-name> --transcript {transcript}` "
+    "`{python} ~/.claude/scripts/handoff.py <STATE.md> <new-session-name> --transcript {transcript}` "
     "as one bare Bash call (a redirect, pipe, `;` or `cd` prefix keeps it inside the Bash sandbox, where it fails), "
     "then message the successor. Nothing is blocked; hand off when the run reaches a good stopping point."
 )
+# On Windows `python3` is usually the Microsoft Store stub; name the interpreter running this hook.
+NOTICE_PYTHON = '"' + sys.executable.replace("\\", "/") + '"' if sys.platform == "win32" else "python3"
 
 IMPLEMENTER_AGENT = "implementer"
 PROGRESS_MARKER = "/impl-progress-"
@@ -171,7 +173,7 @@ def progress_file_call(payload):
         return False
     tool_input = payload.get("tool_input")
     path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
-    return isinstance(path, str) and PROGRESS_MARKER in path
+    return isinstance(path, str) and PROGRESS_MARKER in path.replace("\\", "/")
 
 
 def deny_tool_call(message):
@@ -260,7 +262,9 @@ def main() -> int:
             return 0
         emit_hook_context(
             event_name,
-            NOTICE.format(n=measure // 1000, transcript=shlex.quote(transcript_path)),
+            NOTICE.format(
+                n=measure // 1000, transcript=shlex.quote(transcript_path), python=NOTICE_PYTHON
+            ),
         )
 
     return 0

@@ -13,12 +13,15 @@ import time
 import xml.parsers.expat
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 # user_log.py sits next to this file in both the repo and the installed layout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import user_log
+
+if sys.platform == "win32":
+    from app_socket import exchange_windows
 
 USAGE = "usage: handoff.py <STATE.md> <session-name> [<cwd>] [--transcript <path>] [--dry-run]"
 POLL_INTERVAL_SECONDS = 1
@@ -52,6 +55,12 @@ APP_ENV = ("WORKFLOW_MAXXING_SOCKET", "WORKFLOW_MAXXING_PTY", "WORKFLOW_MAXXING_
 APP_DEADLINE_SECONDS = 5
 # The app refuses these session names only after it has replied ok, so check them before sending.
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# Prints one "<pid> <CommandLine>" line per claude.exe; no double quotes, which the
+# command line passed to powershell.exe would have to escape.
+WINDOWS_PROCESS_QUERY = (
+    "Get-CimInstance Win32_Process -Filter 'Name=''claude.exe''' | "
+    "ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }"
+)
 APPLESCRIPT = """
 on run argv
     set cwd to item 1 of argv
@@ -66,7 +75,54 @@ end run
 """
 
 
+def _split_windows_command_line(command_line: str) -> list[str]:
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(command_line, ctypes.byref(count))
+    if not argv:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        kernel32.LocalFree(argv)
+
+
+def _windows_claude_pids(session_name: str, listing: str) -> set[int]:
+    """Pids of claude.exe processes started with `--name <session_name>`, from WINDOWS_PROCESS_QUERY output."""
+    pids = set()
+    for row in listing.splitlines():
+        pid_text, _, command_line = row.strip().partition(" ")
+        command_line = command_line.strip()
+        if not (pid_text.isascii() and pid_text.isdigit()) or not command_line:
+            continue
+        args = _split_windows_command_line(command_line)
+        if not args or PureWindowsPath(args[0]).name.lower() != "claude.exe":
+            continue
+        if any(flag == "--name" and value == session_name for flag, value in zip(args, args[1:])):
+            pids.add(int(pid_text))
+    return pids
+
+
 def _claude_pids(session_name: str) -> set[int]:
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", WINDOWS_PROCESS_QUERY],
+            check=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        if result.returncode:
+            raise OSError(result.stderr.strip() or "Get-CimInstance Win32_Process failed")
+        return _windows_claude_pids(session_name, result.stdout)
     pattern = rf"(^|/)claude --name {re.escape(session_name)}( |$)"
     result = subprocess.run(
         ["pgrep", "-f", pattern],
@@ -153,19 +209,23 @@ def _open_in_app(
     if effort:
         request["effort"] = effort
     deadline = time.monotonic() + APP_DEADLINE_SECONDS
+    line = (json.dumps(request) + "\n").encode()
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(_remaining(deadline))
-            client.connect(socket_path)
-            client.settimeout(_remaining(deadline))
-            client.sendall((json.dumps(request) + "\n").encode())
-            reply = b""
-            while b"\n" not in reply:
+        if sys.platform == "win32":
+            reply = exchange_windows(line, deadline)
+        else:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(_remaining(deadline))
-                chunk = client.recv(4096)
-                if not chunk:
-                    break
-                reply += chunk
+                client.connect(socket_path)
+                client.settimeout(_remaining(deadline))
+                client.sendall(line)
+                reply = b""
+                while b"\n" not in reply:
+                    client.settimeout(_remaining(deadline))
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    reply += chunk
     except OSError as error:
         return str(error) or type(error).__name__
     if not reply.strip():

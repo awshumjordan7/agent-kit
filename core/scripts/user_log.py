@@ -11,7 +11,6 @@ are left out. Re-syncs read from the last byte offset and never write an entry t
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import re
 import sys
@@ -21,6 +20,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 LOG_NAME = "user-log.md"
 OFFSETS_NAME = ".user-log.offsets.json"
@@ -354,6 +358,16 @@ def _write_json(path: Path, data: dict) -> None:
 @contextmanager
 def _locked(run_dir: Path) -> Iterator[None]:
     with (run_dir / LOCK_NAME).open("a") as handle:
+        if sys.platform == "win32":
+            # Locks byte 0; LK_LOCK retries once a second and raises OSError after 10 tries.
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            return
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield

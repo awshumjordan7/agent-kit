@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
-STATE_PATH_PATTERN = re.compile(r"(?:~|/)[^\s'\"`<>]*STATE\.md")
+# POSIX, `~` and Windows drive paths (`C:\` or `C:/`), the same pattern as the workflow-maxxing app.
+# A drive letter must not follow a word character, so `https://host/x/STATE.md` gives `//host/x/STATE.md`.
+STATE_PATH_PATTERN = re.compile(r"(?:(?<!\w)[A-Za-z]:[\\/]|~|/)[^\s'\"`<>]*STATE\.md")
 # Harness-generated user turns start with one of these tags.
 HARNESS_TAG = re.compile(
     r"^<(?:task-notification|cross-session-message|command-name|command-message|command-args"
@@ -65,6 +68,10 @@ def resolve_run_dir(cwd: Path | str | None, transcript_path: Path | str | None) 
         text = first_user_message(Path(transcript_path))
         if text:
             for match in STATE_PATH_PATTERN.finditer(text):
+                # On Windows a path starting with two separators is a UNC share; resolving it
+                # would make a network lookup.
+                if sys.platform == "win32" and match.group(0)[:2] in {"//", "\\\\", "/\\", "\\/"}:
+                    continue
                 candidate = Path(match.group(0)).expanduser()
                 try:
                     if candidate.is_file():

@@ -12,6 +12,7 @@ import os
 import socket
 import sys
 import time
+from pathlib import Path
 
 DEADLINE_SECONDS = 0.5
 
@@ -29,6 +30,13 @@ def _remaining(deadline: float) -> float:
 
 
 def _send(path: str, line: bytes, deadline: float) -> None:
+    if sys.platform == "win32":
+        # The installer copies hooks/ and scripts/ side by side, as they sit in the repo.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from app_socket import exchange_windows
+
+        exchange_windows(line, deadline)
+        return
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(_remaining(deadline))
         client.connect(path)
@@ -72,7 +80,7 @@ def main() -> int:
             "permissionMode": _text(payload, "permission_mode"),
         }
         _send(socket_path, (json.dumps(request) + "\n").encode(), deadline)
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError, ImportError):
         return 0
     return 0
 
