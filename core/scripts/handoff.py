@@ -13,7 +13,7 @@ import time
 import xml.parsers.expat
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 # user_log.py sits next to this file in both the repo and the installed layout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -55,11 +55,13 @@ APP_ENV = ("WORKFLOW_MAXXING_SOCKET", "WORKFLOW_MAXXING_PTY", "WORKFLOW_MAXXING_
 APP_DEADLINE_SECONDS = 5
 # The app refuses these session names only after it has replied ok, so check them before sending.
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-# Prints one "<pid> <CommandLine>" line per claude.exe; no double quotes, which the
-# command line passed to powershell.exe would have to escape.
+# Prints one "<ProcessId>\t<Name>\t<CommandLine>" row per claude.exe, in UTF-8 so a non-ASCII
+# session name survives; a file name cannot hold a tab, so the first two tabs split the row.
+# No double quotes, which the command line passed to powershell.exe would have to escape.
 WINDOWS_PROCESS_QUERY = (
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
     "Get-CimInstance Win32_Process -Filter 'Name=''claude.exe''' | "
-    "ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }"
+    "ForEach-Object { ($_.ProcessId, $_.Name, $_.CommandLine) -join [char]9 }"
 )
 APPLESCRIPT = """
 on run argv
@@ -96,16 +98,20 @@ def _split_windows_command_line(command_line: str) -> list[str]:
 
 
 def _windows_claude_pids(session_name: str, listing: str) -> set[int]:
-    """Pids of claude.exe processes started with `--name <session_name>`, from WINDOWS_PROCESS_QUERY output."""
+    """Pids of claude.exe processes started with `--name <session_name>`.
+
+    listing is WINDOWS_PROCESS_QUERY output: one <ProcessId><TAB><Name><TAB><CommandLine> row each.
+    """
     pids = set()
     for row in listing.splitlines():
-        pid_text, _, command_line = row.strip().partition(" ")
+        pid_text, _, rest = row.strip().partition("\t")
+        name, _, command_line = rest.partition("\t")
         command_line = command_line.strip()
         if not (pid_text.isascii() and pid_text.isdigit()) or not command_line:
             continue
-        args = _split_windows_command_line(command_line)
-        if not args or PureWindowsPath(args[0]).name.lower() != "claude.exe":
+        if name.strip().lower() != "claude.exe":
             continue
+        args = _split_windows_command_line(command_line)
         if any(flag == "--name" and value == session_name for flag, value in zip(args, args[1:])):
             pids.add(int(pid_text))
     return pids
@@ -118,6 +124,7 @@ def _claude_pids(session_name: str) -> set[int]:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8-sig",
             errors="replace",
         )
         if result.returncode:

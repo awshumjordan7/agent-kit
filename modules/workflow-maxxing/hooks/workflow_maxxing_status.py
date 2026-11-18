@@ -31,7 +31,7 @@ def _remaining(deadline: float) -> float:
 
 def _send(path: str, line: bytes, deadline: float) -> None:
     if sys.platform == "win32":
-        # The installer copies hooks/ and scripts/ side by side, as they sit in the repo.
+        # Installed layout only: hooks/ sits next to scripts/, where core's app_socket.py lands.
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         from app_socket import exchange_windows
 
