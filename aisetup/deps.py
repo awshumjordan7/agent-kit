@@ -36,7 +36,8 @@ class MissingDependencyError(RuntimeError):
 
 
 # Claude Code on Windows runs hooks with Git Bash. The bash.exe in System32 is the WSL
-# launcher, which cannot run them.
+# launcher, which cannot run them. A Git install whose bash is not first on PATH is found
+# from git.exe: <Git>\cmd\git.exe or <Git>\mingw64\bin\git.exe gives <Git>\bin\bash.exe.
 def git_bash() -> str | None:
     configured = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
     if configured and os.path.isfile(configured):
@@ -48,6 +49,20 @@ def git_bash() -> str | None:
             os.path.normcase(system32) + os.sep
         ):
             return found
+    git = shutil.which("git")
+    if git:
+        folder = os.path.dirname(os.path.abspath(git))
+        parent = os.path.dirname(folder)
+        root = None
+        if os.path.basename(folder).lower() == "cmd":
+            root = parent
+        elif (
+            os.path.basename(folder).lower() == "bin"
+            and os.path.basename(parent).lower() == "mingw64"
+        ):
+            root = os.path.dirname(parent)
+        if root and os.path.isfile(os.path.join(root, "bin", "bash.exe")):
+            return os.path.join(root, "bin", "bash.exe")
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
     default = os.path.join(program_files, "Git", "bin", "bash.exe")
     return default if os.path.isfile(default) else None
