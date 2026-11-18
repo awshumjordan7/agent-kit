@@ -67,9 +67,24 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# Windows CPython has no O_NOFOLLOW or O_CLOEXEC, and opens in text mode without O_BINARY.
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+O_BINARY = getattr(os, "O_BINARY", 0)
+
+
 def _open_regular(path: str) -> tuple[int, os.stat_result]:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    linked = None
+    if not O_NOFOLLOW:
+        # Without O_NOFOLLOW: refuse a link before the open, then check the opened file is the one lstat saw.
+        linked = os.lstat(path)
+        if not stat.S_ISREG(linked.st_mode):
+            raise Refused(f"not a regular file with one link: {path}")
+    fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_BINARY)
     st = os.fstat(fd)
+    if linked is not None and (st.st_dev, st.st_ino) != (linked.st_dev, linked.st_ino):
+        os.close(fd)
+        raise Refused(f"file replaced while opening: {path}")
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         os.close(fd)
         raise Refused(f"not a regular file with one link: {path}")
@@ -511,7 +526,7 @@ class Check:
 
 
 def _create_exclusive(path: str, data: bytes) -> os.stat_result:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_BINARY, 0o644)
     try:
         os.write(fd, data)
         return os.fstat(fd)

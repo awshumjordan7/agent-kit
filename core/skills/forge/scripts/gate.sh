@@ -173,13 +173,13 @@ common_dir=$(python3 - "$repo" "$common_raw" <<'PY'
 import os
 import sys
 path = sys.argv[2] if os.path.isabs(sys.argv[2]) else os.path.join(sys.argv[1], sys.argv[2])
-print(os.path.realpath(path))
+print(os.path.realpath(path).replace(os.sep, "/"))
 PY
 ) || die "gate.sh: cannot resolve repository metadata: $repo"
 repo_git_dir=$(python3 - "$repo/.git" <<'PY'
 import os
 import sys
-print(os.path.realpath(sys.argv[1]))
+print(os.path.realpath(sys.argv[1]).replace(os.sep, "/"))
 PY
 ) || die "gate.sh: cannot resolve repository metadata: $repo"
 common_checkout=$(dirname "$common_dir")
@@ -583,7 +583,7 @@ import sys
 checkout, top, common, repo_common = sys.argv[1:]
 common = common if os.path.isabs(common) else os.path.join(checkout, common)
 same_checkout = os.path.realpath(top) == os.path.realpath(checkout)
-print("true" if same_checkout and os.path.realpath(common) == repo_common else "false")
+print("true" if same_checkout and os.path.realpath(common) == os.path.realpath(repo_common) else "false")
 PY
       ) || reuse_checkout=false
     fi
@@ -683,6 +683,26 @@ wrap_repo_command() {
   fi
 }
 
+# Git Bash (MINGW/MSYS): perl's alarm never fires, so use coreutils timeout and
+# map its 124 (timed out) and 137 (killed after the grace period) to perl's 142.
+run_with_timeout() {
+  local timeout_seconds=$1
+  local wrapped=$2
+  case $(uname -s) in
+    MINGW* | MSYS*)
+      local status=0
+      timeout --kill-after=10 "$timeout_seconds" bash -c "$wrapped" || status=$?
+      if ((status == 124 || status == 137)); then
+        status=142
+      fi
+      return "$status"
+      ;;
+    *)
+      perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped"
+      ;;
+  esac
+}
+
 run_tool() {
   local tool=$1
   local command=$2
@@ -694,7 +714,7 @@ run_tool() {
   record_command "$command"
   local wrapped
   wrapped=$(wrap_repo_command "$command")
-  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped") >"$log" 2>&1
+  (cd "$repo" && run_with_timeout "$timeout_seconds" "$wrapped") >"$log" 2>&1
   result=$?
   printf '%s\t%s\t%s\t%s\n' "$tool" "$result" "$timeout_seconds" "$log" >>"$results_file"
 }
@@ -707,7 +727,7 @@ attempt_tool() {
   record_command "$command"
   local wrapped
   wrapped=$(wrap_repo_command "$command")
-  (cd "$repo" && perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" bash -c "$wrapped") >"$log" 2>&1
+  (cd "$repo" && run_with_timeout "$timeout_seconds" "$wrapped") >"$log" 2>&1
 }
 
 record_failure() {
