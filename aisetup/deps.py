@@ -6,7 +6,8 @@ import sys
 
 CORE_DEPENDENCIES = ("python3", "claude", "git", "bash", "jq")
 
-# Only forge and ship-pr scripts call jq, and forge does not run on native Windows yet.
+# Only forge and ship-pr scripts call jq; without it forge still runs on native Windows,
+# but its Codex reviews fail.
 WINDOWS_WARN_ONLY = ("jq",)
 JQ_SCRIPTS = (
     "core/skills/forge/scripts/codex-exec.sh",
@@ -101,6 +102,7 @@ def windows_jq_warning() -> str | None:
         return None
     scripts = "\n".join(f"  {script}" for script in JQ_SCRIPTS)
     return (
-        "warning: jq not found. Install continues; these forge and ship-pr scripts need it:\n"
+        "warning: jq not found. Install continues, but forge's Codex reviews need it. Install it\n"
+        "with `winget install jqlang.jq`. These forge and ship-pr scripts call jq:\n"
         f"{scripts}"
     )
