@@ -46,6 +46,7 @@ MAX_CLOCK_RES_S = 0.010
 MAX_CLOCK_RES_S_WINDOWS = 0.016
 EXT4_ONLY = "control records are checked only on ext4"
 NTFS_ONLY = "control records are checked only on a local NTFS disk"
+TIMES_UNAVAILABLE = "file times unavailable"
 DRIVE_PATH = re.compile(r"^[A-Za-z]:\\")
 DRIVE_FIXED = 3
 FILE_BASIC_INFO_CLASS = 0
@@ -159,20 +160,39 @@ def _windows_file_times(fd: int) -> tuple[int, int]:
     if not _kernel32().GetFileInformationByHandleEx(handle, FILE_BASIC_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)):
         raise ctypes.WinError(ctypes.get_last_error())
     if info.ChangeTime <= 0 or info.CreationTime <= 0:
-        raise Refused("file times unavailable")
+        raise Refused(TIMES_UNAVAILABLE)
     return (info.ChangeTime - FILETIME_EPOCH) * 100, (info.CreationTime - FILETIME_EPOCH) * 100
 
 
 def _file_times(fd: int, st: os.stat_result) -> tuple[int, ...]:
-    # Python's st_ctime_ns on Windows is the creation time, which a user can set back, so read ChangeTime too.
+    # Windows st_ctime_ns is the creation time, so read NTFS ChangeTime and CreationTime instead. A program running as
+    # the same user can set both back, so on Windows this rule catches mistakes (stale, copied, rewritten or misdirected
+    # records), not a same-user program.
     if sys.platform == "win32":
         return _windows_file_times(fd)
     return (st.st_ctime_ns,)
 
 
 def _read_file(path: str, cap: int) -> tuple[bytes, os.stat_result]:
-    data, st, _ = _read_file_times(path, cap)
-    return data, st
+    fd, before = _open_regular(path)
+    try:
+        chunks = []
+        remaining = cap + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, MB))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > cap:
+            raise Refused(f"file too large: {path}")
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if not _same_file(before, after):
+        raise Refused(f"file changed while reading: {path}")
+    return data, after
 
 
 def _read_file_times(path: str, cap: int) -> tuple[bytes, os.stat_result, tuple[int, ...]]:
@@ -288,7 +308,9 @@ def _ntfs_device(run_dir: str) -> int:
     root = _volume_root(path)
     _require(_drive_type(root) == DRIVE_FIXED, NTFS_ONLY)
     _require(_filesystem_name(root) == "NTFS", NTFS_ONLY)
-    return os.lstat(run_dir).st_dev
+    st_dev = os.lstat(run_dir).st_dev
+    _require(os.stat(root).st_dev == st_dev, NTFS_ONLY)
+    return st_dev
 
 
 def _platform_device(run_dir: str) -> tuple[int, int, str]:
@@ -570,6 +592,8 @@ class Check:
                     data, st, times = _read_file_times(os.path.join(controls, name), RECORD_CAP)
                     record = _strict_json(data)
                 except (Refused, OSError, ValueError) as error:
+                    if isinstance(error, Refused) and error.reason == TIMES_UNAVAILABLE:
+                        raise Refused(NTFS_ONLY) from error
                     raise Refused(f"unreadable record {name}") from error
                 _require(isinstance(record, dict), f"unreadable record {name}")
                 if record.get("turnUuid") == go["uuid"]:
