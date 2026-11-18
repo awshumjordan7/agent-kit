@@ -199,13 +199,15 @@ def _render_claude_md(layers: ResolvedLayers) -> str:
     return text
 
 
-def _render_settings(layers: ResolvedLayers) -> dict[str, Any]:
+def _render_settings(layers: ResolvedLayers, shim_home: str | None) -> dict[str, Any]:
     settings: dict[str, Any] = {}
     for layer in layers.layers:
         if layer.settings_fragment is not None:
             settings = deep_merge(settings, load_json(layer.settings_fragment))
     if sys.platform == "win32":
         _use_windows_python(settings)
+        if shim_home is not None:
+            _use_windows_bash_env(settings, shim_home)
     return settings
 
 
@@ -228,6 +230,102 @@ def _use_windows_python(settings: dict[str, Any]) -> None:
         if isinstance(command, str) and command.startswith(prefix):
             entry["command"] = interpreter + command[len(prefix) :]
     settings.setdefault("env", {})["PYTHONUTF8"] = "1"
+
+
+WINDOWS_SHIM_PATH = "bin/python3"
+WINDOWS_BASH_ENV_PATH = "scripts/windows-bash-env.sh"
+WINDOWS_SITECUSTOMIZE_DIR = "scripts/windows-python"
+
+WINDOWS_SITECUSTOMIZE = '''\
+# Loaded through PYTHONPATH by the agent-kit python3 shim. Windows Python writes \\r\\n to
+# pipes, and bash $(...) keeps the \\r on every line but the last.
+import sys
+
+
+def _plain_newlines() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure") and not stream.isatty():
+            stream.reconfigure(newline="\\n")
+
+
+_plain_newlines()
+'''
+
+WINDOWS_BASH_ENV = """\
+# Read by every non-interactive bash in a Claude Code session (settings env BASH_ENV).
+# It puts the agent-kit python3 shim first on PATH, ahead of the Microsoft Store stub.
+_ak_bin={bin}
+_ak_path=$_ak_bin
+_ak_rest=$PATH
+while [ -n "$_ak_rest" ]; do
+  case $_ak_rest in
+    *:*) _ak_part=${{_ak_rest%%:*}}; _ak_rest=${{_ak_rest#*:}} ;;
+    *) _ak_part=$_ak_rest; _ak_rest= ;;
+  esac
+  [ "$_ak_part" = "$_ak_bin" ] || _ak_path=$_ak_path:$_ak_part
+done
+PATH=$_ak_path
+export PATH
+unset _ak_bin _ak_path _ak_rest _ak_part
+: "${{TMPDIR:=/tmp}}"
+export TMPDIR
+"""
+
+WINDOWS_SHIM = """\
+#!/bin/sh
+# python3 for Claude Code sessions on Windows, where python3 is the Microsoft Store stub.
+PYTHONPATH={pythonpath}"${{PYTHONPATH:+;$PYTHONPATH}}"
+export PYTHONPATH
+exec {interpreter} "$@"
+"""
+
+
+# Unconditional single quotes, so a $ or backtick in a folder name is never expanded.
+def _sh_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+# Returns the Claude home in C:/... form, or None when bash would expand the BASH_ENV value
+# (it applies parameter expansion and command substitution before reading the file).
+def _windows_shim_home(claude_home: Path) -> str | None:
+    home = str(claude_home.expanduser().resolve()).replace("\\", "/")
+    if any(character in home for character in "$`"):
+        sys.stderr.write(
+            f"warning: Claude home {home} contains $ or `; python3 for Claude sessions is "
+            "not set up, so forge does not run on this machine. Sessions and hooks still work.\n"
+        )
+        return None
+    return home
+
+
+def _use_windows_bash_env(settings: dict[str, Any], shim_home: str) -> None:
+    env = settings.setdefault("env", {})
+    existing = env.get("BASH_ENV")
+    if existing is not None:
+        sys.stderr.write(
+            f"warning: keeping env.BASH_ENV {existing!r} from your settings layers; forge needs "
+            f"{shim_home}/{WINDOWS_BASH_ENV_PATH} sourced for python3 to work in Claude sessions.\n"
+        )
+        return
+    env["BASH_ENV"] = f"{shim_home}/{WINDOWS_BASH_ENV_PATH}"
+
+
+def _render_windows_python(destination: Path, shim_home: str) -> None:
+    msys_home = shim_home
+    if re.match(r"[A-Za-z]:/", shim_home):
+        msys_home = "/" + shim_home[0].lower() + shim_home[2:]
+    files = {
+        WINDOWS_SHIM_PATH: WINDOWS_SHIM.format(
+            pythonpath=_sh_quote(f"{shim_home}/{WINDOWS_SITECUSTOMIZE_DIR}"),
+            interpreter=_sh_quote(sys.executable.replace("\\", "/")),
+        ),
+        f"{WINDOWS_SITECUSTOMIZE_DIR}/sitecustomize.py": WINDOWS_SITECUSTOMIZE,
+        WINDOWS_BASH_ENV_PATH: WINDOWS_BASH_ENV.format(bin=_sh_quote(f"{msys_home}/bin")),
+    }
+    for relative, text in files.items():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8", newline="\n")
 
 
 def _render_agents(destination: Path, profile: dict[str, Any]) -> None:
@@ -346,8 +444,13 @@ def _render_derived(destination: Path, auxiliary_root: Path) -> None:
 
 
 def compose_tree(
-    profile: dict[str, Any], destination: Path, *, auxiliary_root: Path | None = None
+    profile: dict[str, Any],
+    destination: Path,
+    *,
+    auxiliary_root: Path | None = None,
+    claude_home: Path | None = None,
 ) -> ComposeResult:
+    """claude_home is the final install folder that installed files name; default destination."""
     if destination.exists():
         if any(destination.iterdir()):
             raise ComposeError(f"compose destination is not empty: {destination}")
@@ -359,7 +462,10 @@ def compose_tree(
         for layer in layers.layers:
             _copy_layer_files(layer, destination, auxiliary_root)
 
-        settings = _render_settings(layers)
+        shim_home = (
+            _windows_shim_home(claude_home or destination) if sys.platform == "win32" else None
+        )
+        settings = _render_settings(layers, shim_home)
         (destination / "settings.json").write_text(
             json.dumps(settings, indent=2) + "\n",
             encoding="utf-8",
@@ -377,6 +483,8 @@ def compose_tree(
         _render_templates(destination, layers, context)
         _render_agents(destination, profile)
         _render_derived(destination, auxiliary_root)
+        if shim_home is not None:
+            _render_windows_python(destination, shim_home)
     except (ManifestError, OSError, UnicodeError) as error:
         raise ComposeError(str(error)) from error
 
@@ -756,7 +864,7 @@ def prepare_install(
     layers_root: Path,
 ) -> InstallPlan:
     home = home.expanduser()
-    result = compose_tree(profile, staging, auxiliary_root=auxiliary)
+    result = compose_tree(profile, staging, auxiliary_root=auxiliary, claude_home=home)
     previous, previous_auxiliary = load_managed_record(layers_root)
     try:
         kept: list[tuple[str, str]] = []

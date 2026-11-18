@@ -67,9 +67,26 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# Windows CPython has no O_NOFOLLOW or O_CLOEXEC, and opens in text mode without O_BINARY.
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+O_BINARY = getattr(os, "O_BINARY", 0)
+
+
 def _open_regular(path: str) -> tuple[int, os.stat_result]:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    linked = None
+    if not O_NOFOLLOW:
+        # Without O_NOFOLLOW: refuse a link before the open, then check the opened file is the one lstat saw.
+        linked = os.lstat(path)
+        if not stat.S_ISREG(linked.st_mode):
+            raise Refused(f"not a regular file with one link: {path}")
+        if linked.st_ino == 0:
+            raise Refused(f"file identity unavailable on this volume: {path}")
+    fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_BINARY)
     st = os.fstat(fd)
+    if linked is not None and (st.st_dev, st.st_ino) != (linked.st_dev, linked.st_ino):
+        os.close(fd)
+        raise Refused(f"file replaced while opening: {path}")
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         os.close(fd)
         raise Refused(f"not a regular file with one link: {path}")
@@ -179,7 +196,8 @@ class Transcript:
         buffer = b""
         offset = 0
         while offset < self.size0:
-            chunk = os.pread(self.fd, min(MB, self.size0 - offset), offset)
+            os.lseek(self.fd, offset, os.SEEK_SET)
+            chunk = os.read(self.fd, min(MB, self.size0 - offset))
             if not chunk:
                 break
             offset += len(chunk)
@@ -200,7 +218,8 @@ class Transcript:
         added = b""
         for attempt in range(TAIL_RETRIES + 1):
             size = os.fstat(self.fd).st_size
-            added = os.pread(self.fd, size - self.pos, self.pos) if size > self.pos else b""
+            os.lseek(self.fd, self.pos, os.SEEK_SET)
+            added = os.read(self.fd, size - self.pos) if size > self.pos else b""
             if not added or added.endswith(b"\n"):
                 break
             if attempt == TAIL_RETRIES:
@@ -511,7 +530,7 @@ class Check:
 
 
 def _create_exclusive(path: str, data: bytes) -> os.stat_result:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_BINARY, 0o644)
     try:
         os.write(fd, data)
         return os.fstat(fd)

@@ -738,14 +738,14 @@ async function loadForgeConfig() {
 
 function configuredGateEntry() {
   const entries = (FORGE_CONFIG && FORGE_CONFIG.gate) || {}
-  const project = String(PARAMS.projectDir).replace(/\/$/, '')
+  const project = String(PARAMS.projectDir).replace(/\\/g, '/').replace(/\/$/, '')
   for (const [path, entry] of Object.entries(entries)) {
-    const configured = String(path).replace(/\/$/, '')
+    const configured = String(path).replace(/\\/g, '/').replace(/\/$/, '')
     if (project === configured || (configured.startsWith('~/') && project.endsWith(configured.slice(1)))) return entry || {}
   }
   const projectName = project.split('/').pop() || ''
   for (const [path, entry] of Object.entries(entries)) {
-    const configuredName = String(path).replace(/\/$/, '').split('/').pop() || ''
+    const configuredName = String(path).replace(/\\/g, '/').replace(/\/$/, '').split('/').pop() || ''
     if (configuredName && projectName.startsWith(`${configuredName}-`)) return entry || {}
   }
   return {}
@@ -1056,7 +1056,7 @@ async function codexReview(context) {
   const promptPath = `${PARAMS.runDir}/codex-review-prompt.md`
   const partPath = `${PARAMS.runDir}/codex-review-prompt.part.md`
   const result = await codexAgent(`You orchestrate the CODEX general review. ${codexWrapper}
-Write ${partPath} with the exact reviewer prompt below, followed by a last line that reads exactly BRIEF; add nothing else (the helper prepends the prompt contract). Then build the prompt file with exactly this one shell command, which adds the review brief below that line: \`{ cat ${shellQuote(partPath)}; echo; cat ${shellQuote(context.briefPath)}; } > ${shellQuote(promptPath)}\`. Never copy the brief text yourself; before any retry run the same command again, which rebuilds the file. Check whether ${CODEX_REVIEW_THREAD} exists with the Read tool, or with \`test -f ${CODEX_REVIEW_THREAD}\` as its own Bash call. If it exists, invoke exactly: \`bash ${CODEX_SH} resume --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${promptPath} --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md\`. Otherwise invoke exactly: \`bash ${CODEX_SH} start --thread-file ${CODEX_REVIEW_THREAD} --prompt-file ${promptPath} --inline-diff ${context.diffPath} --state-file ${PARAMS.runDir}/codex-state-review.md --cd ${PARAMS.projectDir} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${PARAMS.runDir}/codex-review.jsonl --out ${PARAMS.runDir}/codex-review-final.md\`. ${BARE_CALL_RULE} Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
+Write ${partPath} with the exact reviewer prompt below, followed by a last line that reads exactly BRIEF; add nothing else (the helper prepends the prompt contract). Then build the prompt file with exactly this one shell command, which adds the review brief below that line: \`{ cat ${shellQuote(partPath)}; echo; cat ${shellQuote(context.briefPath)}; } > ${shellQuote(promptPath)}\`. Never copy the brief text yourself; before any retry run the same command again, which rebuilds the file. Check whether ${CODEX_REVIEW_THREAD} exists with the Read tool, or with \`test -f ${shellQuote(CODEX_REVIEW_THREAD)}\` as its own Bash call. If it exists, invoke exactly: \`bash ${CODEX_SH} resume --thread-file ${shellQuote(CODEX_REVIEW_THREAD)} --prompt-file ${shellQuote(promptPath)} --inline-diff ${shellQuote(context.diffPath)} --state-file ${shellQuote(`${PARAMS.runDir}/codex-state-review.md`)} --cd ${shellQuote(PARAMS.projectDir)} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${shellQuote(`${PARAMS.runDir}/codex-review.jsonl`)} --out ${shellQuote(`${PARAMS.runDir}/codex-review-final.md`)}\`. Otherwise invoke exactly: \`bash ${CODEX_SH} start --thread-file ${shellQuote(CODEX_REVIEW_THREAD)} --prompt-file ${shellQuote(promptPath)} --inline-diff ${shellQuote(context.diffPath)} --state-file ${shellQuote(`${PARAMS.runDir}/codex-state-review.md`)} --cd ${shellQuote(PARAMS.projectDir)} --sandbox read-only ${CODEX_REVIEW_FLAGS} --log ${shellQuote(`${PARAMS.runDir}/codex-review.jsonl`)} --out ${shellQuote(`${PARAMS.runDir}/codex-review-final.md`)}\`. ${BARE_CALL_RULE} Return invocation evidence plus Codex's REVIEW_SCHEMA result in the wrapper schema without adding findings.
 
 ${review}`,
   { label: 'review-codex', phase: 'Review', schema: CODEX_REVIEW_SCHEMA }, { threadFile: CODEX_REVIEW_THREAD, log: `${PARAMS.runDir}/codex-review.jsonl` })

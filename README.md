@@ -62,9 +62,23 @@ Then run from the clone:
 python install.py install
 ```
 
-Hook commands name the Python that ran the installer, so re-run install after you move or upgrade Python. jq is
-needed only by the forge and ship-pr scripts; install prints a warning when it is missing and carries on. Forge does
-not run on native Windows yet.
+Hook commands name the Python that ran the installer, so re-run install after you move or upgrade Python.
+
+Install also gives Claude Code sessions a working `python3`: `~\.claude\bin\python3` runs the Python that ran the
+installer, and `env.BASH_ENV` in settings.json points every session bash at `~\.claude\scripts\windows-bash-env.sh`,
+which puts that folder first on PATH. Python run that way writes `\n` line endings to pipes; its
+`sitecustomize.py` in `~\.claude\scripts\windows-python` hides one your Python install may already have. If your
+own settings layer sets `env.BASH_ENV`, install keeps yours and prints a warning. If the Claude home path contains
+`$` or a backtick, install skips this step and prints a warning.
+
+Forge runs from chat on native Windows. It needs:
+
+- Git for Windows and python.org Python, as above.
+- jq for forge's Codex reviews: `winget install jqlang.jq`. Install prints a warning when jq is missing and carries
+  on; the Claude review still runs.
+- Codex installed and signed in, for the Codex reviews.
+
+The workflow-maxxing app's forge buttons are not on Windows yet: answer forge's plan approval and questions in chat.
 
 Put personal rules in the local layer, not in the clone, so a `git pull` does not conflict. Create the folder
 `~\.ai-setup\local` (install uses it only when it exists) and put `settings.fragment.json` and `CLAUDE.fragment.md`

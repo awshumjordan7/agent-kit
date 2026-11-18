@@ -87,6 +87,14 @@ if [ -n "${SANDBOX_RUNTIME+x}" ]; then
     exit 86
 fi
 
+# Git Bash on Windows: drive-letter paths (C:/... or C:\...) count as absolute.
+case "$(uname -s)" in MINGW*|MSYS*) GIT_BASH=true ;; *) GIT_BASH=false ;; esac
+drive_path() {
+    # $1 = path. Prints it with \ turned into / when it is a drive-letter path under Git Bash; fails otherwise.
+    [ "$GIT_BASH" = "true" ] || return 1
+    case "$1" in [A-Za-z]:[\\/]*) printf '%s\n' "${1//\\//}" ;; *) return 1 ;; esac
+}
+
 ORIGINAL_ARGS=("$@")
 MODE="${1:-}"
 shift || true
@@ -171,6 +179,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 case "$PARALLEL" in 1|true) PARALLEL=true ;; *) PARALLEL=false ;; esac
+if cd_dir=$(drive_path "$CD_DIR"); then CD_DIR="$cd_dir"; fi
+# add_output_writable_dirs splits --log/--out on '/' and runs before abspath, so normalize them here.
+if log_path=$(drive_path "$LOG"); then LOG="$log_path"; fi
+if out_path=$(drive_path "$OUT"); then OUT="$out_path"; fi
 
 LOCK_HELD=false
 terminal_cleanup() {
@@ -243,7 +255,10 @@ usage_line() {
     # $1 = stats JSON. Prints tool_calls=… tool_output_kb=… tokens_in=… …
     jq -r '"tool_calls=\(.calls) tool_output_kb=\((.bytes / 1024) | floor) tokens_in=\(.usage.input_tokens // "n/a") tokens_cached=\(.usage.cached_input_tokens // "n/a") tokens_out=\(.usage.output_tokens // "n/a") tokens_reasoning=\(.usage.reasoning_output_tokens // "n/a")"' <<<"$1"
 }
-abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac; }
+abspath() {
+    drive_path "$1" && return 0
+    case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac
+}
 log_sig() { local s; s=$(stat -f '%m %z' "$1" 2>/dev/null) || s=$(stat -c '%Y %s' "$1" 2>/dev/null) || s=0; printf '%s\n' "$s"; }
 mtime() { local s; s=$(stat -f %m "$1" 2>/dev/null) || s=$(stat -c %Y "$1" 2>/dev/null) || s=0; printf '%s\n' "$s"; }
 thread_id_from_log() { jq -r 'select(.type == "thread.started") | .thread_id' "$LOG" 2>/dev/null | head -1 || true; }
