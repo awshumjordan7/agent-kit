@@ -289,9 +289,9 @@ def _sh_quote(value: str) -> str:
 # (it applies parameter expansion and command substitution before reading the file).
 def _windows_shim_home(claude_home: Path) -> str | None:
     home = str(claude_home.expanduser().resolve()).replace("\\", "/")
-    if any(character in home for character in "$`\\"):
+    if any(character in home for character in "$`"):
         sys.stderr.write(
-            f"warning: Claude home {home} contains $, ` or \\; python3 for Claude sessions is "
+            f"warning: Claude home {home} contains $ or `; python3 for Claude sessions is "
             "not set up, so forge does not run on this machine. Sessions and hooks still work.\n"
         )
         return None

@@ -683,15 +683,16 @@ wrap_repo_command() {
   fi
 }
 
-# Git Bash (MINGW/MSYS): perl's alarm never fires, so use coreutils timeout and
-# map its 124 (timed out) and 137 (killed after the grace period) to perl's 142.
+# Git Bash (MINGW/MSYS): perl's alarm never fires, so use Git for Windows' coreutils
+# /usr/bin/timeout by full path (System32 has an unrelated timeout.exe) and map its
+# 124 (timed out) and 137 (killed after the grace period) to perl's 142.
 run_with_timeout() {
   local timeout_seconds=$1
   local wrapped=$2
   case $(uname -s) in
     MINGW* | MSYS*)
       local status=0
-      timeout --kill-after=10 "$timeout_seconds" bash -c "$wrapped" || status=$?
+      /usr/bin/timeout --kill-after=10 "$timeout_seconds" bash -c "$wrapped" || status=$?
       if ((status == 124 || status == 137)); then
         status=142
       fi
@@ -702,6 +703,12 @@ run_with_timeout() {
       ;;
   esac
 }
+
+case $(uname -s) in
+  MINGW* | MSYS*)
+    [[ -x /usr/bin/timeout ]] || die "gate.sh: /usr/bin/timeout is not executable; gate.sh on Windows needs Git for Windows' coreutils timeout"
+    ;;
+esac
 
 run_tool() {
   local tool=$1

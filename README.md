@@ -69,7 +69,7 @@ installer, and `env.BASH_ENV` in settings.json points every session bash at `~\.
 which puts that folder first on PATH. Python run that way writes `\n` line endings to pipes; its
 `sitecustomize.py` in `~\.claude\scripts\windows-python` hides one your Python install may already have. If your
 own settings layer sets `env.BASH_ENV`, install keeps yours and prints a warning. If the Claude home path contains
-`$`, a backtick or `\`, install skips this step and prints a warning.
+`$` or a backtick, install skips this step and prints a warning.
 
 Forge runs from chat on native Windows. It needs:
 

@@ -80,6 +80,8 @@ def _open_regular(path: str) -> tuple[int, os.stat_result]:
         linked = os.lstat(path)
         if not stat.S_ISREG(linked.st_mode):
             raise Refused(f"not a regular file with one link: {path}")
+        if linked.st_ino == 0:
+            raise Refused(f"file identity unavailable on this volume: {path}")
     fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_BINARY)
     st = os.fstat(fd)
     if linked is not None and (st.st_dev, st.st_ino) != (linked.st_dev, linked.st_ino):
@@ -194,7 +196,8 @@ class Transcript:
         buffer = b""
         offset = 0
         while offset < self.size0:
-            chunk = os.pread(self.fd, min(MB, self.size0 - offset), offset)
+            os.lseek(self.fd, offset, os.SEEK_SET)
+            chunk = os.read(self.fd, min(MB, self.size0 - offset))
             if not chunk:
                 break
             offset += len(chunk)
@@ -215,7 +218,8 @@ class Transcript:
         added = b""
         for attempt in range(TAIL_RETRIES + 1):
             size = os.fstat(self.fd).st_size
-            added = os.pread(self.fd, size - self.pos, self.pos) if size > self.pos else b""
+            os.lseek(self.fd, self.pos, os.SEEK_SET)
+            added = os.read(self.fd, size - self.pos) if size > self.pos else b""
             if not added or added.endswith(b"\n"):
                 break
             if attempt == TAIL_RETRIES:
