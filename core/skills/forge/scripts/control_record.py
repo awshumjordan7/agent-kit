@@ -7,6 +7,7 @@ Every subcommand prints one JSON line on stdout. Exit 0 means accepted or writte
 from __future__ import annotations
 
 import argparse
+import functools
 import glob
 import hashlib
 import json
@@ -37,9 +38,19 @@ TASK_OUTPUT_CAP = 20 * MB
 # The file clock can stamp a ctime a few milliseconds before the real write, so a file must be
 # this much older than the `go` to count as written before it.
 SEP_NS = 25_000_000
+# The Windows clock ticks every 15.625 ms, so NTFS times need a wider margin of about six ticks.
+SEP_NS_WINDOWS = 100_000_000
 MAX_RECORD_AGE_MS = 60_000
 CLOCK_REALTIME_COARSE = 5
 MAX_CLOCK_RES_S = 0.010
+MAX_CLOCK_RES_S_WINDOWS = 0.016
+EXT4_ONLY = "control records are checked only on ext4"
+NTFS_ONLY = "control records are checked only on a local NTFS disk"
+DRIVE_PATH = re.compile(r"^[A-Za-z]:\\")
+DRIVE_FIXED = 3
+FILE_BASIC_INFO_CLASS = 0
+# FILETIME counts 100 ns steps from 1601-01-01; this many of them reach 1970-01-01.
+FILETIME_EPOCH = 116_444_736_000_000_000
 TAIL_RETRIES = 5
 TAIL_WAIT_S = 0.05
 MAX_RULINGS = 200
@@ -73,12 +84,17 @@ O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 O_BINARY = getattr(os, "O_BINARY", 0)
 
 
+def _is_link(st: os.stat_result) -> bool:
+    # Windows lstat does not flag a junction or other reparse point as a link; its attributes do.
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _open_regular(path: str) -> tuple[int, os.stat_result]:
     linked = None
     if not O_NOFOLLOW:
         # Without O_NOFOLLOW: refuse a link before the open, then check the opened file is the one lstat saw.
         linked = os.lstat(path)
-        if not stat.S_ISREG(linked.st_mode):
+        if not stat.S_ISREG(linked.st_mode) or _is_link(linked):
             raise Refused(f"not a regular file with one link: {path}")
         if linked.st_ino == 0:
             raise Refused(f"file identity unavailable on this volume: {path}")
@@ -97,9 +113,73 @@ def _same_file(a: os.stat_result, b: os.stat_result) -> bool:
     return (a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns) == (b.st_ino, b.st_size, b.st_mtime_ns, b.st_ctime_ns)
 
 
+@functools.lru_cache(maxsize=1)
+def _kernel32():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    kernel32.GetVolumePathNameW.restype = wintypes.BOOL
+    kernel32.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetDriveTypeW.restype = wintypes.UINT
+    kernel32.GetVolumeInformationW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.LPDWORD,
+        wintypes.LPDWORD,
+        wintypes.LPDWORD,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    kernel32.GetVolumeInformationW.restype = wintypes.BOOL
+    return kernel32
+
+
+def _windows_file_times(fd: int) -> tuple[int, int]:
+    """Return the NTFS ChangeTime and CreationTime of the open file, in ns since 1970."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("CreationTime", ctypes.c_longlong),
+            ("LastAccessTime", ctypes.c_longlong),
+            ("LastWriteTime", ctypes.c_longlong),
+            ("ChangeTime", ctypes.c_longlong),
+            ("FileAttributes", wintypes.DWORD),
+        ]
+
+    info = FileBasicInfo()
+    handle = msvcrt.get_osfhandle(fd)
+    if not _kernel32().GetFileInformationByHandleEx(handle, FILE_BASIC_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if info.ChangeTime <= 0 or info.CreationTime <= 0:
+        raise Refused("file times unavailable")
+    return (info.ChangeTime - FILETIME_EPOCH) * 100, (info.CreationTime - FILETIME_EPOCH) * 100
+
+
+def _file_times(fd: int, st: os.stat_result) -> tuple[int, ...]:
+    # Python's st_ctime_ns on Windows is the creation time, which a user can set back, so read ChangeTime too.
+    if sys.platform == "win32":
+        return _windows_file_times(fd)
+    return (st.st_ctime_ns,)
+
+
 def _read_file(path: str, cap: int) -> tuple[bytes, os.stat_result]:
+    data, st, _ = _read_file_times(path, cap)
+    return data, st
+
+
+def _read_file_times(path: str, cap: int) -> tuple[bytes, os.stat_result, tuple[int, ...]]:
+    """Read a file and return its bytes, its stat and the times that must all predate a `go`."""
     fd, before = _open_regular(path)
     try:
+        times_before = _file_times(fd, before)
         chunks = []
         remaining = cap + 1
         while remaining > 0:
@@ -112,11 +192,12 @@ def _read_file(path: str, cap: int) -> tuple[bytes, os.stat_result]:
         if len(data) > cap:
             raise Refused(f"file too large: {path}")
         after = os.fstat(fd)
+        times_after = _file_times(fd, after)
     finally:
         os.close(fd)
-    if not _same_file(before, after):
+    if not _same_file(before, after) or times_before != times_after:
         raise Refused(f"file changed while reading: {path}")
-    return data, after
+    return data, after, times_after
 
 
 def _no_duplicates(pairs: list[tuple[str, object]]) -> dict:
@@ -151,7 +232,7 @@ def _stamp(at: str) -> str:
 
 def _real_dir(path: str) -> str:
     st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+    if _is_link(st) or not stat.S_ISDIR(st.st_mode):
         raise Refused(f"run folder is not a directory: {path}")
     return os.path.realpath(path)
 
@@ -172,8 +253,57 @@ def _ext4_device(run_dir: str) -> int:
                 continue
             types.append(line.split(" - ", 1)[1].split(" ", 1)[0])
     if not types or any(kind != "ext4" for kind in types):
-        raise Refused("control records are checked only on ext4")
+        raise Refused(EXT4_ONLY)
     return st_dev
+
+
+def _volume_root(path: str) -> str:
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not _kernel32().GetVolumePathNameW(path, buffer, len(buffer)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer.value
+
+
+def _drive_type(root: str) -> int:
+    return _kernel32().GetDriveTypeW(root)
+
+
+def _filesystem_name(root: str) -> str:
+    import ctypes
+
+    name = ctypes.create_unicode_buffer(261)
+    if not _kernel32().GetVolumeInformationW(root, None, 0, None, None, None, name, len(name)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return name.value
+
+
+def _ntfs_device(run_dir: str) -> int:
+    # A network share can report NTFS but stamps files with the server's clock, so only a local fixed disk counts.
+    path = run_dir.replace("/", "\\")
+    if path.startswith("\\\\?\\") and DRIVE_PATH.match(path[4:]):
+        path = path[4:]
+    _require(bool(DRIVE_PATH.match(path)), NTFS_ONLY)
+    root = _volume_root(path)
+    _require(_drive_type(root) == DRIVE_FIXED, NTFS_ONLY)
+    _require(_filesystem_name(root) == "NTFS", NTFS_ONLY)
+    return os.lstat(run_dir).st_dev
+
+
+def _platform_device(run_dir: str) -> tuple[int, int, str]:
+    """Return the run folder's device, the file-time margin and the refusal for a file on another disk."""
+    if sys.platform == "linux":
+        return _ext4_device(run_dir), SEP_NS, EXT4_ONLY
+    if sys.platform == "win32":
+        return _ntfs_device(run_dir), SEP_NS_WINDOWS, NTFS_ONLY
+    raise Refused("control records are checked only on Linux (ext4) and Windows (NTFS)")
+
+
+def _clock_fine() -> bool:
+    if sys.platform == "win32":
+        return time.get_clock_info("time").resolution <= MAX_CLOCK_RES_S_WINDOWS
+    return time.clock_getres(CLOCK_REALTIME_COARSE) <= MAX_CLOCK_RES_S
 
 
 class Transcript:
@@ -331,14 +461,16 @@ def _require(condition: bool, reason: str) -> None:
         raise Refused(reason)
 
 
-def _load_forge_result(path: str, sha256: str, run_dir: str, device: int | None) -> tuple[dict, os.stat_result]:
+def _load_forge_result(
+    path: str, sha256: str, run_dir: str, device: int | None, disk_reason: str
+) -> tuple[dict, tuple[int, ...]]:
     reason = "forge result is not the one saved for this stop"
     if os.path.realpath(os.path.dirname(os.path.abspath(path))) != run_dir:
         raise Refused(reason)
     match = FORGE_RESULT_NAME.match(os.path.basename(path))
     if not match or int(match.group(1)) != _highest(run_dir, FORGE_RESULT_NAME):
         raise Refused(reason)
-    data, st = _read_file(path, FORGE_RESULT_CAP)
+    data, st, times = _read_file_times(path, FORGE_RESULT_CAP)
     if _sha256(data) != sha256:
         raise Refused(reason)
     result = _strict_json(data)
@@ -350,8 +482,8 @@ def _load_forge_result(path: str, sha256: str, run_dir: str, device: int | None)
     ):
         raise Refused(reason)
     if device is not None and st.st_dev != device:
-        raise Refused("control records are checked only on ext4")
-    return result, st
+        raise Refused(disk_reason)
+    return result, times
 
 
 def _disputes(result: dict) -> dict[str, list[object]]:
@@ -404,8 +536,8 @@ class Check:
         _require(len(matches) == 1, "no single transcript for this session")
         self.transcript = Transcript(matches[0])
         go = _latest_go(self.transcript)
-        name, record, data, record_st = self._record_for(go)
-        self._check_record(go, name, record, record_st)
+        name, record, data, record_st, record_times = self._record_for(go)
+        self._check_record(go, name, record, record_st, record_times)
         payload = record["payload"]
         self._check_payload(go, name, record, data, payload)
         return {
@@ -419,7 +551,7 @@ class Check:
             "planSha256": record["planSha256"],
         }
 
-    def _record_for(self, go: dict) -> tuple[str, dict, bytes, os.stat_result]:
+    def _record_for(self, go: dict) -> tuple[str, dict, bytes, os.stat_result, tuple[int, ...]]:
         controls = os.path.join(self.run_dir, "controls")
         found = []
         try:
@@ -428,35 +560,36 @@ class Check:
             controls_st = None
         if controls_st is not None:
             _require(
-                stat.S_ISDIR(controls_st.st_mode) and not stat.S_ISLNK(controls_st.st_mode),
+                stat.S_ISDIR(controls_st.st_mode) and not _is_link(controls_st),
                 "controls is not a directory",
             )
             for name in sorted(os.listdir(controls)):
                 if not RECORD_NAME.match(name):
                     continue
                 try:
-                    data, st = _read_file(os.path.join(controls, name), RECORD_CAP)
+                    data, st, times = _read_file_times(os.path.join(controls, name), RECORD_CAP)
                     record = _strict_json(data)
                 except (Refused, OSError, ValueError) as error:
                     raise Refused(f"unreadable record {name}") from error
                 _require(isinstance(record, dict), f"unreadable record {name}")
                 if record.get("turnUuid") == go["uuid"]:
-                    found.append((name, record, data, st))
+                    found.append((name, record, data, st, times))
         if not found:
             self.transcript.tail_pass()
             raise Refused("no record for this go", chat_fallback=True)
         _require(len(found) == 1, "more than one record for this go")
-        name, record, _, _ = found[0]
+        name, record, _, _, _ = found[0]
         expected = "approve-plan" if self.action == "auto" else self.action
         _require(record.get("action") == expected, f"record action is not {expected}")
         _require(go.get("promptSource") == "sdk", "go was not sent by the app")
         return found[0]
 
-    def _check_record(self, go: dict, name: str, record: dict, record_st: os.stat_result) -> None:
-        _require(sys.platform == "linux", "control records are checked only on Linux")
-        self.device = _ext4_device(self.run_dir)
-        _require(record_st.st_dev == self.device, "control records are checked only on ext4")
-        _require(time.clock_getres(CLOCK_REALTIME_COARSE) <= MAX_CLOCK_RES_S, "file clock too coarse")
+    def _check_record(
+        self, go: dict, name: str, record: dict, record_st: os.stat_result, record_times: tuple[int, ...]
+    ) -> None:
+        self.device, self.sep_ns, self.disk_reason = _platform_device(self.run_dir)
+        _require(record_st.st_dev == self.device, self.disk_reason)
+        _require(_clock_fine(), "file clock too coarse")
         _require(set(record) == RECORD_KEYS, "record has wrong keys")
         _require(type(record["v"]) is int and record["v"] == 1, "record version is not 1")
         _require(record["action"] == RECORD_NAME.match(name).group(1), "record action does not match its name")
@@ -471,7 +604,7 @@ class Check:
         go_ms = _utc_ms(go["timestamp"])
         _require(at_ms <= go_ms, "record is later than go")
         _require(go_ms - at_ms <= MAX_RECORD_AGE_MS, "record is more than 60 s older than go")
-        _require(record_st.st_ctime_ns + SEP_NS <= go_ms * 1_000_000, "record not written before go")
+        _require(all(t + self.sep_ns <= go_ms * 1_000_000 for t in record_times), "record not written before go")
         _require(os.path.realpath(record["runDir"]) == self.run_dir, "record is for another run folder")
         _require(os.path.realpath(record["planPath"]) == os.path.realpath(self.args.plan), "record is for another plan")
         plan_bytes, _ = _read_file(self.args.plan, PLAN_CAP)
@@ -514,18 +647,18 @@ class Check:
         auto_files = [entry for entry in os.listdir(self.run_dir) if AUTO_RULINGS_NAME.match(entry)]
         _require(len(auto_files) < AUTO_LIMIT, "auto limit reached")
         self.forge_result, _ = _load_forge_result(
-            self.args.forge_result, self.args.forge_result_sha256, self.run_dir, self.device
+            self.args.forge_result, self.args.forge_result_sha256, self.run_dir, self.device, self.disk_reason
         )
 
     def _check_rulings_payload(self, go: dict, payload: dict) -> None:
-        result, result_st = _load_forge_result(
-            self.args.forge_result, self.args.forge_result_sha256, self.run_dir, self.device
+        result, result_times = _load_forge_result(
+            self.args.forge_result, self.args.forge_result_sha256, self.run_dir, self.device, self.disk_reason
         )
         _require(set(payload) == {"forgeResult", "forgeResultSha256", "rulings"}, "rulings payload has wrong keys")
         _require(payload["forgeResult"] == os.path.basename(self.args.forge_result), "record names another forge result")
         _require(payload["forgeResultSha256"] == self.args.forge_result_sha256, "record names another forge result hash")
         go_ms = _utc_ms(go["timestamp"])
-        _require(result_st.st_ctime_ns + SEP_NS <= go_ms * 1_000_000, "forge result not written before go")
+        _require(all(t + self.sep_ns <= go_ms * 1_000_000 for t in result_times), "forge result not written before go")
         _check_rulings(payload["rulings"], _disputes(result))
 
 

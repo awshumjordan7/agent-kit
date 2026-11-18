@@ -78,7 +78,11 @@ Forge runs from chat on native Windows. It needs:
   on; the Claude review still runs.
 - Codex installed and signed in, for the Codex reviews.
 
-The workflow-maxxing app's forge buttons are not on Windows yet: answer forge's plan approval and questions in chat.
+Control records on Windows: the workflow-maxxing app's forge buttons need the run folder on a local NTFS disk. A
+Dev Drive (ReFS), an exFAT or FAT32 drive, a network share, a WSL path, and a run folder that is itself a junction
+all refuse, and forge asks in chat instead. On Windows the check guards against mistakes only, because a program
+running as you can set a file's times back. A sync, backup or antivirus tool that touches a record can cause
+"record not written before go"; then answer in chat.
 
 Put personal rules in the local layer, not in the clone, so a `git pull` does not conflict. Create the folder
 `~\.ai-setup\local` (install uses it only when it exists) and put `settings.fragment.json` and `CLAUDE.fragment.md`
