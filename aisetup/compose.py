@@ -204,7 +204,30 @@ def _render_settings(layers: ResolvedLayers) -> dict[str, Any]:
     for layer in layers.layers:
         if layer.settings_fragment is not None:
             settings = deep_merge(settings, load_json(layer.settings_fragment))
+    if sys.platform == "win32":
+        _use_windows_python(settings)
     return settings
+
+
+# On Windows `python3` is usually the Microsoft Store stub, so hook commands name the
+# interpreter running the installer. Hook stdin is cp1252 there unless UTF-8 mode is on.
+def _use_windows_python(settings: dict[str, Any]) -> None:
+    prefix = "python3 "
+    interpreter = '"' + sys.executable.replace("\\", "/") + '" '
+    commands: list[dict[str, Any]] = [
+        hook
+        for groups in settings.get("hooks", {}).values()
+        for group in groups
+        for hook in group.get("hooks", [])
+    ]
+    status_line = settings.get("statusLine")
+    if isinstance(status_line, dict):
+        commands.append(status_line)
+    for entry in commands:
+        command = entry.get("command")
+        if isinstance(command, str) and command.startswith(prefix):
+            entry["command"] = interpreter + command[len(prefix) :]
+    settings.setdefault("env", {})["PYTHONUTF8"] = "1"
 
 
 def _render_agents(destination: Path, profile: dict[str, Any]) -> None:
@@ -358,7 +381,7 @@ def compose_tree(
         raise ComposeError(str(error)) from error
 
     files = tuple(
-        str(path.relative_to(destination))
+        path.relative_to(destination).as_posix()
         for path in sorted(destination.rglob("*"))
         if path.is_file()
     )

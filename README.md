@@ -45,9 +45,34 @@ paths report `retired` or `retired but locally modified`. Kept local edits are l
 other item makes the check exit 1. `python3 install.py update` fetches, composes, installs, reconciles declared MCP
 servers, and runs doctor.
 
+## Windows 10 and 11 (native)
+
+agent-kit installs from PowerShell. Install these first:
+
+- Git for Windows. Claude Code runs hooks with its Git Bash; the `bash.exe` in `System32` is the WSL launcher and
+  does not count. Set `CLAUDE_CODE_GIT_BASH_PATH` if Git Bash is not in `C:\Program Files\Git\bin`.
+- Python 3.11 or newer from python.org, not the Microsoft Store alias.
+- Node.js LTS (the firecrawl and context7 MCP servers run through `npx`).
+- Claude Code from the native installer (`claude.exe`). Run `claude` once to sign in.
+
+Quit every Claude Code session before you install: Windows cannot replace files a running session holds open.
+Then run from the clone:
+
+```powershell
+python install.py install
+```
+
+Hook commands name the Python that ran the installer, so re-run install after you move or upgrade Python. jq is
+needed only by the forge and ship-pr scripts; install prints a warning when it is missing and carries on. Forge does
+not run on native Windows yet.
+
+Put personal rules in the local layer, not in the clone, so a `git pull` does not conflict. Create the folder
+`~\.ai-setup\local` (install uses it only when it exists) and put `settings.fragment.json` and `CLAUDE.fragment.md`
+in it.
+
 ## Windows 10 and 11 (WSL2)
 
-agent-kit runs inside WSL2, not in PowerShell. Use Ubuntu 24.04; Ubuntu 22.04 ships Python 3.10, below the 3.11
+WSL2 is the other option on Windows: agent-kit then runs inside WSL2 as on Linux. Use Ubuntu 24.04; Ubuntu 22.04 ships Python 3.10, below the 3.11
 floor. Keep the clone and `~/.claude` in the Linux home directory, not under `/mnt/c`. The terminal module is
 macOS-only and skips itself on Linux.
 
@@ -78,7 +103,7 @@ claude mcp list
 | marketing | off | market research and content workflows |
 | terminal | off | Ghostty defaults on macOS |
 | sandbox | off | Claude Code sandbox for Bash on macOS |
-| workflow-maxxing | off | status and same-pane handoff for the workflow-maxxing app on macOS and Linux |
+| workflow-maxxing | off | status and same-pane handoff for the workflow-maxxing app on macOS, Linux and Windows |
 
 See [docs/profile.md](docs/profile.md) for profile fields and [docs/overlay.md](docs/overlay.md) for private layers.
 The local layer lives at `~/.ai-setup/local` and is never committed. Put machine-specific hooks, sounds, webhook
