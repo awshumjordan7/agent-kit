@@ -2081,10 +2081,28 @@ async function collectPhaseGate(run, entry, allowFix) {
     return
   }
   let sha = entry.sha
+  let first = gate
+  if (run.headSha && run.headSha !== entry.sha) {
+    const headGate = await serialGate(() => localGate(`${entry.label}-head`, 'Gate', entry.files, [], run.headSha)).catch(() => null)
+    const failedOn = `Phase ${entry.id} gate failed on ${entry.sha.slice(0, 12)}; re-gated at HEAD ${run.headSha.slice(0, 12)}`
+    if (headGate && headGate.passed) {
+      row.gate = 'passed'
+      run.lastGate = headGate
+      await decide(`${failedOn}: passed.`)
+      return
+    }
+    if (headGate) {
+      await decide(`${failedOn}: failed; the fix loop starts from HEAD.`)
+      sha = run.headSha
+      first = headGate
+    } else {
+      await decide(`${failedOn}: no result; the fix loop starts from ${entry.sha.slice(0, 12)}.`)
+    }
+  }
   let fixes = 0
   const planned = PHASES.find(item => item.id === entry.id)
   const gateRun = await gateWithFixes(entry.label, entry.files, `${PARAMS.runDir}/codex-fix-${entry.label}.thread`, {}, 'Gate', {
-    first: gate,
+    first,
     planPhase: planned || null,
     run: (label, files) => serialGate(() => localGate(label, 'Gate', files, [], sha)),
     afterFix: async (touched, files) => {
