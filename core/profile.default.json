@@ -14,7 +14,8 @@
       "github": false,
       "marketing": false,
       "terminal": false,
-      "sandbox": false
+      "sandbox": false,
+      "workflow-maxxing": false
     },
     "answers": {},
     "agents": {
