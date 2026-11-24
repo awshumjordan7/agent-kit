@@ -4,6 +4,9 @@ One line per instruction change. A change adds its lines under today's `## YYYY-
 heading, creating it at the top if missing. Each line reads `- <paths or area>: <reason in one sentence>`.
 When a change fixes an inbox entry, cite its id (I-xxx or C-xxx) in the CHANGELOG line.
 
+## 2026-11-24
+- core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/agents/triage.md: a confirmed LOW review finding from a non-security reviewer no longer enters the fix loop and is listed as a follow-up unless triage raises it to MEDIUM, because LOW items were 91 of the 129 items the fix decider handled in a project's last 10 forge runs, where fix rounds took 28% of agent time (user request 2026-11-24).
+
 ## 2026-11-16
 - core/CLAUDE.md, core/references/change-outside-forge.md: a small, low-risk change is judged by what it touches, not by a count of files, and gets a short plan, a quick plan review and no plan page (user request 2026-11-16: "i dont like the 3 file limit").
 - core/skills/forge/SKILL.md, core/skills/forge/references/build-lane.md, core/skills/forge/references/plan-review-prompt-short.md, core/skills/forge/references/codex-wrapper.md: forge's plan steps describe the short plan and the short review brief, because the measured median review brief was 66,554 bytes and a plan review took about 5.5 minutes.
