@@ -51,6 +51,7 @@ const PARAMS = {
   dryRunFailGate: typeof args.dryRunFailGate === 'string' ? args.dryRunFailGate : null,
   dryRunStubborn: args.dryRunStubborn === true,
   dryRunFindings: Number.isInteger(args.dryRunFindings) && args.dryRunFindings > 0 ? args.dryRunFindings : 0,
+  dryRunLowFindings: Number.isInteger(args.dryRunLowFindings) && args.dryRunLowFindings > 0 ? args.dryRunLowFindings : 0,
   ghEnvUnset: Array.isArray(args.ghEnvUnset) ? args.ghEnvUnset : null,
   forgeConfig: args.forgeConfig && typeof args.forgeConfig === 'object' ? args.forgeConfig : null,
   fullySpecified: args.fullySpecified === true,
@@ -182,7 +183,7 @@ const TRIAGE_SCHEMA = {
         properties: {
           id: { type: 'string' }, file: { type: 'string' }, line: { type: 'integer' },
           real: { type: 'string', enum: ['yes', 'no', 'uncertain'] },
-          worthIt: { type: 'boolean' }, why: { type: 'string' },
+          worthIt: { type: 'boolean' }, why: { type: 'string' }, promote: { type: 'boolean' },
         },
         required: ['id', 'file', 'line', 'real', 'worthIt', 'why'],
       },
@@ -456,6 +457,18 @@ function dryFindings() {
   }))
 }
 
+function dryLowFindings() {
+  if (!PARAMS.dryRun) return []
+  return Array.from({ length: PARAMS.dryRunLowFindings }, (_, index) => ({
+    file: 'auth/api/client.py', line: 100 + index, severity: 'LOW',
+    claim: `dry-run low finding ${index}`, fix_hint: 'fix the dry-run low finding',
+  }))
+}
+
+function dryReviewFindings() {
+  return [...dryFindings(), ...dryLowFindings()]
+}
+
 function dryRunFacts(facts) {
   return { facts, canonLength: canonicalJson(facts).length, fnv1a: fnv1a(canonicalJson(facts)) }
 }
@@ -466,10 +479,10 @@ const STUBS = {
     : { filesChanged: ['auth/api/client.py'], testsWritten: false, summary: 'dry-run Claude implementation', unverified: [], error: null, status: 'DONE', progressFile: null },
   reviewer: opts => opts.schema === SCOPED_VERIFY_SCHEMA
     ? { results: dryFindings().map(finding => ({ id: findingKey(finding), status: PARAMS.dryRunStubborn ? 'UNRESOLVED' : 'RESOLVED', reason: finding.claim })) }
-    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings() },
+    : { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryReviewFindings() },
   triage: opts => opts.schema === BOT_TRIAGE_SCHEMA
     ? { verdicts: dryFindings().map((finding, index) => ({ id: `ff-${index + 1}`, file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed', claim: `dry-run bot finding ${index + 1}` })) }
-    : { verdicts: dryFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) },
+    : { verdicts: dryReviewFindings().map((finding, index) => ({ id: triageId(index), file: finding.file, line: finding.line, real: 'yes', worthIt: true, why: 'dry-run confirmed' })) },
   decider: opts => {
     const gateItems = gateFindings({ failures: [{ tool: 'tests', summary: 'dry-run forced failure', file: null, line: null }] })
     const items = String(opts.label).startsWith('decide-fix-gate') ? gateItems : dryFindings().map(finding => ({ ...finding, source: 'review' }))
@@ -511,12 +524,13 @@ const STUBS = {
     : dryRunFacts({ files: ['auth/api/client.py'], droppedPaths: [], excludedPaths: [], commandSucceeded: true, diffPath: `${PARAMS.runDir}/review-dry-run.diff`, diffBytes: 12, diffLines: 1, diffValid: true, testPaths: ['tests/unit'], error: '', briefPath: `${PARAMS.runDir}/review-brief-gate.md`, hasContract: true, noCode: false, instructionFiles: [] }),
   handoff: opts => opts.schema === ACK_SCHEMA ? { written: true } : { handoffPath: `${PARAMS.runDir}/handoff.md` },
   codexWrap: opts => {
-    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryFindings() }, error: '', handoffs: 0 }
+    if (opts.schema === CODEX_REVIEW_SCHEMA) return { codexInvoked: true, threadMode: 'start', threadExists: true, review: { verdict: PARAMS.dryRunFindings ? 'request_changes' : 'approve', score: PARAMS.dryRunFindings ? 2 : 5, findings: dryReviewFindings() }, error: '', handoffs: 0 }
     return { written: true }
   },
 }
 
 const decisions = []
+let followups = []
 if (typeof args.planText === 'string') decisions.push(`args.planText is ignored; the plan is read from planPath (${PARAMS.planPath}).`)
 if (args.ghEnvUnset !== undefined && args.ghEnvUnset !== null && !Array.isArray(args.ghEnvUnset)) decisions.push(`args.ghEnvUnset is ignored because it is not an array; the forge.config.json ghEnvUnset entry applies.`)
 const dryRunJournal = []
@@ -1111,17 +1125,33 @@ function lensReview(lens, context) {
   return agentT(role, reviewerPrompt(`${lens.key} lens`, `${skill} Report only ${lens.key} concerns.`, context), opts)
 }
 
+// The first reporter keeps reviewer and severity; reportedBy lists every reviewer that reported the same key.
 function uniqueFindings(rows) {
-  const seen = new Set()
+  const byKey = new Map()
   const findings = []
   for (const row of rows) for (const finding of row.result.findings || []) {
     const key = findingKey(finding)
-    if (!seen.has(key)) {
-      seen.add(key)
-      findings.push({ ...finding, reviewer: row.key })
+    const reporter = { reviewer: row.key, severity: finding.severity }
+    if (byKey.has(key)) {
+      byKey.get(key).reportedBy.push(reporter)
+    } else {
+      const unique = { ...finding, reviewer: row.key, reportedBy: [reporter] }
+      byKey.set(key, unique)
+      findings.push(unique)
     }
   }
   return findings
+}
+
+const isLow = severity => String(severity || '').toUpperCase() === 'LOW'
+
+// A minor finding is a LOW finding that no security reviewer reported, with no ruling and not fixed by an
+// earlier launch. It is listed as a follow-up instead of entering the fix loop.
+function isMinorFinding(finding) {
+  if (!finding || !isLow(finding.severity) || finding.reviewer === 'security') return false
+  if (finding.source === 'gate' || finding.ruling) return false
+  if ((finding.reportedBy || []).some(entry => !isLow(entry.severity) || entry.reviewer === 'security')) return false
+  return !PARAMS.fixedIds.includes(findingKey(finding))
 }
 
 function findingKey(finding) {
@@ -1160,7 +1190,9 @@ function partitionTriage(findings, verdicts) {
     if (!verdict || verdict.real === 'uncertain') {
       disputes.push({ finding, reason: verdict ? verdict.why : 'triage returned no verdict' })
     } else if (verdict.real === 'yes' && verdict.worthIt) {
-      fix.push(finding)
+      fix.push(verdict.promote === true && isMinorFinding(finding)
+        ? { ...finding, severity: 'MEDIUM', promotedFrom: 'LOW', promoteReason: verdict.why }
+        : finding)
     } else {
       dropped.push({ finding, reason: verdict.why })
     }
@@ -1182,7 +1214,7 @@ function keepUnruled(partitioned, ruled) {
 
 function triageFindings(findings, context, label = 'triage') {
   if (!findings.length) return Promise.resolve({ verdicts: [] })
-  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding and copy that finding's id into the verdict's id exactly. Findings: ${JSON.stringify(findings.map((finding, index) => ({ ...finding, id: triageId(index) })))}\n\n${diffSection(context)}`,
+  return agentT('triage', `Triage every review finding against the current file:line before any fixer runs. Use ranged reads only, remain read-only, and decide whether the claim is real and worthwhile to fix. Return one verdict per finding and copy that finding's id into the verdict's id exactly. A confirmed LOW finding (real yes, worthIt true) is not fixed in this run; it is listed as a follow-up. Set promote true on a LOW finding only when it is a real defect (wrong output, crash, data loss or corruption, a security or permission gap, a broken user flow), and say why in why. Leave promote false for style, naming, cleanup, refactoring, docs or speculative issues. Findings: ${JSON.stringify(findings.map((finding, index) => ({ ...finding, id: triageId(index) })))}\n\n${diffSection(context)}`,
     { label, phase: 'Review', schema: TRIAGE_SCHEMA, agentType: 'triage' })
 }
 
@@ -1246,12 +1278,44 @@ async function reviewPanel(context) {
   for (const item of partitioned.dropped) {
     await decide(`Triage dropped ${attribution(item.finding)} ${item.finding.file}:${item.finding.line}: ${item.reason}`)
   }
-  const confirmed = [...ruled.applied, ...partitioned.fix]
+  for (const finding of partitioned.fix.filter(item => item.promotedFrom === 'LOW')) {
+    await decide(`Triage raised [${finding.reviewer || 'unknown'}, LOW] ${finding.file}:${finding.line} to MEDIUM: ${finding.promoteReason}`)
+  }
+  const notMinor = partitioned.fix.filter(finding => !isMinorFinding(finding))
+  const confirmed = [...ruled.applied, ...notMinor]
   for (const finding of confirmed) {
     await decide(`Review confirmed ${attribution(finding)} ${finding.file}:${finding.line}`)
   }
-  const unresolvedDisputes = partitioned.disputes
-  return { reviews: rows, findings, unresolvedDisputes, confirmed, failures, returned: present.length }
+  const unresolvedDisputes = partitioned.disputes.filter(item => !isMinorFinding(item.finding))
+  followups = [
+    ...partitioned.fix.filter(isMinorFinding).map(finding => followupOf(finding, 'LOW, not fixed in this run')),
+    ...partitioned.disputes.filter(item => isMinorFinding(item.finding))
+      .map(item => followupOf(item.finding, `LOW, triage could not decide: ${item.reason}`)),
+  ]
+  for (const item of followups) {
+    await decide(`Follow-up (not fixed) [${item.reviewer}, LOW] ${item.file}:${item.line}: ${item.claim.slice(0, 200)} - ${item.reason}`)
+  }
+  await writeFollowups(followups)
+  return { reviews: rows, findings, unresolvedDisputes, confirmed, failures, returned: present.length, followups }
+}
+
+function followupOf(finding, reason) {
+  return {
+    id: findingKey(finding), file: finding.file || '', line: finding.line || 0, severity: finding.severity,
+    reviewer: finding.reviewer || 'unknown', claim: String(finding.claim || ''), reason,
+  }
+}
+
+// followups.md is best effort: the decision lines and the Workflow return carry the guaranteed list.
+async function writeFollowups(items) {
+  const path = `${PARAMS.runDir}/followups.md`
+  const lines = items.length
+    ? items.map(item => `- ${item.file}:${item.line} [${item.reviewer}, ${item.severity}] ${item.claim.slice(0, 200)} - ${item.reason}`)
+    : ['none']
+  const command = `printf '%s\\n' ${lines.map(shellQuote).join(' ')} > ${shellQuote(path)}`
+  const result = await agentT('runCommand', `${ASSIGNED_STEP_RULE} Execute exactly one command and return {"written": true} when it finishes: ${command}`,
+    { label: 'write-followups', phase: 'Review', schema: ACK_SCHEMA })
+  if (!result || result.written !== true) await decide(`followups.md could not be written: ${result ? 'the command reported written false' : 'no result'}`)
 }
 
 // The applier gets only the decider's fix items, already verified, so it applies them without re-triage.
@@ -1651,7 +1715,10 @@ async function ship(existing = null, files = [], context = {}, committedBranch =
     : ''
   const tailWith = extra => `${BARE_CALL_RULE} The run dir is ${PARAMS.runDir}; ship-pr's changelog check looks there for user-ok.md. If that check fails, commit and push nothing and return branch and repo as usual with prUrl "", prNumber 0, skipped true, and reason "NEEDS_CHANGELOG_OK: <instruction files>; missing <a and/or b>". Run ship-pr's ship check with --run-dir ${PARAMS.runDir}; forge runs are exempt through their run dir. Do not run ship-pr's PR checks step (section 4 step 5) and leave checks unset: forge waits for the checks in its own step. ${extra} Include only these configured ticket links: ${JSON.stringify(ticketLinks())}. ${staging.text} ${SHIP_ATTRIBUTION_RULE}`
   const tail = tailWith(`${bodyExtra}${gateNotice}`)
-  const bodyRule = `The PR body has the sections Problem, Fix, How to verify and Notes that ship-pr section 5 describes (no file lists), then links; ${testing}.`
+  const followupRule = followups.length
+    ? ` Under Notes, add a "Follow-ups" list with one line per entry of this JSON, written as \`<file>:<line> [<reviewer>, LOW] <claim>\`: ${JSON.stringify(followups.map(({ file, line, reviewer, claim }) => ({ file, line, reviewer, claim })))}.`
+    : ''
+  const bodyRule = `The PR body has the sections Problem, Fix, How to verify and Notes that ship-pr section 5 describes (no file lists), then links; ${testing}.${followupRule}`
   const base = LAUNCH.base
   const baseRule = base
     ? `The base branch is ${base}; do not run resolve-base-branch.sh; use it as <base> in every ship-pr step, including \`gh pr create --base ${base}\`. `
@@ -1953,7 +2020,7 @@ async function handoff(state, context) {
   return agentT('handoff', `${cleanup}You write the Forge HANDOFF at ${PARAMS.runDir}/handoff.md. First APPEND to ${PARAMS.runDir}/decisions.md (create it if missing; never truncate or rewrite existing content) a section headed \`## Workflow <current UTC timestamp in ISO 8601, which you generate because the script cannot>\` followed by one line per entry of this decisions array: ${JSON.stringify(decisions)}. When ciWaits in the run data below is set, end that section with one more line per entry: \`CI <label>: <result>\`. Use only the run data below, ${PARAMS.runDir}/decisions.md, the existing ${PARAMS.runDir}/handoff.md, and the plan file ${PLAN}, whose sections headed ## Summary and ## Acceptance Criteria say what was planned. Do not read the diff or repository files; file names come from the run data.
 Take the implementer's summary for What changed and why from implement.summary in the run data.
 ${gateNotice}
-Write these sections exactly: What changed and why; Gate results; Review scores and findings; CI checks (the result of each ciWaits entry in order, and the name and link of every check whose bucket is fail or cancel; write \`no pull request\` when ship is null, and \`checks not waited for\` when ship is set and ciWaits is absent); Bot review (PR, reviewed head, bot comment count, triage verdicts, which bot findings were fixed (botFix.fixedIds) and pushed (botFix.pushed), which were not (botFix.unresolved and botFix.disputes), findings triaged real but not worth fixing; when ffReview.noAnswer is true write exactly \`review bot: no answer within 10 minutes\` and that its comments can be read later with the overlay's ff_review.md; omit when ffReview is null); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. When failedChecks in the run data is non-empty, name each failed check and its link under Status. Judgment calls must include every entry of the decisions array above.
+Write these sections exactly: What changed and why; Gate results; Review scores and findings; CI checks (the result of each ciWaits entry in order, and the name and link of every check whose bucket is fail or cancel; write \`no pull request\` when ship is null, and \`checks not waited for\` when ship is set and ciWaits is absent); Bot review (PR, reviewed head, bot comment count, triage verdicts, which bot findings were fixed (botFix.fixedIds) and pushed (botFix.pushed), which were not (botFix.unresolved and botFix.disputes), findings triaged real but not worth fixing; when ffReview.noAnswer is true write exactly \`review bot: no answer within 10 minutes\` and that its comments can be read later with the overlay's ff_review.md; omit when ffReview is null); Follow-ups (one line per entry of review.followups in the run data with its file, line, reviewer, severity, claim and reason, which this run did not fix; write \`none\` when review.followups is absent or empty, and when it is non-empty add a pointer to ${PARAMS.runDir}/followups.md, which you do not write); Manual QA checklist (one item per acceptance criterion); Judgment calls; Status. Status must be ${state.status}. When failedChecks in the run data is non-empty, name each failed check and its link under Status. Judgment calls must include every entry of the decisions array above.
 Render the Manual QA checklist from the acceptance criteria below, one unchecked item per criterion.
 Acceptance criteria: ${JSON.stringify(acceptanceCriteria())}
 Run data: ${JSON.stringify(handoffState)}
@@ -2450,6 +2517,7 @@ if (state.needsJudge) {
     prUrl: (state.ship && state.ship.prUrl) || '',
     uncommitted: state.uncommitted, uncommittedError: state.uncommittedError || null,
     fixedIds: (state.convergence && state.convergence.fixedIds) || PARAMS.fixedIds,
+    followups,
   }
 }
 phase('Handoff')
@@ -2475,5 +2543,6 @@ return {
   botFix: state.botFix || null,
   phases: PHASED ? (state.phases || []) : undefined,
   decisions,
+  followups,
   dryRunJournal: PARAMS.dryRun ? dryRunJournal.map(entry => entry.label) : undefined,
 }
